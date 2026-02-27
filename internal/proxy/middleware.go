@@ -1,0 +1,137 @@
+package proxy
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+
+	"github.com/google/uuid"
+	"go.uber.org/zap"
+
+	"github.com/pairproxy/pairproxy/internal/auth"
+)
+
+// contextKey is an unexported type for context keys in this package.
+type contextKey int
+
+const (
+	ctxKeyRequestID contextKey = iota
+	ctxKeyClaims
+)
+
+// RequestIDFromContext 从 context 中取 request_id。
+func RequestIDFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(ctxKeyRequestID).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// ClaimsFromContext 从 context 中取 JWT claims。
+func ClaimsFromContext(ctx context.Context) *auth.JWTClaims {
+	if v, ok := ctx.Value(ctxKeyClaims).(*auth.JWTClaims); ok {
+		return v
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// RequestIDMiddleware
+// ---------------------------------------------------------------------------
+
+// RequestIDMiddleware 为每个请求生成 UUID 写入 context 和响应头 X-Request-ID。
+func RequestIDMiddleware(logger *zap.Logger, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 优先沿用上游传入的 request-id
+		reqID := r.Header.Get("X-Request-ID")
+		if reqID == "" {
+			reqID = uuid.New().String()
+		}
+		w.Header().Set("X-Request-ID", reqID)
+		ctx := context.WithValue(r.Context(), ctxKeyRequestID, reqID)
+		logger.Debug("request received",
+			zap.String("request_id", reqID),
+			zap.String("method", r.Method),
+			zap.String("path", r.URL.Path),
+			zap.String("remote_addr", r.RemoteAddr),
+		)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// ---------------------------------------------------------------------------
+// AuthMiddleware（s-proxy 用）
+// ---------------------------------------------------------------------------
+
+// AuthMiddleware 验证请求头 X-PairProxy-Auth 中的 JWT，提取 claims 写入 context。
+// 验证失败返回 401，通过后继续处理。
+func AuthMiddleware(logger *zap.Logger, jwtMgr *auth.Manager, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqID := RequestIDFromContext(r.Context())
+		token := r.Header.Get("X-PairProxy-Auth")
+		if token == "" {
+			logger.Warn("missing X-PairProxy-Auth header",
+				zap.String("request_id", reqID),
+				zap.String("remote_addr", r.RemoteAddr),
+			)
+			writeJSONError(w, http.StatusUnauthorized, "missing_auth_header", "X-PairProxy-Auth header is required")
+			return
+		}
+
+		claims, err := jwtMgr.Parse(token)
+		if err != nil {
+			logger.Warn("invalid JWT",
+				zap.String("request_id", reqID),
+				zap.Error(err),
+			)
+			writeJSONError(w, http.StatusUnauthorized, "invalid_token", err.Error())
+			return
+		}
+
+		logger.Debug("JWT authenticated",
+			zap.String("request_id", reqID),
+			zap.String("user_id", claims.UserID),
+			zap.String("username", claims.Username),
+		)
+
+		ctx := context.WithValue(r.Context(), ctxKeyClaims, claims)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// ---------------------------------------------------------------------------
+// RecoveryMiddleware
+// ---------------------------------------------------------------------------
+
+// RecoveryMiddleware 捕获 panic，返回 500，避免进程崩溃。
+func RecoveryMiddleware(logger *zap.Logger, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				reqID := RequestIDFromContext(r.Context())
+				logger.Error("panic recovered",
+					zap.String("request_id", reqID),
+					zap.Any("panic", rec),
+				)
+				writeJSONError(w, http.StatusInternalServerError, "internal_error", "an unexpected error occurred")
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
+// ---------------------------------------------------------------------------
+// 工具函数
+// ---------------------------------------------------------------------------
+
+type errorResponse struct {
+	Error   string `json:"error"`
+	Message string `json:"message,omitempty"`
+}
+
+// writeJSONError 写入标准 JSON 错误响应。
+func writeJSONError(w http.ResponseWriter, status int, code, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(errorResponse{Error: code, Message: message})
+}

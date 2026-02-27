@@ -1,0 +1,87 @@
+{{define "content"}}
+<div class="flex items-center justify-between mb-6">
+  <h2 class="text-xl font-bold text-gray-800">分组管理</h2>
+</div>
+
+<!-- 创建分组 -->
+<div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6 mb-6">
+  <h3 class="text-sm font-semibold text-gray-700 mb-4">创建分组</h3>
+  <form method="POST" action="/dashboard/groups" class="flex flex-wrap gap-3 items-end">
+    <div>
+      <label class="block text-xs text-gray-500 mb-1">分组名称</label>
+      <input type="text" name="name" required
+        class="border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 w-36">
+    </div>
+    <div>
+      <label class="block text-xs text-gray-500 mb-1">每日 Token 上限（留空=无限制）</label>
+      <input type="number" name="daily_limit" min="0"
+        class="border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 w-36">
+    </div>
+    <div>
+      <label class="block text-xs text-gray-500 mb-1">每月 Token 上限（留空=无限制）</label>
+      <input type="number" name="monthly_limit" min="0"
+        class="border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 w-36">
+    </div>
+    <div>
+      <label class="block text-xs text-gray-500 mb-1">每分钟请求数 RPM（留空=无限制）</label>
+      <input type="number" name="rpm" min="0"
+        class="border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 w-28">
+    </div>
+    <button type="submit"
+      class="bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-4 py-1.5 rounded transition-colors">
+      创建
+    </button>
+  </form>
+</div>
+
+<!-- 分组列表 -->
+<div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+  <div class="px-6 py-4 border-b border-gray-100">
+    <h3 class="text-sm font-semibold text-gray-700">分组列表（{{len .Groups}} 个）</h3>
+  </div>
+  <div class="overflow-x-auto">
+    <table class="min-w-full divide-y divide-gray-100 text-sm">
+      <thead class="bg-gray-50 text-xs text-gray-500 uppercase">
+        <tr>
+          <th class="px-4 py-3 text-left">分组名</th>
+          <th class="px-4 py-3 text-left">每日上限</th>
+          <th class="px-4 py-3 text-left">每月上限</th>
+          <th class="px-4 py-3 text-left">RPM</th>
+          <th class="px-4 py-3 text-left">创建时间</th>
+          <th class="px-4 py-3 text-left">修改配额</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-50 text-gray-700">
+        {{range .Groups}}
+        <tr class="hover:bg-gray-50">
+          <td class="px-4 py-3 font-medium">{{.Name}}</td>
+          <td class="px-4 py-3">
+            {{if .DailyTokenLimit}}<span class="text-indigo-600">{{deref .DailyTokenLimit}}</span>{{else}}<span class="text-gray-300">无限制</span>{{end}}
+          </td>
+          <td class="px-4 py-3">
+            {{if .MonthlyTokenLimit}}<span class="text-indigo-600">{{deref .MonthlyTokenLimit}}</span>{{else}}<span class="text-gray-300">无限制</span>{{end}}
+          </td>
+          <td class="px-4 py-3">
+            {{if .RequestsPerMinute}}<span class="text-indigo-600">{{derefInt .RequestsPerMinute}}</span>{{else}}<span class="text-gray-300">无限制</span>{{end}}
+          </td>
+          <td class="px-4 py-3 text-gray-400 text-xs">{{.CreatedAt.Format "2006-01-02"}}</td>
+          <td class="px-4 py-3">
+            <form method="POST" action="/dashboard/groups/{{.ID}}/quota" class="flex gap-1 items-center">
+              <input type="number" name="daily_limit" placeholder="每日" min="0"
+                class="border border-gray-200 rounded px-2 py-0.5 text-xs w-20 focus:outline-none focus:ring-1 focus:ring-indigo-400">
+              <input type="number" name="monthly_limit" placeholder="每月" min="0"
+                class="border border-gray-200 rounded px-2 py-0.5 text-xs w-20 focus:outline-none focus:ring-1 focus:ring-indigo-400">
+              <input type="number" name="rpm" placeholder="RPM" min="0"
+                class="border border-gray-200 rounded px-2 py-0.5 text-xs w-16 focus:outline-none focus:ring-1 focus:ring-indigo-400">
+              <button type="submit" class="text-xs text-indigo-500 hover:underline">更新</button>
+            </form>
+          </td>
+        </tr>
+        {{else}}
+        <tr><td colspan="6" class="px-4 py-6 text-center text-gray-400">暂无分组</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+{{end}}

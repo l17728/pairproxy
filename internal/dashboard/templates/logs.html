@@ -1,0 +1,59 @@
+{{define "content"}}
+<div class="flex items-center justify-between mb-6">
+  <h2 class="text-xl font-bold text-gray-800">请求日志</h2>
+  <form method="GET" action="/dashboard/logs" class="flex gap-2 items-center">
+    <input type="text" name="user_id" value="{{.FilterUserID}}" placeholder="按用户 ID 过滤"
+      class="border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 w-48">
+    <button type="submit"
+      class="bg-indigo-600 hover:bg-indigo-700 text-white text-sm px-3 py-1.5 rounded transition-colors">筛选</button>
+    {{if .FilterUserID}}
+    <a href="/dashboard/logs" class="text-sm text-gray-400 hover:underline">清除</a>
+    {{end}}
+  </form>
+</div>
+
+<div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+  <div class="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+    <h3 class="text-sm font-semibold text-gray-700">最近 {{.Limit}} 条记录</h3>
+  </div>
+  <div class="overflow-x-auto">
+    <table class="min-w-full divide-y divide-gray-100 text-sm">
+      <thead class="bg-gray-50 text-xs text-gray-500 uppercase">
+        <tr>
+          <th class="px-4 py-3 text-left">时间</th>
+          <th class="px-4 py-3 text-left">用户</th>
+          <th class="px-4 py-3 text-left">模型</th>
+          <th class="px-4 py-3 text-right">输入</th>
+          <th class="px-4 py-3 text-right">输出</th>
+          <th class="px-4 py-3 text-right">费用($)</th>
+          <th class="px-4 py-3 text-right">耗时(ms)</th>
+          <th class="px-4 py-3 text-left">类型</th>
+          <th class="px-4 py-3 text-left">状态</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-50 text-gray-700">
+        {{range .Logs}}
+        <tr class="hover:bg-gray-50">
+          <td class="px-4 py-3 text-gray-400 text-xs whitespace-nowrap">{{.CreatedAt.Format "01-02 15:04:05"}}</td>
+          <td class="px-4 py-3">{{.UserID}}</td>
+          <td class="px-4 py-3 text-gray-500 text-xs">{{if .Model}}{{.Model}}{{else}}—{{end}}</td>
+          <td class="px-4 py-3 text-right">{{.InputTokens}}</td>
+          <td class="px-4 py-3 text-right">{{.OutputTokens}}</td>
+          <td class="px-4 py-3 text-right text-amber-600">{{if gt .CostUSD 0.0}}{{printf "%.4f" .CostUSD}}{{else}}<span class="text-gray-300">—</span>{{end}}</td>
+          <td class="px-4 py-3 text-right text-gray-400">{{.DurationMs}}</td>
+          <td class="px-4 py-3">
+            {{if .IsStreaming}}<span class="text-xs text-blue-500">流式</span>{{else}}<span class="text-xs text-gray-400">同步</span>{{end}}
+          </td>
+          <td class="px-4 py-3">
+            {{if eq .StatusCode 200}}<span class="text-green-600 font-medium">✓ 200</span>
+            {{else}}<span class="text-red-500 font-medium">✗ {{.StatusCode}}</span>{{end}}
+          </td>
+        </tr>
+        {{else}}
+        <tr><td colspan="9" class="px-4 py-6 text-center text-gray-400">暂无日志</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+{{end}}

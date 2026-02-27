@@ -1,0 +1,96 @@
+{{define "content"}}
+<div class="flex items-center justify-between mb-6">
+  <h2 class="text-xl font-bold text-gray-800">用户管理</h2>
+</div>
+
+<!-- 创建用户 -->
+<div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6 mb-6">
+  <h3 class="text-sm font-semibold text-gray-700 mb-4">添加用户</h3>
+  <form method="POST" action="/dashboard/users" class="flex flex-wrap gap-3 items-end">
+    <div>
+      <label class="block text-xs text-gray-500 mb-1">用户名</label>
+      <input type="text" name="username" required
+        class="border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 w-36">
+    </div>
+    <div>
+      <label class="block text-xs text-gray-500 mb-1">密码</label>
+      <input type="password" name="password" required
+        class="border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 w-36">
+    </div>
+    <div>
+      <label class="block text-xs text-gray-500 mb-1">分组（可选）</label>
+      <select name="group_id"
+        class="border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 w-36">
+        <option value="">无分组</option>
+        {{range .Groups}}
+        <option value="{{.ID}}">{{.Name}}</option>
+        {{end}}
+      </select>
+    </div>
+    <button type="submit"
+      class="bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-4 py-1.5 rounded transition-colors">
+      创建
+    </button>
+  </form>
+</div>
+
+<!-- 用户列表 -->
+<div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+  <div class="px-6 py-4 border-b border-gray-100">
+    <h3 class="text-sm font-semibold text-gray-700">用户列表（{{len .Users}} 人）</h3>
+  </div>
+  <div class="overflow-x-auto">
+    <table class="min-w-full divide-y divide-gray-100 text-sm">
+      <thead class="bg-gray-50 text-xs text-gray-500 uppercase">
+        <tr>
+          <th class="px-4 py-3 text-left">用户名</th>
+          <th class="px-4 py-3 text-left">分组</th>
+          <th class="px-4 py-3 text-left">状态</th>
+          <th class="px-4 py-3 text-left">最后登录</th>
+          <th class="px-4 py-3 text-left">操作</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-50 text-gray-700">
+        {{range .Users}}
+        <tr class="hover:bg-gray-50">
+          <td class="px-4 py-3 font-medium">{{.Username}}</td>
+          <td class="px-4 py-3 text-gray-500">{{if .GroupID}}{{.Group.Name}}{{else}}<span class="text-gray-300">—</span>{{end}}</td>
+          <td class="px-4 py-3">
+            {{if .IsActive}}
+            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">启用</span>
+            {{else}}
+            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-600">禁用</span>
+            {{end}}
+          </td>
+          <td class="px-4 py-3 text-gray-400 text-xs">
+            {{if .LastLoginAt}}{{.LastLoginAt.Format "2006-01-02 15:04"}}{{else}}—{{end}}
+          </td>
+          <td class="px-4 py-3">
+            <div class="flex gap-2">
+              {{if .IsActive}}
+              <form method="POST" action="/dashboard/users/{{.ID}}/active">
+                <input type="hidden" name="active" value="false">
+                <button type="submit" class="text-xs text-red-500 hover:underline">禁用</button>
+              </form>
+              {{else}}
+              <form method="POST" action="/dashboard/users/{{.ID}}/active">
+                <input type="hidden" name="active" value="true">
+                <button type="submit" class="text-xs text-green-600 hover:underline">启用</button>
+              </form>
+              {{end}}
+              <form method="POST" action="/dashboard/users/{{.ID}}/password" class="flex gap-1">
+                <input type="password" name="password" placeholder="新密码" required
+                  class="border border-gray-200 rounded px-2 py-0.5 text-xs w-24 focus:outline-none focus:ring-1 focus:ring-indigo-400">
+                <button type="submit" class="text-xs text-indigo-500 hover:underline">重置</button>
+              </form>
+            </div>
+          </td>
+        </tr>
+        {{else}}
+        <tr><td colspan="5" class="px-4 py-6 text-center text-gray-400">暂无用户</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+{{end}}

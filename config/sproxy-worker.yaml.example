@@ -1,0 +1,120 @@
+# ==============================================================================
+# sproxy-worker.yaml — s-proxy worker 节点配置示例（sp-2, sp-3...）
+#
+# 用途：在集群模式下，worker 节点负责接受 c-proxy 的代理请求，
+#       将 token 用量上报给 primary（sp-1），由 primary 集中管理路由表。
+#
+# 与 primary 的区别：
+#   - cluster.role = "worker"（必须）
+#   - cluster.primary 指向 sp-1 地址（必须）
+#   - dashboard.enabled = false（worker 不需要 Dashboard）
+#   - 不需要 admin.password_hash（admin API 由 primary 提供）
+#   - 不需要 auth.jwt_secret（JWT 验证密钥必须与 primary 一致）
+#
+# 必须设置的环境变量：
+#   ANTHROPIC_API_KEY  — 本节点使用的 Anthropic API Key
+#   JWT_SECRET         — 必须与 primary 使用同一个密钥
+# ==============================================================================
+
+
+# ------------------------------------------------------------------------------
+# listen
+# ------------------------------------------------------------------------------
+listen:
+  host: "0.0.0.0"
+  port: 9000
+
+
+# ------------------------------------------------------------------------------
+# llm
+# ------------------------------------------------------------------------------
+llm:
+  lb_strategy: "round_robin"
+  request_timeout: 300s
+  targets:
+    - url: "https://api.anthropic.com"
+      api_key: "${ANTHROPIC_API_KEY}"
+      weight: 1
+
+
+# ------------------------------------------------------------------------------
+# database — worker 维护自己的本地 SQLite，定期同步给 primary
+# ------------------------------------------------------------------------------
+database:
+  path: "/var/lib/pairproxy/pairproxy.db"
+  write_buffer_size: 200
+  flush_interval: 5s
+
+
+# ------------------------------------------------------------------------------
+# auth — 必须与 primary 使用同一个 jwt_secret
+# ------------------------------------------------------------------------------
+auth:
+  jwt_secret: "${JWT_SECRET}"
+  access_token_ttl: 24h
+  refresh_token_ttl: 168h
+
+
+# ------------------------------------------------------------------------------
+# admin — worker 不需要 admin 密码（管理操作走 primary）
+# ------------------------------------------------------------------------------
+admin:
+  password_hash: ""
+
+
+# ------------------------------------------------------------------------------
+# cluster
+# ------------------------------------------------------------------------------
+cluster:
+  # role: 必须为 "worker"
+  role: "worker"
+
+  # primary: sp-1 的地址（worker 向此地址注册心跳并上报用量）
+  primary: "http://sp1.company.com:9000"
+
+  # self_addr: 本 worker 节点对外可达地址
+  # primary 会将此地址加入路由表，分发给 c-proxy
+  self_addr: "http://sp2.company.com:9000"
+
+  # self_weight: 本节点权重（影响 c-proxy 分配给本节点的流量比例）
+  self_weight: 50
+
+  # report_interval: 向 primary 上报心跳+用量的间隔
+  report_interval: 30s
+
+  # alert_threshold / alert_webhook: worker 节点也可以独立配置告警
+  alert_threshold: 80
+  alert_webhook: ""
+
+
+# ------------------------------------------------------------------------------
+# dashboard — worker 节点通常不启用 Dashboard
+# ------------------------------------------------------------------------------
+dashboard:
+  enabled: false
+
+
+# ------------------------------------------------------------------------------
+# pricing — worker 节点也需要配置定价，用于计算本地 cost_usd
+# （与 primary 保持一致）
+# ------------------------------------------------------------------------------
+pricing:
+  default_input_per_1k: 0.003
+  default_output_per_1k: 0.015
+  models:
+    claude-opus-4-5:
+      input_per_1k: 0.015
+      output_per_1k: 0.075
+    claude-sonnet-4-5:
+      input_per_1k: 0.003
+      output_per_1k: 0.015
+    claude-haiku-4-5-20251001:
+      input_per_1k: 0.0008
+      output_per_1k: 0.004
+
+
+# ------------------------------------------------------------------------------
+# log
+# ------------------------------------------------------------------------------
+log:
+  level: "info"

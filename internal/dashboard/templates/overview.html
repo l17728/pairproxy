@@ -1,0 +1,71 @@
+{{define "content"}}
+<h2 class="text-xl font-bold text-gray-800 mb-6">今日概览</h2>
+
+<div class="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-8">
+  <div class="bg-white p-5 rounded-xl shadow-sm border border-gray-100">
+    <p class="text-xs text-gray-500 uppercase tracking-wide">今日总 Token</p>
+    <p class="text-3xl font-bold text-indigo-600 mt-1">{{.Stats.TotalTokens}}</p>
+    <p class="text-xs text-gray-400 mt-1">输入 {{.Stats.TotalInput}} / 输出 {{.Stats.TotalOutput}}</p>
+  </div>
+  <div class="bg-white p-5 rounded-xl shadow-sm border border-gray-100">
+    <p class="text-xs text-gray-500 uppercase tracking-wide">请求次数</p>
+    <p class="text-3xl font-bold text-indigo-600 mt-1">{{.Stats.RequestCount}}</p>
+    <p class="text-xs text-gray-400 mt-1">错误 {{.Stats.ErrorCount}}</p>
+  </div>
+  <div class="bg-white p-5 rounded-xl shadow-sm border border-gray-100">
+    <p class="text-xs text-gray-500 uppercase tracking-wide">成功率</p>
+    <p class="text-3xl font-bold text-green-600 mt-1">{{.SuccessRatePct}}%</p>
+    <p class="text-xs text-gray-400 mt-1">今日</p>
+  </div>
+  <div class="bg-white p-5 rounded-xl shadow-sm border border-gray-100">
+    <p class="text-xs text-gray-500 uppercase tracking-wide">活跃用户</p>
+    <p class="text-3xl font-bold text-indigo-600 mt-1">{{.ActiveUsers}}</p>
+    <p class="text-xs text-gray-400 mt-1">今日有请求</p>
+  </div>
+  <div class="bg-white p-5 rounded-xl shadow-sm border border-gray-100">
+    <p class="text-xs text-gray-500 uppercase tracking-wide">估算费用</p>
+    <p class="text-3xl font-bold text-amber-600 mt-1">${{printf "%.4f" .CostToday}}</p>
+    <p class="text-xs text-gray-400 mt-1">今日 USD</p>
+  </div>
+</div>
+
+<div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+  <div class="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+    <h3 class="text-sm font-semibold text-gray-700">最近请求</h3>
+    <a href="/dashboard/logs" class="text-xs text-indigo-600 hover:underline">查看全部</a>
+  </div>
+  <div class="overflow-x-auto">
+    <table class="min-w-full divide-y divide-gray-100 text-sm">
+      <thead class="bg-gray-50 text-xs text-gray-500 uppercase">
+        <tr>
+          <th class="px-4 py-3 text-left">时间</th>
+          <th class="px-4 py-3 text-left">用户</th>
+          <th class="px-4 py-3 text-left">模型</th>
+          <th class="px-4 py-3 text-right">输入</th>
+          <th class="px-4 py-3 text-right">输出</th>
+          <th class="px-4 py-3 text-right">费用($)</th>
+          <th class="px-4 py-3 text-left">状态</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-50 text-gray-700">
+        {{range .RecentLogs}}
+        <tr class="hover:bg-gray-50">
+          <td class="px-4 py-3 text-gray-400">{{.CreatedAt.Format "01-02 15:04"}}</td>
+          <td class="px-4 py-3">{{.UserID}}</td>
+          <td class="px-4 py-3 text-gray-500">{{if .Model}}{{.Model}}{{else}}—{{end}}</td>
+          <td class="px-4 py-3 text-right">{{.InputTokens}}</td>
+          <td class="px-4 py-3 text-right">{{.OutputTokens}}</td>
+          <td class="px-4 py-3 text-right text-amber-600">{{printf "%.4f" .CostUSD}}</td>
+          <td class="px-4 py-3">
+            {{if eq .StatusCode 200}}<span class="text-green-600 font-medium">✓ 200</span>
+            {{else}}<span class="text-red-500 font-medium">✗ {{.StatusCode}}</span>{{end}}
+          </td>
+        </tr>
+        {{else}}
+        <tr><td colspan="7" class="px-4 py-6 text-center text-gray-400">暂无记录</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+{{end}}

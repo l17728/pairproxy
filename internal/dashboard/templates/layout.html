@@ -1,0 +1,35 @@
+{{define "layout"}}<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PairProxy 管理面板</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50 min-h-screen">
+  <nav class="bg-indigo-700 text-white shadow">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="flex items-center justify-between h-14">
+        <div class="flex items-center gap-6">
+          <span class="font-bold text-base tracking-wide">PairProxy</span>
+          <a href="/dashboard/overview" class="text-indigo-200 hover:text-white text-sm">概览</a>
+          <a href="/dashboard/users"    class="text-indigo-200 hover:text-white text-sm">用户</a>
+          <a href="/dashboard/groups"   class="text-indigo-200 hover:text-white text-sm">分组</a>
+          <a href="/dashboard/logs"     class="text-indigo-200 hover:text-white text-sm">日志</a>
+        </div>
+        <a href="/dashboard/logout" class="text-indigo-200 hover:text-white text-sm">退出</a>
+      </div>
+    </div>
+  </nav>
+  <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    {{if .Flash}}
+    <div class="mb-4 p-3 rounded bg-green-100 text-green-800 border border-green-300 text-sm">{{.Flash}}</div>
+    {{end}}
+    {{if .Error}}
+    <div class="mb-4 p-3 rounded bg-red-100 text-red-800 border border-red-300 text-sm">{{.Error}}</div>
+    {{end}}
+    {{block "content" .}}{{end}}
+  </main>
+</body>
+</html>
+{{end}}

@@ -1,0 +1,191 @@
+# ==============================================================================
+# sproxy.yaml — s-proxy 服务端配置示例（primary / 单机模式）
+#
+# 用途：部署在公司服务器，验证用户 JWT，管理配额，转发请求到 LLM API，
+#       统计 token 用量，提供 Web Dashboard 和 Admin API。
+#
+# 部署模式：
+#   单机模式 — 只有一台 s-proxy，cluster.role 设为 "primary"（默认）
+#   集群模式 — 多台 s-proxy：一台 primary（sp-1）+ 若干 worker（sp-2, sp-3...）
+#              本文件为 primary 配置；worker 配置见 sproxy-worker.yaml.example
+#
+# 使用方式：
+#   sproxy start --config /path/to/sproxy.yaml
+#
+# 必须设置的环境变量（在 shell 或 systemd 中配置）：
+#   ANTHROPIC_API_KEY_1  — 第一个 Anthropic API Key
+#   ANTHROPIC_API_KEY_2  — 第二个 Anthropic API Key（可选，多 key 时用）
+#   JWT_SECRET           — 用于签发/验证用户 JWT 的密钥（建议 32+ 字符随机字符串）
+#   ADMIN_PASSWORD_HASH  — admin 面板密码的 bcrypt hash
+#                          生成命令：sproxy admin hash-password
+# ==============================================================================
+
+
+# ------------------------------------------------------------------------------
+# listen — 监听地址
+# ------------------------------------------------------------------------------
+listen:
+  host: "0.0.0.0"   # 对外监听（内网部署时可改为内网 IP）
+  port: 9000
+
+
+# ------------------------------------------------------------------------------
+# llm — 上游 LLM API 配置
+# ------------------------------------------------------------------------------
+llm:
+  # lb_strategy: 对 LLM 目标节点的负载均衡策略
+  # 可选：round_robin（默认）| random | weighted
+  lb_strategy: "round_robin"
+
+  # request_timeout: 转发给 LLM 的请求超时（含流式响应）
+  request_timeout: 300s
+
+  # targets: 上游 LLM 节点列表
+  # 支持多 API Key 轮询（同一 API Endpoint 配置多条，轮换使用不同 key）
+  targets:
+    - url: "https://api.anthropic.com"
+      api_key: "${ANTHROPIC_API_KEY_1}"   # 从环境变量读取，不要明文写 key
+      weight: 1
+
+    - url: "https://api.anthropic.com"
+      api_key: "${ANTHROPIC_API_KEY_2}"
+      weight: 1
+
+    # 示例：接入其他兼容 Anthropic API 的服务（如 AWS Bedrock 中转层）
+    # - url: "https://bedrock-proxy.company.com"
+    #   api_key: "${BEDROCK_API_KEY}"
+    #   weight: 2   # 权重更高，分配更多流量
+
+
+# ------------------------------------------------------------------------------
+# database — SQLite 数据库配置
+# ------------------------------------------------------------------------------
+database:
+  # path: SQLite 文件路径（绝对路径或相对于启动目录）
+  path: "/var/lib/pairproxy/pairproxy.db"
+  # path: "./pairproxy.db"   # 简单部署时用相对路径
+
+  # write_buffer_size: 异步写入缓冲区大小（条）
+  # 达到此数量时立即批量写入 DB，否则等到 flush_interval
+  write_buffer_size: 200
+
+  # flush_interval: 强制 flush 间隔（即使 buffer 未满也写入）
+  flush_interval: 5s
+
+
+# ------------------------------------------------------------------------------
+# auth — JWT 认证配置
+# ------------------------------------------------------------------------------
+auth:
+  # jwt_secret: 签发和验证 JWT 的密钥
+  # 必须保密！建议使用环境变量注入
+  # 生成示例：openssl rand -hex 32
+  jwt_secret: "${JWT_SECRET}"
+
+  # access_token_ttl: access token 有效期（用户需在此期内刷新）
+  access_token_ttl: 24h
+
+  # refresh_token_ttl: refresh token 有效期（过期需重新登录）
+  refresh_token_ttl: 168h   # 7 天
+
+
+# ------------------------------------------------------------------------------
+# admin — 管理员配置
+# ------------------------------------------------------------------------------
+admin:
+  # password_hash: admin 面板登录密码的 bcrypt hash
+  # 生成方式（交互式）：sproxy admin hash-password
+  # 生成方式（非交互）：sproxy admin hash-password --password "your-password"
+  password_hash: "${ADMIN_PASSWORD_HASH}"
+
+
+# ------------------------------------------------------------------------------
+# cluster — 集群配置
+# ------------------------------------------------------------------------------
+cluster:
+  # role: 本节点角色
+  # "primary"（默认）— sp-1，管理路由表，接受 worker 注册，提供 Dashboard
+  # "worker"        — sp-2/sp-3...，定期向 primary 上报心跳和用量
+  role: "primary"
+
+  # self_addr: 本节点对外可达地址（其他节点用于连接本节点）
+  # primary 节点的 self_addr 会被 worker 写入路由表分发给 c-proxy
+  # 留空则不参与集群路由分发（单机部署时可留空）
+  self_addr: "http://sp1.company.com:9000"
+
+  # self_weight: 本节点在 c-proxy 负载均衡中的权重（1~100）
+  # 性能强的节点可设高权重
+  self_weight: 50
+
+  # alert_threshold: active_req（并发请求数）超过此值时触发告警
+  alert_threshold: 80
+
+  # alert_webhook: 告警 Webhook URL（POST JSON）
+  # 支持 Slack / 飞书 / 企业微信 / 自定义 HTTP endpoint
+  # 留空则不发告警
+  alert_webhook: ""
+  # alert_webhook: "https://hooks.slack.com/services/xxx/yyy/zzz"
+  # alert_webhook: "https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
+
+  # peer_monitor_interval: primary 驱逐超时 worker 节点的检查间隔
+  peer_monitor_interval: 30s
+
+  # report_interval: worker 向 primary 上报心跳+用量的间隔（仅 worker 使用）
+  # primary 节点此字段无效
+  report_interval: 30s
+
+
+# ------------------------------------------------------------------------------
+# dashboard — Web Dashboard 配置
+# ------------------------------------------------------------------------------
+dashboard:
+  # enabled: 是否启用 Web Dashboard（访问 http://<server>:9000/dashboard/）
+  # primary 节点默认启用；worker 节点默认不启用
+  enabled: true
+
+
+# ------------------------------------------------------------------------------
+# pricing — 模型定价配置（用于估算请求费用，展示在 Dashboard）
+# ------------------------------------------------------------------------------
+pricing:
+  # default_input_per_1k: 未匹配模型的默认输入 token 定价（USD / 1K tokens）
+  # default_output_per_1k: 未匹配模型的默认输出 token 定价（USD / 1K tokens）
+  default_input_per_1k: 0.003    # $3 / 1M tokens
+  default_output_per_1k: 0.015   # $15 / 1M tokens
+
+  # models: 按模型名称自定义定价（覆盖默认值）
+  # key 为 Anthropic 返回的完整模型 ID（区分大小写）
+  models:
+    claude-opus-4-5:
+      input_per_1k: 0.015    # $15 / 1M tokens
+      output_per_1k: 0.075   # $75 / 1M tokens
+
+    claude-sonnet-4-5:
+      input_per_1k: 0.003
+      output_per_1k: 0.015
+
+    claude-haiku-4-5-20251001:
+      input_per_1k: 0.0008   # $0.80 / 1M tokens
+      output_per_1k: 0.004   # $4 / 1M tokens
+
+    claude-3-5-sonnet-20241022:
+      input_per_1k: 0.003
+      output_per_1k: 0.015
+
+    claude-3-5-haiku-20241022:
+      input_per_1k: 0.0008
+      output_per_1k: 0.004
+
+    claude-3-opus-20240229:
+      input_per_1k: 0.015
+      output_per_1k: 0.075
+
+
+# ------------------------------------------------------------------------------
+# log — 日志配置
+# ------------------------------------------------------------------------------
+log:
+  # level: 日志级别
+  # 可选：debug | info | warn | error
+  # 生产环境建议 info；排查 token 统计问题时用 debug
+  level: "info"

@@ -1,0 +1,54 @@
+# Binaries
+bin/
+*.exe
+*.dll
+*.so
+*.dylib
+dist/
+
+# Test binary, built with go test -c
+*.test
+
+# Output of the go coverage tool
+*.out
+*.prof
+
+# Go workspace
+go.work
+go.work.sum
+
+# Local config and secrets
+*.local.yaml
+*.local.yml
+.env
+.env.*
+
+# Database
+*.db
+*.db-shm
+*.db-wal
+
+# Token files
+token.json
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code
+.claude/
+
+# Temp
+tmp/
+temp/
+chat.txt
+plan.md
+spec/
+extglob

@@ -1,0 +1,71 @@
+# ==============================================================================
+# cproxy.yaml — c-proxy 客户端配置示例
+#
+# 用途：在开发者本地机器运行，拦截 Claude Code 等 code agent 的请求，
+#       注入用户 JWT，转发给 s-proxy 集群。
+#
+# 默认配置文件路径：
+#   Windows: %APPDATA%\pairproxy\cproxy.yaml
+#   Linux:   ~/.config/pairproxy/cproxy.yaml
+#   macOS:   ~/Library/Application Support/pairproxy/cproxy.yaml
+#
+# 使用方式：
+#   cproxy start --config /path/to/cproxy.yaml
+#   或将文件放到默认路径后直接执行 cproxy start
+# ==============================================================================
+
+
+# ------------------------------------------------------------------------------
+# listen — 本地监听地址（Claude Code 把这里当作 API Base URL）
+# ------------------------------------------------------------------------------
+listen:
+  host: "127.0.0.1"   # 仅本地监听，不对外暴露
+  port: 8080           # Claude Code 配置：ANTHROPIC_BASE_URL=http://127.0.0.1:8080
+
+
+# ------------------------------------------------------------------------------
+# sproxy — s-proxy 连接配置
+# ------------------------------------------------------------------------------
+sproxy:
+  # primary: 初始种子节点地址（sp-1 的公网/内网地址）
+  # c-proxy 启动后会通过路由表更新自动感知所有 s-proxy 节点
+  primary: "http://proxy.company.com:9000"
+
+  # lb_strategy: 对 s-proxy 节点的负载均衡策略
+  # 可选：round_robin（默认）| random | least_conn | weighted
+  lb_strategy: "round_robin"
+
+  # health_check_interval: 主动健康检查间隔（对各 s-proxy 节点 GET /health）
+  # 格式支持 Go duration：30s / 1m / 5m 等
+  health_check_interval: 30s
+
+  # request_timeout: 单个请求的超时时间（含 SSE 流式响应）
+  # 建议 >= 5m，因为 LLM 流式响应可能很长
+  request_timeout: 300s
+
+
+# ------------------------------------------------------------------------------
+# auth — 本地 JWT 令牌管理
+# ------------------------------------------------------------------------------
+auth:
+  # token_dir: 存储登录令牌（token.json）的目录
+  # 支持 ~ 开头的路径展开
+  # 默认与配置文件同目录（即 DefaultConfigDir()）
+  token_dir: "~/.config/pairproxy"   # Linux/macOS
+  # token_dir: "%APPDATA%/pairproxy"  # Windows（由程序自动处理）
+
+  # auto_refresh: 是否在令牌接近过期时自动刷新（始终为 true，无需修改）
+  auto_refresh: true
+
+  # refresh_threshold: access token 剩余有效期低于此阈值时触发自动刷新
+  refresh_threshold: 30m
+
+
+# ------------------------------------------------------------------------------
+# log — 日志配置
+# ------------------------------------------------------------------------------
+log:
+  # level: 日志级别
+  # 可选：debug | info | warn | error
+  # 生产环境建议 info；调试连接问题时用 debug
+  level: "info"
