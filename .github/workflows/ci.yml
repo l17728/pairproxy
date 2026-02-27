@@ -27,7 +27,7 @@ jobs:
 
     strategy:
       matrix:
-        go: ["1.25"]   # 与 go.mod 保持一致；如需多版本测试可在此追加
+        go: ["1.24"]   # 与 go.mod 保持一致；如需多版本测试可在此追加
 
     steps:
       - uses: actions/checkout@v4

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,7 +16,10 @@ import (
 )
 
 func TestReporterHeartbeat(t *testing.T) {
-	var received []RegisterPayload
+	var (
+		mu       sync.Mutex
+		received []RegisterPayload
+	)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != defaultRegisterPath {
@@ -26,7 +30,9 @@ func TestReporterHeartbeat(t *testing.T) {
 		var p RegisterPayload
 		body, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(body, &p)
+		mu.Lock()
 		received = append(received, p)
+		mu.Unlock()
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	}))
@@ -48,11 +54,19 @@ func TestReporterHeartbeat(t *testing.T) {
 	// 等待至少 2 个心跳（启动时立即 + 50ms 后）
 	time.Sleep(150 * time.Millisecond)
 
-	if len(received) < 2 {
-		t.Errorf("expected ≥2 heartbeats, got %d", len(received))
+	mu.Lock()
+	count := len(received)
+	var first RegisterPayload
+	if count > 0 {
+		first = received[0]
 	}
-	if received[0].ID != "sp-2" || received[0].Addr != "http://sp-2:9000" {
-		t.Errorf("unexpected payload: %+v", received[0])
+	mu.Unlock()
+
+	if count < 2 {
+		t.Errorf("expected ≥2 heartbeats, got %d", count)
+	}
+	if first.ID != "sp-2" || first.Addr != "http://sp-2:9000" {
+		t.Errorf("unexpected payload: %+v", first)
 	}
 }
 

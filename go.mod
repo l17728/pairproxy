@@ -1,6 +1,6 @@
 module github.com/l17728/pairproxy
 
-go 1.25.0
+go 1.24.0
 
 require (
 	github.com/glebarez/sqlite v1.11.0
