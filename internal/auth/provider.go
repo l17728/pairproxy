@@ -31,18 +31,6 @@ type ProviderUser struct {
 // LocalProvider — 基于本地数据库的认证（通过 bcrypt 验证密码）
 // ---------------------------------------------------------------------------
 
-// userLookup 最小接口，供 LocalProvider 查询用户（避免循环导入 db 包）
-type userLookup interface {
-	GetByUsername(username string) (localUser, error)
-}
-
-// localUser 本地用户最小接口
-type localUser interface {
-	GetID() string
-	GetUsername() string
-	GetPasswordHash() string
-}
-
 // LocalProvider 本地数据库认证提供者。
 // 使用场景：用于单元测试或作为接口的参考实现；
 // 生产中 AuthHandler 直接使用 userRepo 查询，LocalProvider 供外部调用。
