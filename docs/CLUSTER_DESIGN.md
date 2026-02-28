@@ -159,7 +159,7 @@ Workers do **not** delete local records after uploading — the local DB serves 
 | Usage record delivery | At-least-once: records uploaded by the reporter; if sp-1 is unreachable, the worker retains records locally and retries on the next interval |
 | Usage deduplication | `request_id` (UUID per request) provides idempotency in the DB insert (`INSERT OR IGNORE`) |
 | Quota accuracy | Quota checks use a 60-second in-memory cache; a user may exceed their limit by at most one request window per node |
-| Split-brain | Not addressed: if sp-1 becomes unreachable, c-proxy will stop routing to sp-1 (health check failure) and workers will continue serving independently. Usage from the outage window will not be aggregated until sp-1 recovers. |
+| Split-brain | Partially mitigated: if sp-1 becomes unreachable, c-proxy health checker detects the failure and stops routing to sp-1. Workers continue serving traffic independently. c-proxy can also maintain routes to workers directly (see §c-proxy Resilience below). Usage from the outage window will not be aggregated until sp-1 recovers. |
 
 ---
 
@@ -220,3 +220,75 @@ cluster:
   report_interval: 30s           # heartbeat + usage upload interval
   shared_secret: "${CLUSTER_SECRET}"
 ```
+
+### c-proxy Client (`cproxy.yaml`)
+
+```yaml
+sproxy:
+  # Seed node — the primary s-proxy (sp-1).
+  primary: "http://sp-1:9000"
+
+  # Static worker list — pre-seeds the balancer at startup.
+  # When sp-1 is unreachable, c-proxy routes to these nodes instead.
+  # See §c-proxy Resilience for the three-source merge logic.
+  targets:
+    - "http://sp-2:9000"
+    - "http://sp-3:9000"
+```
+
+---
+
+## c-proxy Resilience (Primary Failover)
+
+A c-proxy that only knows the primary node (`sproxy.primary`) becomes unable to
+forward requests if sp-1 is unreachable. To mitigate this, c-proxy builds its
+initial load-balancer target list from **three independent sources** at startup:
+
+| Priority | Source | Field / File |
+|----------|--------|--------------|
+| 1 (highest) | Config — seed node | `sproxy.primary` |
+| 2 | Config — static worker list | `sproxy.targets` |
+| 3 (fallback) | Disk cache — persisted routing table | `routing-cache.json` (auto-maintained) |
+
+### Merge Algorithm
+
+1. Addresses are collected from all three sources in priority order.
+2. Deduplication by URL (`Addr` string). Config-supplied addresses always take
+   priority: they are inserted first and marked `Healthy: true`.
+3. Cache-only entries (addresses present in the disk cache but absent from the
+   config) are appended with their persisted `Healthy` flag.
+4. If no addresses are found in any source, `cproxy start` returns an error
+   directing the user to add `sproxy.primary` or `sproxy.targets`.
+
+### Why this matters
+
+```
+Scenario: sp-1 (primary) crashes at 02:00. sp-2 and sp-3 workers are healthy.
+
+Without targets / cache:
+  c-proxy only knows sp-1 → 502 on every request until sp-1 restarts.
+
+With sproxy.targets (or routing cache):
+  c-proxy balancer at startup = {sp-1 (healthy), sp-2 (healthy), sp-3 (healthy)}
+  Active health check (every 30s) detects sp-1 is down → marks sp-1 Healthy:false.
+  All subsequent requests route to sp-2 and sp-3 → zero user-visible downtime.
+  When sp-1 recovers, health check marks it Healthy:true → traffic resumes normally.
+```
+
+### Operational Recommendation
+
+For clusters with N s-proxy nodes, populate `sproxy.targets` in every
+developer's `cproxy.yaml` with all known worker addresses. This provides
+immediate failover even across c-proxy restarts, independent of the disk cache.
+
+```yaml
+sproxy:
+  primary: "http://sp-1.internal:9000"
+  targets:
+    - "http://sp-2.internal:9000"
+    - "http://sp-3.internal:9000"
+```
+
+The disk cache (`routing-cache.json`) complements `targets`: it captures
+dynamically discovered nodes (e.g., workers added while c-proxy is already
+running) and restores them on the next restart without manual config changes.

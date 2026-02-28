@@ -195,20 +195,29 @@ func runStart(cmd *cobra.Command, args []string) error {
 	logger.Info("cproxy starting",
 		zap.String("listen", cfg.Listen.Addr()),
 		zap.String("sproxy_primary", cfg.SProxy.Primary),
+		zap.Strings("sproxy_targets", cfg.SProxy.Targets),
 	)
 
-	// 构建 s-proxy 负载均衡器（初始配置仅 Primary 节点）
-	if cfg.SProxy.Primary == "" {
-		return fmt.Errorf("sproxy.primary is required in config")
+	// 路由表缓存目录：与 token 文件放在同一目录；必须在构建 balancer 之前设置，
+	// 因为 buildInitialTargets 会读取磁盘缓存。
+	tokenDir := auth.DefaultTokenDir()
+	cacheDir := tokenDir
+	if err := os.MkdirAll(cacheDir, 0700); err != nil {
+		logger.Warn("failed to create cache dir, routing cache will be skipped",
+			zap.String("dir", cacheDir), zap.Error(err))
+		cacheDir = ""
 	}
-	initialTarget := lb.Target{
-		ID:      cfg.SProxy.Primary,
-		Addr:    cfg.SProxy.Primary,
-		Weight:  1,
-		Healthy: true,
+
+	// 构建 s-proxy 初始目标列表：合并三个来源
+	//   1. sproxy.primary      — 配置文件种子节点（优先）
+	//   2. sproxy.targets      — 配置文件静态 worker 列表（优先）
+	//   3. routing-cache.json  — 上次运行持久化的路由表（兜底）
+	// 主节点故障时 c-proxy 仍可将流量路由到已知 worker，避免 502。
+	initialTargets, err := buildInitialTargets(&cfg.SProxy, cacheDir, logger)
+	if err != nil {
+		return err
 	}
-	balancer := lb.NewWeightedRandom([]lb.Target{initialTarget})
-	logger.Info("s-proxy primary target configured", zap.String("url", cfg.SProxy.Primary))
+	balancer := lb.NewWeightedRandom(initialTargets)
 
 	// 健康检查器（主动检查 s-proxy 节点健康状态）
 	hc := lb.NewHealthChecker(balancer, logger,
@@ -217,7 +226,6 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 	// Token store
 	tokenStore := auth.NewTokenStore(logger, cfg.Auth.RefreshThreshold)
-	tokenDir := auth.DefaultTokenDir()
 
 	// 检查 token 有效性
 	tf, err := tokenStore.Load(tokenDir)
@@ -231,33 +239,6 @@ func runStart(cmd *cobra.Command, args []string) error {
 		)
 	} else {
 		logger.Warn("no valid token found; run 'cproxy login' first")
-	}
-
-	// 路由表缓存目录（用于 c-proxy 重启后恢复路由信息）
-	cacheDir := tokenDir // 与 token 文件放在同一目录
-	if err := os.MkdirAll(cacheDir, 0700); err != nil {
-		logger.Warn("failed to create cache dir", zap.String("dir", cacheDir), zap.Error(err))
-		cacheDir = ""
-	}
-
-	// 尝试从缓存加载路由表（重启恢复）
-	if cached, loadErr := cluster.LoadFromDir(cacheDir); loadErr == nil && cached != nil {
-		targets := make([]lb.Target, 0, len(cached.Entries))
-		for _, e := range cached.Entries {
-			targets = append(targets, lb.Target{
-				ID:      e.ID,
-				Addr:    e.Addr,
-				Weight:  e.Weight,
-				Healthy: e.Healthy,
-			})
-		}
-		if len(targets) > 0 {
-			balancer.UpdateTargets(targets)
-			logger.Info("routing table loaded from cache",
-				zap.Int64("version", cached.Version),
-				zap.Int("entries", len(targets)),
-			)
-		}
 	}
 
 	// 构建 c-proxy handler
@@ -304,6 +285,139 @@ func runStart(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("listen: %w", err)
 	}
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// buildInitialTargets
+// ---------------------------------------------------------------------------
+
+// buildInitialTargets merges three independent sources of s-proxy knowledge
+// into the starting target list for the load balancer:
+//
+//  1. cfg.Primary  — the seed node declared in sproxy.primary
+//  2. cfg.Targets  — additional static worker addresses in sproxy.targets
+//  3. routing-cache.json — the routing table persisted by the previous run
+//
+// Config entries are considered authoritative (always included and marked
+// Healthy:true). Disk-cache entries fill in addresses not already in config;
+// their Healthy flag is preserved as-is (they were persisted by the previous
+// run's health-checker view).
+//
+// Deduplication is by Addr string.  ID is set to Addr for config-originated
+// entries (matching the convention used elsewhere in cproxy).
+//
+// Returns an error only when no targets can be assembled from any source.
+func buildInitialTargets(cfg *config.SProxySect, cacheDir string, logger *zap.Logger) ([]lb.Target, error) {
+	logger.Debug("buildInitialTargets: starting target assembly",
+		zap.String("primary", cfg.Primary),
+		zap.Strings("static_targets", cfg.Targets),
+		zap.String("cache_dir", cacheDir),
+	)
+
+	seen := make(map[string]bool)
+	var targets []lb.Target
+
+	// Source 1: primary from config.
+	if cfg.Primary != "" {
+		targets = append(targets, lb.Target{
+			ID:      cfg.Primary,
+			Addr:    cfg.Primary,
+			Weight:  1,
+			Healthy: true,
+		})
+		seen[cfg.Primary] = true
+		logger.Info("buildInitialTargets: added primary from config",
+			zap.String("addr", cfg.Primary))
+	} else {
+		logger.Debug("buildInitialTargets: no primary configured, skipping source 1")
+	}
+
+	// Source 2: static targets from config.
+	for _, addr := range cfg.Targets {
+		if addr == "" {
+			logger.Warn("buildInitialTargets: empty string in sproxy.targets, skipping")
+			continue
+		}
+		if seen[addr] {
+			logger.Debug("buildInitialTargets: static target already present (duplicate of primary), skipping",
+				zap.String("addr", addr))
+			continue
+		}
+		targets = append(targets, lb.Target{
+			ID:      addr,
+			Addr:    addr,
+			Weight:  1,
+			Healthy: true,
+		})
+		seen[addr] = true
+		logger.Info("buildInitialTargets: added static target from config",
+			zap.String("addr", addr))
+	}
+
+	configCount := len(targets)
+	logger.Debug("buildInitialTargets: config sources yielded targets",
+		zap.Int("count", configCount))
+
+	// Source 3: routing cache from disk (fills in addresses not already known).
+	if cacheDir == "" {
+		logger.Debug("buildInitialTargets: cacheDir is empty, skipping disk cache source")
+	} else {
+		cached, loadErr := cluster.LoadFromDir(cacheDir)
+		if loadErr != nil {
+			logger.Warn("buildInitialTargets: failed to load routing cache (ignored)",
+				zap.String("cache_dir", cacheDir), zap.Error(loadErr))
+		} else if cached == nil {
+			logger.Debug("buildInitialTargets: no routing cache file found",
+				zap.String("cache_dir", cacheDir))
+		} else {
+			logger.Debug("buildInitialTargets: routing cache found",
+				zap.Int64("cache_version", cached.Version),
+				zap.Int("cache_entries", len(cached.Entries)))
+			for _, e := range cached.Entries {
+				if e.Addr == "" {
+					logger.Warn("buildInitialTargets: routing cache entry with empty addr, skipping",
+						zap.String("id", e.ID))
+					continue
+				}
+				if seen[e.Addr] {
+					logger.Debug("buildInitialTargets: cache entry already covered by config, skipping",
+						zap.String("addr", e.Addr))
+					continue
+				}
+				targets = append(targets, lb.Target{
+					ID:      e.ID,
+					Addr:    e.Addr,
+					Weight:  e.Weight,
+					Healthy: e.Healthy,
+				})
+				seen[e.Addr] = true
+				logger.Info("buildInitialTargets: added target from routing cache",
+					zap.String("addr", e.Addr),
+					zap.Bool("healthy", e.Healthy),
+					zap.Int64("cache_version", cached.Version))
+			}
+			if fromCache := len(targets) - configCount; fromCache > 0 {
+				logger.Info("buildInitialTargets: supplemented targets from routing cache",
+					zap.Int("from_cache", fromCache),
+					zap.Int64("cache_version", cached.Version))
+			} else {
+				logger.Debug("buildInitialTargets: all cache entries already covered by config")
+			}
+		}
+	}
+
+	if len(targets) == 0 {
+		logger.Error("buildInitialTargets: no s-proxy targets found in any source; " +
+			"set sproxy.primary or sproxy.targets in cproxy.yaml")
+		return nil, fmt.Errorf(
+			"no s-proxy targets configured; set sproxy.primary or sproxy.targets in cproxy.yaml")
+	}
+
+	logger.Info("buildInitialTargets: target assembly complete",
+		zap.Int("total", len(targets)),
+		zap.Int("from_config", configCount),
+		zap.Int("from_cache", len(targets)-configCount))
+	return targets, nil
 }
 
 // ---------------------------------------------------------------------------

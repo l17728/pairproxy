@@ -1459,8 +1459,16 @@ listen:
   port: 8080          # 如果 8080 端口冲突，改为其他端口（同时更新 ANTHROPIC_BASE_URL）
 
 sproxy:
-  primary: "http://proxy.company.com:9000"  # sproxy 地址
-  request_timeout: 300s                     # 单次请求超时，建议 ≥ 5 分钟
+  primary: "http://proxy.company.com:9000"  # 种子节点（主 sproxy 地址）
+
+  # 可选：已知 worker 节点地址（主节点故障兜底）
+  # 当 primary 宕机时，cproxy 会自动将请求路由到以下节点，保持不中断。
+  # 单节点部署时删除此段或留空。
+  targets:
+    - "http://proxy2.company.com:9000"
+    # - "http://proxy3.company.com:9000"
+
+  request_timeout: 300s   # 单次请求超时，建议 ≥ 5 分钟
 
 auth:
   refresh_threshold: 30m   # 令牌剩余有效期低于此值时自动续期
@@ -1468,6 +1476,20 @@ auth:
 log:
   level: "info"   # 正常使用 info；遇到问题时改为 debug
 ```
+
+**`sproxy.targets` 与高可用说明**
+
+cproxy 启动时会将三个来源的地址合并到负载均衡器中：
+
+| 来源 | 字段/文件 | 典型场景 |
+|------|-----------|---------|
+| 配置文件种子节点 | `sproxy.primary` | 首次连接的入口节点 |
+| 配置文件静态列表 | `sproxy.targets` | 管理员预先填写已知 worker 地址 |
+| 磁盘路由缓存 | `routing-cache.json`（自动维护）| c-proxy 上次运行时感知到的节点，重启后恢复 |
+
+三个来源的地址按 URL 去重后合并。配置文件中的地址优先标记为健康；仅来自缓存的地址沿用缓存中的健康状态。
+
+> **建议**：集群部署时，将所有已知 worker 地址填入 `targets`，这样即使 primary 宕机，c-proxy 也能无缝切换，用户感知不到中断。
 
 ### 14.2 sproxy 配置（`sproxy.yaml`）完整字段说明
 

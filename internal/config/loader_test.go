@@ -324,6 +324,78 @@ func TestExpandTildeNoPrefix(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// SProxySect.Targets tests
+// ---------------------------------------------------------------------------
+
+// TestLoadCProxyConfig_WithTargets verifies that a sproxy.targets list is
+// correctly loaded and populated.
+func TestLoadCProxyConfig_WithTargets(t *testing.T) {
+	yaml := `
+sproxy:
+  primary: "http://sp-1:9000"
+  targets:
+    - "http://sp-2:9000"
+    - "http://sp-3:9000"
+`
+	path := writeTempFile(t, yaml)
+	cfg, _, err := LoadCProxyConfig(path)
+	if err != nil {
+		t.Fatalf("LoadCProxyConfig: %v", err)
+	}
+	if cfg.SProxy.Primary != "http://sp-1:9000" {
+		t.Errorf("Primary = %q, want http://sp-1:9000", cfg.SProxy.Primary)
+	}
+	if len(cfg.SProxy.Targets) != 2 {
+		t.Fatalf("Targets len = %d, want 2", len(cfg.SProxy.Targets))
+	}
+	if cfg.SProxy.Targets[0] != "http://sp-2:9000" {
+		t.Errorf("Targets[0] = %q, want http://sp-2:9000", cfg.SProxy.Targets[0])
+	}
+	if cfg.SProxy.Targets[1] != "http://sp-3:9000" {
+		t.Errorf("Targets[1] = %q, want http://sp-3:9000", cfg.SProxy.Targets[1])
+	}
+}
+
+// TestLoadCProxyConfig_TargetsNilWhenAbsent verifies that omitting targets
+// leaves the slice nil (not an error).
+func TestLoadCProxyConfig_TargetsNilWhenAbsent(t *testing.T) {
+	yaml := `
+sproxy:
+  primary: "http://sp-1:9000"
+`
+	path := writeTempFile(t, yaml)
+	cfg, _, err := LoadCProxyConfig(path)
+	if err != nil {
+		t.Fatalf("LoadCProxyConfig: %v", err)
+	}
+	if len(cfg.SProxy.Targets) != 0 {
+		t.Errorf("Targets should be empty when not specified, got: %v", cfg.SProxy.Targets)
+	}
+}
+
+// TestLoadCProxyConfig_TargetsOnlyNoPrimary verifies that a config with only
+// targets (no primary) is valid — buildInitialTargets handles the logic.
+func TestLoadCProxyConfig_TargetsOnlyNoPrimary(t *testing.T) {
+	yaml := `
+sproxy:
+  targets:
+    - "http://worker-1:9000"
+    - "http://worker-2:9000"
+`
+	path := writeTempFile(t, yaml)
+	cfg, _, err := LoadCProxyConfig(path)
+	if err != nil {
+		t.Fatalf("LoadCProxyConfig: %v", err)
+	}
+	if cfg.SProxy.Primary != "" {
+		t.Errorf("Primary should be empty, got: %q", cfg.SProxy.Primary)
+	}
+	if len(cfg.SProxy.Targets) != 2 {
+		t.Fatalf("Targets len = %d, want 2", len(cfg.SProxy.Targets))
+	}
+}
+
 func TestPricingComputeCost(t *testing.T) {
 	p := PricingConfig{
 		Models: map[string]ModelPrice{

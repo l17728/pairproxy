@@ -61,10 +61,11 @@ type ListenConfig struct {
 
 // SProxySect c-proxy 中关于 s-proxy 的配置节
 type SProxySect struct {
-	Primary             string        `yaml:"primary"`              // 初始 sp-1 地址（种子节点）
-	LBStrategy          string        `yaml:"lb_strategy"`          // 当前固定 "weighted_random"
+	Primary             string        `yaml:"primary"`               // 初始 sp-1 地址（种子节点）
+	Targets             []string      `yaml:"targets"`               // 已知 s-proxy worker 地址（主节点故障兜底）
+	LBStrategy          string        `yaml:"lb_strategy"`           // 当前固定 "weighted_random"
 	HealthCheckInterval time.Duration `yaml:"health_check_interval"` // 默认 30s
-	RequestTimeout      time.Duration `yaml:"request_timeout"`      // 默认 300s
+	RequestTimeout      time.Duration `yaml:"request_timeout"`       // 默认 300s
 }
 
 // CProxyAuth c-proxy 认证配置

@@ -27,9 +27,30 @@ listen:
 # sproxy — s-proxy 连接配置
 # ------------------------------------------------------------------------------
 sproxy:
-  # primary: 初始种子节点地址（sp-1 的公网/内网地址）
-  # c-proxy 启动后会通过路由表更新自动感知所有 s-proxy 节点
+  # primary: 初始种子节点地址（sp-1 的公网/内网地址）。
+  # c-proxy 启动时首先连接此节点；通过响应头中的路由表更新自动感知其他节点。
+  # 可选：若 targets 列表或 routing-cache.json 已有节点，可省略此项。
   primary: "http://proxy.company.com:9000"
+
+  # targets: 已知 s-proxy worker 节点地址列表（静态配置，主节点故障兜底）。
+  #
+  # 三来源合并策略（启动顺序）：
+  #   1. sproxy.primary       — 种子节点（最高优先级）
+  #   2. sproxy.targets       — 静态 worker 列表（本字段）
+  #   3. routing-cache.json   — 上次运行时持久化的路由表（兜底）
+  #
+  # 三个来源的地址按 Addr 去重后合并到负载均衡器。
+  # 配置文件中出现的地址始终标记为 Healthy:true；
+  # 仅从缓存加载的地址保留上次的健康状态。
+  #
+  # 典型使用场景：
+  #   - 公司有 sp-1（主）、sp-2、sp-3（worker），在此列出 sp-2/sp-3，
+  #     则即使 sp-1 宕机，c-proxy 也能继续转发请求到 sp-2/sp-3。
+  #
+  # 单节点部署时可省略（留空列表或删除此字段）。
+  targets:
+    - "http://proxy2.company.com:9000"   # 已知 worker 节点 2
+    # - "http://proxy3.company.com:9000"  # 已知 worker 节点 3（按需取消注释）
 
   # lb_strategy: 对 s-proxy 节点的负载均衡策略
   # 可选：round_robin（默认）| random | least_conn | weighted
