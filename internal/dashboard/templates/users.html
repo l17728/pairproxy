@@ -66,7 +66,7 @@
             {{if .LastLoginAt}}{{.LastLoginAt.Format "2006-01-02 15:04"}}{{else}}—{{end}}
           </td>
           <td class="px-4 py-3">
-            <div class="flex gap-2">
+            <div class="flex flex-wrap gap-2 items-center">
               {{if .IsActive}}
               <form method="POST" action="/dashboard/users/{{.ID}}/active">
                 <input type="hidden" name="active" value="false">
@@ -82,6 +82,20 @@
                 <input type="password" name="password" placeholder="新密码" required
                   class="border border-gray-200 rounded px-2 py-0.5 text-xs w-24 focus:outline-none focus:ring-1 focus:ring-indigo-400">
                 <button type="submit" class="text-xs text-indigo-500 hover:underline">重置</button>
+              </form>
+              <form method="POST" action="/dashboard/users/{{.ID}}/group" class="flex gap-1 items-center">
+                <select name="group_id"
+                  class="border border-gray-200 rounded px-1 py-0.5 text-xs w-24 focus:outline-none focus:ring-1 focus:ring-indigo-400">
+                  <option value="">无分组</option>
+                  {{range $.Groups}}
+                  <option value="{{.ID}}"{{if and $.Users (eq (index $.Users 0).Group.Name .Name)}}} selected{{end}}>{{.Name}}</option>
+                  {{end}}
+                </select>
+                <button type="submit" class="text-xs text-purple-500 hover:underline">改组</button>
+              </form>
+              <form method="POST" action="/dashboard/users/{{.ID}}/revoke-tokens"
+                onsubmit="return confirm('吊销该用户所有 Token？')">
+                <button type="submit" class="text-xs text-orange-500 hover:underline">吊销Token</button>
               </form>
             </div>
           </td>

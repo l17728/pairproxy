@@ -29,6 +29,7 @@ type AdminHandler struct {
 	groupRepo         *db.GroupRepo
 	usageRepo         *db.UsageRepo
 	auditRepo         *db.AuditRepo
+	tokenRepo         *db.RefreshTokenRepo          // 可选，token 吊销
 	apiKeyRepo        *db.APIKeyRepo                // 可选，F-5 多 API Key 管理
 	encryptFn         func(string) (string, error)  // 可选，加密 API Key 明文
 	llmBindingRepo    *db.LLMBindingRepo            // 可选，LLM 绑定管理
@@ -36,6 +37,9 @@ type AdminHandler struct {
 	adminPasswordHash string
 	tokenTTL          time.Duration
 }
+
+// SetTokenRepo 注入 RefreshTokenRepo（用于 token 吊销端点）
+func (h *AdminHandler) SetTokenRepo(repo *db.RefreshTokenRepo) { h.tokenRepo = repo }
 
 // NewAdminHandler 创建 AdminHandler
 func NewAdminHandler(
@@ -76,11 +80,20 @@ func (h *AdminHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /api/admin/users", h.RequireAdmin(http.HandlerFunc(h.handleCreateUser)))
 	mux.Handle("PUT /api/admin/users/{id}/active", h.RequireAdmin(http.HandlerFunc(h.handleSetUserActive)))
 	mux.Handle("PUT /api/admin/users/{id}/password", h.RequireAdmin(http.HandlerFunc(h.handleResetPassword)))
+	mux.Handle("PUT /api/admin/users/{id}/group", h.RequireAdmin(http.HandlerFunc(h.handleSetUserGroup)))
+	mux.Handle("POST /api/admin/users/{id}/revoke-tokens", h.RequireAdmin(http.HandlerFunc(h.handleRevokeUserTokens)))
 
 	// 分组管理
 	mux.Handle("GET /api/admin/groups", h.RequireAdmin(http.HandlerFunc(h.handleListGroups)))
 	mux.Handle("POST /api/admin/groups", h.RequireAdmin(http.HandlerFunc(h.handleCreateGroup)))
 	mux.Handle("PUT /api/admin/groups/{id}/quota", h.RequireAdmin(http.HandlerFunc(h.handleSetGroupQuota)))
+	mux.Handle("DELETE /api/admin/groups/{id}", h.RequireAdmin(http.HandlerFunc(h.handleDeleteGroup)))
+
+	// 配额状态
+	mux.Handle("GET /api/admin/quota/status", h.RequireAdmin(http.HandlerFunc(h.handleQuotaStatus)))
+
+	// 日志清理
+	mux.Handle("DELETE /api/admin/logs", h.RequireAdmin(http.HandlerFunc(h.handlePurgeLogs)))
 
 	// 统计查询
 	mux.Handle("GET /api/admin/stats/summary", h.RequireAdmin(http.HandlerFunc(h.handleStatsSummary)))
@@ -333,22 +346,26 @@ func (h *AdminHandler) handleResetPassword(w http.ResponseWriter, r *http.Reques
 // ---------------------------------------------------------------------------
 
 type groupResponse struct {
-	ID                string `json:"id"`
-	Name              string `json:"name"`
-	DailyTokenLimit   *int64 `json:"daily_token_limit"`
-	MonthlyTokenLimit *int64 `json:"monthly_token_limit"`
-	RequestsPerMinute *int   `json:"requests_per_minute"`
-	CreatedAt         string `json:"created_at"`
+	ID                  string `json:"id"`
+	Name                string `json:"name"`
+	DailyTokenLimit     *int64 `json:"daily_token_limit"`
+	MonthlyTokenLimit   *int64 `json:"monthly_token_limit"`
+	RequestsPerMinute   *int   `json:"requests_per_minute"`
+	MaxTokensPerRequest *int64 `json:"max_tokens_per_request"`
+	ConcurrentRequests  *int   `json:"concurrent_requests"`
+	CreatedAt           string `json:"created_at"`
 }
 
 func groupToResponse(g db.Group) groupResponse {
 	return groupResponse{
-		ID:                g.ID,
-		Name:              g.Name,
-		DailyTokenLimit:   g.DailyTokenLimit,
-		MonthlyTokenLimit: g.MonthlyTokenLimit,
-		RequestsPerMinute: g.RequestsPerMinute,
-		CreatedAt:         g.CreatedAt.UTC().Format(time.RFC3339),
+		ID:                  g.ID,
+		Name:                g.Name,
+		DailyTokenLimit:     g.DailyTokenLimit,
+		MonthlyTokenLimit:   g.MonthlyTokenLimit,
+		RequestsPerMinute:   g.RequestsPerMinute,
+		MaxTokensPerRequest: g.MaxTokensPerRequest,
+		ConcurrentRequests:  g.ConcurrentRequests,
+		CreatedAt:           g.CreatedAt.UTC().Format(time.RFC3339),
 	}
 }
 
@@ -367,10 +384,12 @@ func (h *AdminHandler) handleListGroups(w http.ResponseWriter, r *http.Request) 
 }
 
 type createGroupRequest struct {
-	Name              string `json:"name"`
-	DailyTokenLimit   *int64 `json:"daily_token_limit"`
-	MonthlyTokenLimit *int64 `json:"monthly_token_limit"`
-	RequestsPerMinute *int   `json:"requests_per_minute"`
+	Name                string `json:"name"`
+	DailyTokenLimit     *int64 `json:"daily_token_limit"`
+	MonthlyTokenLimit   *int64 `json:"monthly_token_limit"`
+	RequestsPerMinute   *int   `json:"requests_per_minute"`
+	MaxTokensPerRequest *int64 `json:"max_tokens_per_request"`
+	ConcurrentRequests  *int   `json:"concurrent_requests"`
 }
 
 func (h *AdminHandler) handleCreateGroup(w http.ResponseWriter, r *http.Request) {
@@ -384,11 +403,13 @@ func (h *AdminHandler) handleCreateGroup(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	g := &db.Group{
-		Name:              req.Name,
-		DailyTokenLimit:   req.DailyTokenLimit,
-		MonthlyTokenLimit: req.MonthlyTokenLimit,
-		RequestsPerMinute: req.RequestsPerMinute,
-		CreatedAt:         time.Now(),
+		Name:                req.Name,
+		DailyTokenLimit:     req.DailyTokenLimit,
+		MonthlyTokenLimit:   req.MonthlyTokenLimit,
+		RequestsPerMinute:   req.RequestsPerMinute,
+		MaxTokensPerRequest: req.MaxTokensPerRequest,
+		ConcurrentRequests:  req.ConcurrentRequests,
+		CreatedAt:           time.Now(),
 	}
 	if err := h.groupRepo.Create(g); err != nil {
 		h.logger.Error("create group failed", zap.String("name", req.Name), zap.Error(err))
@@ -920,4 +941,202 @@ func (h *AdminHandler) handleRevokeAPIKey(w http.ResponseWriter, r *http.Request
 	}
 	h.logger.Info("admin revoked api key", zap.String("key_id", id))
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// ---------------------------------------------------------------------------
+// PUT /api/admin/users/{id}/group
+// ---------------------------------------------------------------------------
+
+type setUserGroupRequest struct {
+	GroupID *string `json:"group_id"` // null → 移出分组
+}
+
+func (h *AdminHandler) handleSetUserGroup(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var req setUserGroupRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		return
+	}
+	if err := h.userRepo.SetGroup(id, req.GroupID); err != nil {
+		h.logger.Error("set user group failed", zap.String("user_id", id), zap.Error(err))
+		writeJSONError(w, http.StatusInternalServerError, "internal_error", "failed to update user group")
+		return
+	}
+	h.logger.Info("admin set user group", zap.String("user_id", id), zap.Any("group_id", req.GroupID))
+	if detailBytes, jerr := json.Marshal(map[string]interface{}{"group_id": req.GroupID}); jerr == nil {
+		if aerr := h.auditRepo.Create("admin", "user.set_group", id, string(detailBytes)); aerr != nil {
+			h.logger.Warn("audit write failed", zap.Error(aerr))
+		}
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/admin/users/{id}/revoke-tokens
+// ---------------------------------------------------------------------------
+
+func (h *AdminHandler) handleRevokeUserTokens(w http.ResponseWriter, r *http.Request) {
+	if h.tokenRepo == nil {
+		writeJSONError(w, http.StatusNotImplemented, "not_implemented", "token repo not configured")
+		return
+	}
+	id := r.PathValue("id")
+	if err := h.tokenRepo.RevokeAllForUser(id); err != nil {
+		h.logger.Error("revoke user tokens failed", zap.String("user_id", id), zap.Error(err))
+		writeJSONError(w, http.StatusInternalServerError, "internal_error", "failed to revoke tokens")
+		return
+	}
+	h.logger.Info("admin revoked all tokens for user", zap.String("user_id", id))
+	if aerr := h.auditRepo.Create("admin", "token.revoke_all", id, ""); aerr != nil {
+		h.logger.Warn("audit write failed", zap.Error(aerr))
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// ---------------------------------------------------------------------------
+// DELETE /api/admin/groups/{id}
+// ---------------------------------------------------------------------------
+
+func (h *AdminHandler) handleDeleteGroup(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	force := r.URL.Query().Get("force") == "true"
+	if err := h.groupRepo.Delete(id, force); err != nil {
+		h.logger.Error("delete group failed", zap.String("group_id", id), zap.Bool("force", force), zap.Error(err))
+		writeJSONError(w, http.StatusConflict, "conflict", err.Error())
+		return
+	}
+	h.logger.Info("admin deleted group", zap.String("group_id", id), zap.Bool("force", force))
+	if detailBytes, jerr := json.Marshal(map[string]interface{}{"force": force}); jerr == nil {
+		if aerr := h.auditRepo.Create("admin", "group.delete", id, string(detailBytes)); aerr != nil {
+			h.logger.Warn("audit write failed", zap.Error(aerr))
+		}
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/admin/quota/status?user=<username>
+// ---------------------------------------------------------------------------
+
+type quotaStatusResponse struct {
+	UserID        string  `json:"user_id"`
+	Username      string  `json:"username"`
+	GroupID       string  `json:"group_id,omitempty"`
+	GroupName     string  `json:"group_name,omitempty"`
+	DailyUsed     int64   `json:"daily_used"`
+	DailyLimit    *int64  `json:"daily_limit"`
+	DailyStatus   string  `json:"daily_status"`   // "ok" | "warning" | "exceeded"
+	MonthlyUsed   int64   `json:"monthly_used"`
+	MonthlyLimit  *int64  `json:"monthly_limit"`
+	MonthlyStatus string  `json:"monthly_status"` // "ok" | "warning" | "exceeded"
+	RPMLimit      *int    `json:"rpm_limit,omitempty"`
+}
+
+func quotaLevel(used int64, limit *int64) string {
+	if limit == nil {
+		return "ok"
+	}
+	if used >= *limit {
+		return "exceeded"
+	}
+	if float64(used) >= float64(*limit)*0.8 {
+		return "warning"
+	}
+	return "ok"
+}
+
+func (h *AdminHandler) handleQuotaStatus(w http.ResponseWriter, r *http.Request) {
+	username := r.URL.Query().Get("user")
+	if username == "" {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "user query parameter is required")
+		return
+	}
+	u, err := h.userRepo.GetByUsername(username)
+	if err != nil {
+		h.logger.Error("quota status: get user failed", zap.String("username", username), zap.Error(err))
+		writeJSONError(w, http.StatusInternalServerError, "internal_error", "failed to look up user")
+		return
+	}
+	if u == nil {
+		writeJSONError(w, http.StatusNotFound, "not_found", "user not found")
+		return
+	}
+
+	now := time.Now()
+	todayStart := now.Truncate(24 * time.Hour)
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+
+	dailyIn, dailyOut, err := h.usageRepo.SumTokens(u.ID, todayStart, now)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal_error", "failed to sum daily tokens")
+		return
+	}
+	monthlyIn, monthlyOut, err := h.usageRepo.SumTokens(u.ID, monthStart, now)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal_error", "failed to sum monthly tokens")
+		return
+	}
+
+	dailyUsed := dailyIn + dailyOut
+	monthlyUsed := monthlyIn + monthlyOut
+
+	resp := quotaStatusResponse{
+		UserID:        u.ID,
+		Username:      u.Username,
+		DailyUsed:     dailyUsed,
+		MonthlyUsed:   monthlyUsed,
+		DailyStatus:   "ok",
+		MonthlyStatus: "ok",
+	}
+
+	if u.GroupID != nil {
+		resp.GroupID = *u.GroupID
+		resp.GroupName = u.Group.Name
+		resp.DailyLimit = u.Group.DailyTokenLimit
+		resp.MonthlyLimit = u.Group.MonthlyTokenLimit
+		resp.RPMLimit = u.Group.RequestsPerMinute
+		resp.DailyStatus = quotaLevel(dailyUsed, u.Group.DailyTokenLimit)
+		resp.MonthlyStatus = quotaLevel(monthlyUsed, u.Group.MonthlyTokenLimit)
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// ---------------------------------------------------------------------------
+// DELETE /api/admin/logs
+// ---------------------------------------------------------------------------
+
+type purgeLogsRequest struct {
+	Before string `json:"before"` // YYYY-MM-DD（该日期之前的日志将被删除）
+}
+
+func (h *AdminHandler) handlePurgeLogs(w http.ResponseWriter, r *http.Request) {
+	var req purgeLogsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		return
+	}
+	if req.Before == "" {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "before (YYYY-MM-DD) is required")
+		return
+	}
+	before, err := time.Parse("2006-01-02", req.Before)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "before must be YYYY-MM-DD")
+		return
+	}
+	deleted, err := h.usageRepo.DeleteBefore(before)
+	if err != nil {
+		h.logger.Error("purge logs failed", zap.Time("before", before), zap.Error(err))
+		writeJSONError(w, http.StatusInternalServerError, "internal_error", "failed to purge logs")
+		return
+	}
+	h.logger.Info("admin purged usage logs", zap.Time("before", before), zap.Int64("deleted", deleted))
+	if detailBytes, jerr := json.Marshal(map[string]interface{}{"before": req.Before, "deleted": deleted}); jerr == nil {
+		if aerr := h.auditRepo.Create("admin", "logs.purge", "usage_logs", string(detailBytes)); aerr != nil {
+			h.logger.Warn("audit write failed", zap.Error(aerr))
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]int64{"deleted": deleted})
 }

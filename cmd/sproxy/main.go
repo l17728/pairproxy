@@ -497,6 +497,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	})
 	adminHandler.SetLLMBindingRepo(llmBindingRepo)
 	adminHandler.SetLLMHealthFn(sp.LLMTargetStatuses)
+	adminHandler.SetTokenRepo(tokenRepo)
 	logger.Info("LLM binding repo configured")
 
 	// ---------------------------------------------------------------------------
@@ -536,6 +537,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 			cfg.Admin.PasswordHash, adminTokenTTL,
 		)
 		dashHandler.SetLLMDeps(llmBindingRepo, sp.LLMTargetStatuses)
+		dashHandler.SetTokenRepo(tokenRepo)
 		dashHandler.RegisterRoutes(mux)
 		logger.Info("dashboard registered at /dashboard/")
 	}

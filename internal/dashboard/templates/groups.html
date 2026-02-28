@@ -49,6 +49,7 @@
           <th class="px-4 py-3 text-left">RPM</th>
           <th class="px-4 py-3 text-left">创建时间</th>
           <th class="px-4 py-3 text-left">修改配额</th>
+          <th class="px-4 py-3 text-left">操作</th>
         </tr>
       </thead>
       <tbody class="divide-y divide-gray-50 text-gray-700">
@@ -66,19 +67,30 @@
           </td>
           <td class="px-4 py-3 text-gray-400 text-xs">{{.CreatedAt.Format "2006-01-02"}}</td>
           <td class="px-4 py-3">
-            <form method="POST" action="/dashboard/groups/{{.ID}}/quota" class="flex gap-1 items-center">
+            <form method="POST" action="/dashboard/groups/{{.ID}}/quota" class="flex flex-wrap gap-1 items-center">
               <input type="number" name="daily_limit" placeholder="每日" min="0"
                 class="border border-gray-200 rounded px-2 py-0.5 text-xs w-20 focus:outline-none focus:ring-1 focus:ring-indigo-400">
               <input type="number" name="monthly_limit" placeholder="每月" min="0"
                 class="border border-gray-200 rounded px-2 py-0.5 text-xs w-20 focus:outline-none focus:ring-1 focus:ring-indigo-400">
               <input type="number" name="rpm" placeholder="RPM" min="0"
                 class="border border-gray-200 rounded px-2 py-0.5 text-xs w-16 focus:outline-none focus:ring-1 focus:ring-indigo-400">
+              <input type="number" name="max_tokens" placeholder="单次Max" min="0"
+                class="border border-gray-200 rounded px-2 py-0.5 text-xs w-24 focus:outline-none focus:ring-1 focus:ring-indigo-400">
+              <input type="number" name="concurrent" placeholder="并发" min="0"
+                class="border border-gray-200 rounded px-2 py-0.5 text-xs w-16 focus:outline-none focus:ring-1 focus:ring-indigo-400">
               <button type="submit" class="text-xs text-indigo-500 hover:underline">更新</button>
+            </form>
+          </td>
+          <td class="px-4 py-3">
+            <form method="POST" action="/dashboard/groups/{{.ID}}/delete"
+              onsubmit="return confirm('删除分组 {{.Name}}？组内用户将变为无分组。')">
+              <input type="hidden" name="force" value="true">
+              <button type="submit" class="text-xs text-red-500 hover:underline">删除</button>
             </form>
           </td>
         </tr>
         {{else}}
-        <tr><td colspan="6" class="px-4 py-6 text-center text-gray-400">暂无分组</td></tr>
+        <tr><td colspan="7" class="px-4 py-6 text-center text-gray-400">暂无分组</td></tr>
         {{end}}
       </tbody>
     </table>

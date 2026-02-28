@@ -27,11 +27,15 @@ type Handler struct {
 	groupRepo         *db.GroupRepo
 	usageRepo         *db.UsageRepo
 	auditRepo         *db.AuditRepo
+	tokenRepo         *db.RefreshTokenRepo           // 可选，token 吊销
 	adminPasswordHash string
 	tokenTTL          time.Duration
 	llmBindingRepo    *db.LLMBindingRepo             // 可选，LLM 绑定管理
 	llmHealthFn       func() []proxy.LLMTargetStatus // 可选，查询 LLM 健康状态
 }
+
+// SetTokenRepo 设置 RefreshTokenRepo（用于 token 吊销操作）
+func (h *Handler) SetTokenRepo(repo *db.RefreshTokenRepo) { h.tokenRepo = repo }
 
 // NewHandler 创建 Dashboard Handler
 func NewHandler(
@@ -70,9 +74,12 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /dashboard/users", h.requireSession(http.HandlerFunc(h.handleCreateUser)))
 	mux.Handle("POST /dashboard/users/{id}/active", h.requireSession(http.HandlerFunc(h.handleToggleActive)))
 	mux.Handle("POST /dashboard/users/{id}/password", h.requireSession(http.HandlerFunc(h.handleResetPassword)))
+	mux.Handle("POST /dashboard/users/{id}/group", h.requireSession(http.HandlerFunc(h.handleSetUserGroup)))
+	mux.Handle("POST /dashboard/users/{id}/revoke-tokens", h.requireSession(http.HandlerFunc(h.handleRevokeUserTokens)))
 	mux.Handle("GET /dashboard/groups", h.requireSession(http.HandlerFunc(h.handleGroupsPage)))
 	mux.Handle("POST /dashboard/groups", h.requireSession(http.HandlerFunc(h.handleCreateGroup)))
 	mux.Handle("POST /dashboard/groups/{id}/quota", h.requireSession(http.HandlerFunc(h.handleSetQuota)))
+	mux.Handle("POST /dashboard/groups/{id}/delete", h.requireSession(http.HandlerFunc(h.handleDeleteGroup)))
 	mux.Handle("GET /dashboard/logs", h.requireSession(http.HandlerFunc(h.handleLogsPage)))
 	mux.Handle("GET /dashboard/audit", h.requireSession(http.HandlerFunc(h.handleAuditPage)))
 
@@ -392,6 +399,47 @@ func (h *Handler) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/dashboard/users?flash=密码已重置", http.StatusFound)
 }
 
+func (h *Handler) handleSetUserGroup(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := r.ParseForm(); err != nil {
+		http.Redirect(w, r, "/dashboard/users?error=表单解析失败", http.StatusFound)
+		return
+	}
+	groupIDStr := r.FormValue("group_id")
+	var groupID *string
+	if groupIDStr != "" {
+		groupID = &groupIDStr
+	}
+	if err := h.userRepo.SetGroup(id, groupID); err != nil {
+		http.Redirect(w, r, "/dashboard/users?error=更新分组失败", http.StatusFound)
+		return
+	}
+	h.logger.Info("dashboard: user group updated", zap.String("user_id", id), zap.Any("group_id", groupID))
+	if detailBytes, jerr := json.Marshal(map[string]interface{}{"group_id": groupID}); jerr == nil {
+		if aerr := h.auditRepo.Create("admin", "user.set_group", id, string(detailBytes)); aerr != nil {
+			h.logger.Warn("audit write failed", zap.Error(aerr))
+		}
+	}
+	http.Redirect(w, r, "/dashboard/users?flash=分组已更新", http.StatusFound)
+}
+
+func (h *Handler) handleRevokeUserTokens(w http.ResponseWriter, r *http.Request) {
+	if h.tokenRepo == nil {
+		http.Redirect(w, r, "/dashboard/users?error=Token吊销功能未配置", http.StatusFound)
+		return
+	}
+	id := r.PathValue("id")
+	if err := h.tokenRepo.RevokeAllForUser(id); err != nil {
+		http.Redirect(w, r, "/dashboard/users?error=吊销失败", http.StatusFound)
+		return
+	}
+	h.logger.Info("dashboard: revoked all tokens for user", zap.String("user_id", id))
+	if aerr := h.auditRepo.Create("admin", "token.revoke_all", id, ""); aerr != nil {
+		h.logger.Warn("audit write failed", zap.Error(aerr))
+	}
+	http.Redirect(w, r, "/dashboard/users?flash=Token已吊销", http.StatusFound)
+}
+
 // ---------------------------------------------------------------------------
 // 分组管理页
 // ---------------------------------------------------------------------------
@@ -453,17 +501,46 @@ func (h *Handler) handleSetQuota(w http.ResponseWriter, r *http.Request) {
 	daily := parseOptionalInt64(r.FormValue("daily_limit"))
 	monthly := parseOptionalInt64(r.FormValue("monthly_limit"))
 	rpm := parseOptionalInt(r.FormValue("rpm"))
-	if err := h.groupRepo.SetQuota(id, daily, monthly, rpm, nil, nil); err != nil {
+	maxTokens := parseOptionalInt64(r.FormValue("max_tokens"))
+	concurrent := parseOptionalInt(r.FormValue("concurrent"))
+	if err := h.groupRepo.SetQuota(id, daily, monthly, rpm, maxTokens, concurrent); err != nil {
 		http.Redirect(w, r, "/dashboard/groups?error=更新失败", http.StatusFound)
 		return
 	}
 	h.logger.Info("dashboard: group quota updated", zap.String("group_id", id))
-	if detailBytes, jerr := json.Marshal(map[string]interface{}{"daily_limit": daily, "monthly_limit": monthly, "rpm": rpm}); jerr == nil {
+	if detailBytes, jerr := json.Marshal(map[string]interface{}{
+		"daily_limit":   daily,
+		"monthly_limit": monthly,
+		"rpm":           rpm,
+		"max_tokens":    maxTokens,
+		"concurrent":    concurrent,
+	}); jerr == nil {
 		if aerr := h.auditRepo.Create("admin", "group.set_quota", id, string(detailBytes)); aerr != nil {
 			h.logger.Warn("audit write failed", zap.Error(aerr))
 		}
 	}
 	http.Redirect(w, r, "/dashboard/groups?flash=配额已更新", http.StatusFound)
+}
+
+func (h *Handler) handleDeleteGroup(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := r.ParseForm(); err != nil {
+		http.Redirect(w, r, "/dashboard/groups?error=表单解析失败", http.StatusFound)
+		return
+	}
+	force := r.FormValue("force") == "true"
+	if err := h.groupRepo.Delete(id, force); err != nil {
+		h.logger.Error("dashboard: delete group failed", zap.String("group_id", id), zap.Error(err))
+		http.Redirect(w, r, "/dashboard/groups?error=删除失败："+err.Error(), http.StatusFound)
+		return
+	}
+	h.logger.Info("dashboard: group deleted", zap.String("group_id", id), zap.Bool("force", force))
+	if detailBytes, jerr := json.Marshal(map[string]interface{}{"force": force}); jerr == nil {
+		if aerr := h.auditRepo.Create("admin", "group.delete", id, string(detailBytes)); aerr != nil {
+			h.logger.Warn("audit write failed", zap.Error(aerr))
+		}
+	}
+	http.Redirect(w, r, "/dashboard/groups?flash=分组已删除", http.StatusFound)
 }
 
 // ---------------------------------------------------------------------------
