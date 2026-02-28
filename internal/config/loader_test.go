@@ -197,6 +197,133 @@ func TestApplyDefaultsCProxy(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Negative / edge-case tests
+// ---------------------------------------------------------------------------
+
+// TestLoadCProxyConfig_FileNotFound verifies that a missing config file returns an error.
+func TestLoadCProxyConfig_FileNotFound(t *testing.T) {
+	_, _, err := LoadCProxyConfig("/nonexistent/path/that/does/not/exist/cproxy.yaml")
+	if err == nil {
+		t.Error("LoadCProxyConfig should return error for non-existent file")
+	}
+}
+
+// TestLoadSProxyConfig_FileNotFound verifies that a missing config file returns an error.
+func TestLoadSProxyConfig_FileNotFound(t *testing.T) {
+	_, _, err := LoadSProxyConfig("/nonexistent/path/that/does/not/exist/sproxy.yaml")
+	if err == nil {
+		t.Error("LoadSProxyConfig should return error for non-existent file")
+	}
+}
+
+// TestLoadCProxyConfig_InvalidYAML verifies that malformed YAML returns an error.
+func TestLoadCProxyConfig_InvalidYAML(t *testing.T) {
+	path := writeTempFile(t, "listen:\n  :\nbad: [[[unclosed bracket")
+	_, _, err := LoadCProxyConfig(path)
+	if err == nil {
+		t.Error("LoadCProxyConfig should return error for invalid YAML")
+	}
+}
+
+// TestLoadSProxyConfig_InvalidYAML verifies that malformed YAML returns an error.
+func TestLoadSProxyConfig_InvalidYAML(t *testing.T) {
+	path := writeTempFile(t, "database:\n  :\nbad: [[[unclosed bracket")
+	_, _, err := LoadSProxyConfig(path)
+	if err == nil {
+		t.Error("LoadSProxyConfig should return error for invalid YAML")
+	}
+}
+
+// TestApplyDefaultsSProxy verifies that an empty s-proxy config gets sensible defaults.
+func TestApplyDefaultsSProxy(t *testing.T) {
+	path := writeTempFile(t, "{}")
+	cfg, _, err := LoadSProxyConfig(path)
+	if err != nil {
+		t.Fatalf("LoadSProxyConfig: %v", err)
+	}
+
+	if cfg.Listen.Host != "0.0.0.0" {
+		t.Errorf("default Host = %q, want 0.0.0.0", cfg.Listen.Host)
+	}
+	if cfg.Listen.Port != 9000 {
+		t.Errorf("default Port = %d, want 9000", cfg.Listen.Port)
+	}
+	if cfg.LLM.LBStrategy != "round_robin" {
+		t.Errorf("default LBStrategy = %q, want round_robin", cfg.LLM.LBStrategy)
+	}
+	if cfg.LLM.RequestTimeout != 300*time.Second {
+		t.Errorf("default RequestTimeout = %v, want 300s", cfg.LLM.RequestTimeout)
+	}
+	if cfg.Auth.AccessTokenTTL != 24*time.Hour {
+		t.Errorf("default AccessTokenTTL = %v, want 24h", cfg.Auth.AccessTokenTTL)
+	}
+	if cfg.Auth.RefreshTokenTTL != 168*time.Hour {
+		t.Errorf("default RefreshTokenTTL = %v, want 168h", cfg.Auth.RefreshTokenTTL)
+	}
+	if cfg.Cluster.Role != "primary" {
+		t.Errorf("default Cluster.Role = %q, want primary", cfg.Cluster.Role)
+	}
+	if cfg.Database.WriteBufferSize != 200 {
+		t.Errorf("default WriteBufferSize = %d, want 200", cfg.Database.WriteBufferSize)
+	}
+	if cfg.Log.Level != "info" {
+		t.Errorf("default Log.Level = %q, want info", cfg.Log.Level)
+	}
+}
+
+// TestEnvVarMultipleMissing verifies that all missing env var names are reported.
+func TestEnvVarMultipleMissing(t *testing.T) {
+	t.Setenv("PP_MISSING_A", "") // ensure not set; Unsetenv more correct
+	os.Unsetenv("PP_MISSING_A")
+	os.Unsetenv("PP_MISSING_B")
+
+	yaml := `
+llm:
+  targets:
+    - url: "${PP_MISSING_A}"
+      api_key: "${PP_MISSING_B}"
+database:
+  path: "./test.db"
+auth:
+  jwt_secret: "secret"
+cluster:
+  role: primary
+`
+	path := writeTempFile(t, yaml)
+	_, missing, err := LoadSProxyConfig(path)
+	if err != nil {
+		t.Fatalf("LoadSProxyConfig: %v", err)
+	}
+
+	wantMissing := map[string]bool{"PP_MISSING_A": true, "PP_MISSING_B": true}
+	for _, v := range missing {
+		delete(wantMissing, v)
+	}
+	if len(wantMissing) > 0 {
+		t.Errorf("missing var(s) not reported: %v (got: %v)", wantMissing, missing)
+	}
+}
+
+// TestExpandTilde verifies that tilde paths are expanded to the home directory.
+func TestExpandTilde(t *testing.T) {
+	result := expandTilde("~/.pairproxy/token.json")
+	if result == "~/.pairproxy/token.json" {
+		t.Error("expandTilde should expand ~ to the home directory")
+	}
+	if !filepath.IsAbs(result) {
+		t.Errorf("expandTilde result %q should be absolute path", result)
+	}
+}
+
+// TestExpandTildeNoPrefix verifies that paths without ~ are returned unchanged.
+func TestExpandTildeNoPrefix(t *testing.T) {
+	input := "/absolute/path/to/file"
+	if result := expandTilde(input); result != input {
+		t.Errorf("expandTilde(%q) = %q, want unchanged", input, result)
+	}
+}
+
 func TestPricingComputeCost(t *testing.T) {
 	p := PricingConfig{
 		Models: map[string]ModelPrice{
