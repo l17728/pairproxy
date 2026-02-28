@@ -258,3 +258,58 @@ func TestBuildInitialTargets_ConfigTakesPriorityOverCache(t *testing.T) {
 		t.Error("config primary should be Healthy=true regardless of cache state")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Corrupt cache tests
+// ---------------------------------------------------------------------------
+
+// TestBuildInitialTargets_CorruptCacheIgnored verifies that a routing-cache.json
+// containing invalid JSON does not cause a panic or a hard error: the function
+// logs a warning and falls back to config sources instead.
+func TestBuildInitialTargets_CorruptCacheIgnored(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	dir := t.TempDir()
+
+	// Write invalid JSON to routing-cache.json.
+	if err := os.WriteFile(filepath.Join(dir, "routing-cache.json"),
+		[]byte("{not valid json!!!"), 0o600); err != nil {
+		t.Fatalf("write corrupt cache: %v", err)
+	}
+
+	cfg := &config.SProxySect{Primary: "http://sp-1:9000"}
+	targets, err := buildInitialTargets(cfg, dir, logger)
+	if err != nil {
+		t.Fatalf("unexpected error when cache is corrupt (should be ignored): %v", err)
+	}
+
+	// Config primary must still be returned despite the corrupt cache.
+	if len(targets) != 1 {
+		t.Fatalf("expected 1 target from config (corrupt cache ignored), got %d", len(targets))
+	}
+	if targets[0].Addr != "http://sp-1:9000" {
+		t.Errorf("Addr = %q, want http://sp-1:9000", targets[0].Addr)
+	}
+	if !targets[0].Healthy {
+		t.Error("config primary should be Healthy=true")
+	}
+}
+
+// TestBuildInitialTargets_CorruptCacheOnlyNoConfig verifies that when the only
+// available source is a corrupt cache (and config has no targets), the function
+// returns an error — not a nil/empty slice.
+func TestBuildInitialTargets_CorruptCacheOnlyNoConfig(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	dir := t.TempDir()
+
+	// Corrupt JSON — will fail to parse.
+	if err := os.WriteFile(filepath.Join(dir, "routing-cache.json"),
+		[]byte("NOTJSON"), 0o600); err != nil {
+		t.Fatalf("write corrupt cache: %v", err)
+	}
+
+	cfg := &config.SProxySect{} // no primary, no targets
+	_, err := buildInitialTargets(cfg, dir, logger)
+	if err == nil {
+		t.Fatal("expected error when config is empty and cache is corrupt, got nil")
+	}
+}

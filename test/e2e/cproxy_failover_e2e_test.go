@@ -23,6 +23,7 @@ import (
 	"go.uber.org/zap/zaptest"
 
 	"github.com/l17728/pairproxy/internal/auth"
+	"github.com/l17728/pairproxy/internal/cluster"
 	"github.com/l17728/pairproxy/internal/lb"
 	"github.com/l17728/pairproxy/internal/proxy"
 )
@@ -462,4 +463,78 @@ func TestE2EFailover_NoHealthyTargets(t *testing.T) {
 	if err := json.Unmarshal(body, &errBody); err == nil {
 		t.Logf("error response: %v", errBody)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// E2E Test 8 — c-proxy restart recovers worker knowledge from routing cache
+// ---------------------------------------------------------------------------
+//
+// Scenario:
+//   - First run: c-proxy discovers worker sp-2 via routing-update header and
+//     persists routing-cache.json (simulated by calling rt.SaveToDir directly).
+//   - Second run (restart): c-proxy has no config targets, no primary.
+//     buildInitialTargets reads routing-cache.json and seeds the balancer.
+//
+// Expected:
+//   - After restart, requests route to the worker from the cache (200 OK).
+//   - X-Served-By header confirms the correct worker handled the request.
+//
+// This test deliberately reproduces the LoadFromDir → lb.Target conversion
+// that buildInitialTargets performs, since buildInitialTargets lives in
+// package main and cannot be called directly from the e2e package.
+
+func TestE2EFailover_RestartCacheRecovery(t *testing.T) {
+	// Worker represents a node discovered dynamically during the previous run.
+	worker := mockSProxyWorker(t, "cache-recovered-worker")
+
+	// ── Phase 1: simulate "first run" persisting the routing cache ──────────
+	cacheDir := t.TempDir()
+	rt := &cluster.RoutingTable{
+		Version: 9,
+		Entries: []cluster.RoutingEntry{
+			{ID: "sp-cache-1", Addr: worker.URL, Weight: 1, Healthy: true},
+		},
+	}
+	if err := rt.SaveToDir(cacheDir); err != nil {
+		t.Fatalf("SaveToDir (simulate first-run cache write): %v", err)
+	}
+
+	// ── Phase 2: simulate "restart" — load cache, build balancer ────────────
+	// This reproduces buildInitialTargets with an empty config + valid cache.
+	cached, err := cluster.LoadFromDir(cacheDir)
+	if err != nil || cached == nil {
+		t.Fatalf("LoadFromDir after simulated restart: err=%v, cached=%v", err, cached)
+	}
+
+	targets := make([]lb.Target, 0, len(cached.Entries))
+	for _, e := range cached.Entries {
+		targets = append(targets, lb.Target{
+			ID:      e.ID,
+			Addr:    e.Addr,
+			Weight:  e.Weight,
+			Healthy: e.Healthy,
+		})
+	}
+	balancer := lb.NewWeightedRandom(targets)
+
+	cpSrv, _, accessToken := buildCProxy(t, balancer)
+
+	// ── Phase 3: send request — must succeed via cache-recovered worker ──────
+	resp := doClaudeRequest(t, cpSrv, accessToken)
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200 (cache-recovered worker should serve request); body: %s",
+			resp.StatusCode, body)
+	}
+
+	servedBy := resp.Header.Get("X-Served-By")
+	if servedBy != "cache-recovered-worker" {
+		t.Errorf("X-Served-By = %q, want cache-recovered-worker (wrong node or missing header)",
+			servedBy)
+	}
+
+	t.Logf("restart cache recovery: routing-cache.json version=%d, served by %q",
+		cached.Version, servedBy)
 }
