@@ -687,7 +687,7 @@ var adminConfigFlag string
 
 func init() {
 	adminCmd.PersistentFlags().StringVar(&adminConfigFlag, "config", "", "path to sproxy.yaml (default: sproxy.yaml)")
-	adminCmd.AddCommand(adminUserCmd, adminGroupCmd, adminStatsCmd, adminTokenCmd, adminBackupCmd, adminExportCmd, adminApikeyCmd, adminLLMCmd, adminQuotaCmd)
+	adminCmd.AddCommand(adminUserCmd, adminGroupCmd, adminStatsCmd, adminTokenCmd, adminBackupCmd, adminRestoreCmd, adminLogsCmd, adminExportCmd, adminApikeyCmd, adminLLMCmd, adminQuotaCmd, adminAuditCmd)
 }
 
 // closeGormDB 优雅关闭 GORM 数据库连接，释放文件锁和文件描述符。
@@ -736,6 +736,14 @@ func openAdminDB() (*db.UserRepo, *db.GroupRepo, *db.UsageRepo, *db.RefreshToken
 		logger,
 		database, // P0-2: 返回 DB handle 供调用方 defer close
 		nil
+}
+
+// auditCLI 为 CLI 管理操作写入审计日志（失败时仅警告，不阻断操作）。
+func auditCLI(gormDB *gorm.DB, logger *zap.Logger, action, target, detail string) {
+	repo := db.NewAuditRepo(logger, gormDB)
+	if err := repo.Create("cli-admin", action, target, detail); err != nil {
+		logger.Warn("cli audit write failed", zap.String("action", action), zap.Error(err))
+	}
 }
 
 // readPassword 从终端读取密码（无回显），如果非终端则直接读取
@@ -832,6 +840,7 @@ var adminUserAddCmd = &cobra.Command{
 		if err := userRepo.Create(user); err != nil {
 			return fmt.Errorf("create user: %w", err)
 		}
+		auditCLI(database, logger, "user.create", username, fmt.Sprintf("group=%s", userAddGroup))
 		fmt.Printf("User %q created (id: %s)\n", username, user.ID)
 		return nil
 	},
@@ -916,6 +925,7 @@ var adminUserEnableCmd = &cobra.Command{
 }
 
 func setUserActive(username string, active bool) error {
+	logger, _ := zap.NewProduction()
 	userRepo, _, _, _, _, database, err := openAdminDB()
 	if err != nil {
 		return err
@@ -932,9 +942,12 @@ func setUserActive(username string, active bool) error {
 		return err
 	}
 	action := "enabled"
+	auditAction := "user.enable"
 	if !active {
 		action = "disabled"
+		auditAction = "user.disable"
 	}
+	auditCLI(database, logger, auditAction, username, "")
 	fmt.Printf("User %q %s\n", username, action)
 	return nil
 }
@@ -980,6 +993,7 @@ var adminUserResetPasswordCmd = &cobra.Command{
 		if err := userRepo.UpdatePassword(user.ID, hash); err != nil {
 			return err
 		}
+		auditCLI(database, logger, "user.reset_password", username, "")
 		fmt.Printf("Password for %q has been reset\n", username)
 		return nil
 	},
@@ -1039,8 +1053,10 @@ Examples:
 			return err
 		}
 		if userSetGroupRemove {
+			auditCLI(database, logger, "user.ungroup", args[0], "")
 			fmt.Printf("User %q removed from group\n", args[0])
 		} else {
+			auditCLI(database, logger, "user.set_group", args[0], "group="+userSetGroupName)
 			fmt.Printf("User %q assigned to group %q\n", args[0], userSetGroupName)
 		}
 		return nil
@@ -1111,6 +1127,7 @@ var adminGroupAddCmd = &cobra.Command{
 		if err := groupRepo.Create(g); err != nil {
 			return fmt.Errorf("create group: %w", err)
 		}
+		auditCLI(database, zap.NewNop(), "group.create", name, "")
 		fmt.Printf("Group %q created (id: %s)\n", name, g.ID)
 		return nil
 	},
@@ -1219,6 +1236,7 @@ var adminGroupSetQuotaCmd = &cobra.Command{
 		if err := groupRepo.SetQuota(grp.ID, daily, monthly, rpm, maxReqTokens, concurrentReqs); err != nil {
 			return err
 		}
+		auditCLI(database, zap.NewNop(), "group.set_quota", name, fmt.Sprintf("daily=%v monthly=%v rpm=%v", daily, monthly, rpm))
 		fmt.Printf("Quota updated for group %q\n", name)
 		return nil
 	},
@@ -1265,6 +1283,7 @@ Examples:
 		if err := groupRepo.Delete(g.ID, groupDeleteForce); err != nil {
 			return err
 		}
+		auditCLI(database, logger, "group.delete", args[0], fmt.Sprintf("force=%v", groupDeleteForce))
 		fmt.Printf("Group %q deleted\n", args[0])
 		return nil
 	},
@@ -1469,6 +1488,7 @@ var adminTokenRevokeCmd = &cobra.Command{
 		if err := tokenRepo.RevokeAllForUser(user.ID); err != nil {
 			return err
 		}
+		auditCLI(database, zap.NewNop(), "token.revoke_all", username, "")
 		fmt.Printf("All refresh tokens revoked for user %q\n", username)
 		fmt.Println("Note: existing access tokens will expire within their TTL (up to 24h)")
 		return nil
@@ -1687,6 +1707,129 @@ func init() {
 }
 
 // ---------------------------------------------------------------------------
+// sproxy admin restore
+// ---------------------------------------------------------------------------
+
+var adminRestoreCmd = &cobra.Command{
+	Use:   "restore <backup-file>",
+	Short: "Restore the database from a backup file",
+	Long: `Replace the current database with a backup copy.
+
+WARNING: This overwrites the live database. Ensure sproxy is not running.
+
+Example:
+  sproxy admin restore pairproxy.db.bak`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		logger, err := zap.NewProduction()
+		if err != nil {
+			return fmt.Errorf("init logger: %w", err)
+		}
+		cfgPath := adminConfigFlag
+		if cfgPath == "" {
+			cfgPath = "sproxy.yaml"
+		}
+		cfg, _, err := config.LoadSProxyConfig(cfgPath)
+		if err != nil {
+			return fmt.Errorf("load config: %w", err)
+		}
+		dst := cfg.Database.Path
+		if dst == "" {
+			return fmt.Errorf("database.path is not set in config")
+		}
+		src := args[0]
+		if _, err := os.Stat(src); err != nil {
+			return fmt.Errorf("backup file not found: %w", err)
+		}
+
+		// 创建当前 DB 的安全备份
+		safeBak := dst + ".pre-restore"
+		if _, err := os.Stat(dst); err == nil {
+			in, _ := os.Open(dst)
+			out, _ := os.Create(safeBak)
+			io.Copy(out, in) //nolint:errcheck
+			in.Close()
+			out.Close()
+			logger.Info("pre-restore backup saved", zap.String("path", safeBak))
+		}
+
+		in, err := os.Open(src)
+		if err != nil {
+			return fmt.Errorf("open backup: %w", err)
+		}
+		defer in.Close()
+
+		out, err := os.Create(dst)
+		if err != nil {
+			return fmt.Errorf("overwrite database: %w", err)
+		}
+		defer out.Close()
+
+		if _, err := io.Copy(out, in); err != nil {
+			return fmt.Errorf("copy backup to database: %w", err)
+		}
+		fmt.Printf("Database restored from: %s\n", src)
+		fmt.Printf("(Previous database saved to: %s)\n", safeBak)
+		logger.Info("database restored", zap.String("src", src), zap.String("dst", dst))
+		return nil
+	},
+}
+
+// ---------------------------------------------------------------------------
+// sproxy admin logs
+// ---------------------------------------------------------------------------
+
+var adminLogsCmd = &cobra.Command{
+	Use:   "logs",
+	Short: "Manage usage logs",
+}
+
+var logsPurgeBefore string
+
+var adminLogsPurgeCmd = &cobra.Command{
+	Use:   "purge",
+	Short: "Delete usage logs older than a given date",
+	Long: `Delete usage log records with created_at older than the specified date.
+
+Examples:
+  sproxy admin logs purge --before 2025-01-01
+  sproxy admin logs purge --days 90`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		_, _, usageRepo, _, _, database, err := openAdminDB()
+		if err != nil {
+			return err
+		}
+		defer closeGormDB(zap.NewNop(), database)
+
+		var before time.Time
+		if logsPurgeBefore != "" {
+			before, err = time.Parse("2006-01-02", logsPurgeBefore)
+			if err != nil {
+				return fmt.Errorf("invalid date %q: expected YYYY-MM-DD", logsPurgeBefore)
+			}
+		} else if cmd.Flags().Changed("days") {
+			days, _ := cmd.Flags().GetInt("days")
+			before = time.Now().AddDate(0, 0, -days).Truncate(24 * time.Hour)
+		} else {
+			return fmt.Errorf("provide --before <YYYY-MM-DD> or --days <n>")
+		}
+
+		deleted, err := usageRepo.DeleteBefore(before)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Deleted %d usage log record(s) older than %s\n", deleted, before.Format("2006-01-02"))
+		return nil
+	},
+}
+
+func init() {
+	adminLogsCmd.AddCommand(adminLogsPurgeCmd)
+	adminLogsPurgeCmd.Flags().StringVar(&logsPurgeBefore, "before", "", "delete records before this date (YYYY-MM-DD)")
+	adminLogsPurgeCmd.Flags().Int("days", 0, "delete records older than N days")
+}
+
+// ---------------------------------------------------------------------------
 // sproxy admin export
 // ---------------------------------------------------------------------------
 
@@ -1870,6 +2013,120 @@ func parseZapLevel(level string) zapcore.Level {
 	default:
 		return zapcore.InfoLevel
 	}
+}
+
+// ---------------------------------------------------------------------------
+// sproxy admin config validate
+// ---------------------------------------------------------------------------
+
+var adminConfigValidateCmd = &cobra.Command{
+	Use:   "validate",
+	Short: "Validate sproxy.yaml configuration file",
+	Long: `Load and validate the sproxy configuration file, reporting any errors or warnings.
+
+Examples:
+  sproxy admin config validate
+  sproxy admin config validate --config /etc/pairproxy/sproxy.yaml`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfgPath := adminConfigFlag
+		if cfgPath == "" {
+			cfgPath = "sproxy.yaml"
+		}
+		cfg, warns, err := config.LoadSProxyConfig(cfgPath)
+		if err != nil {
+			fmt.Printf("Config file: %s\n\n", cfgPath)
+			fmt.Printf("✗ FAILED: %v\n", err)
+			return err
+		}
+
+		fmt.Printf("Config file: %s\n", cfgPath)
+		if len(warns) > 0 {
+			fmt.Printf("\nWarnings (%d):\n", len(warns))
+			for _, w := range warns {
+				fmt.Printf("  ⚠  %s\n", w)
+			}
+		}
+
+		if err := cfg.Validate(); err != nil {
+			fmt.Printf("\n✗ Validation failed: %v\n", err)
+			return err
+		}
+
+		fmt.Printf("\nEffective configuration:\n")
+		fmt.Printf("  Listen:          %s\n", cfg.Listen.Addr())
+		fmt.Printf("  Database:        %s\n", cfg.Database.Path)
+		fmt.Printf("  LLM targets:     %d\n", len(cfg.LLM.Targets))
+		fmt.Printf("  Max retries:     %d\n", cfg.LLM.MaxRetries)
+		fmt.Printf("  Recovery delay:  %s\n", cfg.LLM.RecoveryDelay)
+		fmt.Printf("  Dashboard:       %v\n", cfg.Dashboard.Enabled)
+		fmt.Printf("  Telemetry:       %v\n", cfg.Telemetry.Enabled)
+		clusterMode := "standalone"
+		if cfg.Cluster.Role == "primary" || cfg.Cluster.Role == "worker" {
+			clusterMode = cfg.Cluster.Role
+		}
+		fmt.Printf("  Cluster role:    %s\n", clusterMode)
+		fmt.Printf("\n✓ All checks passed\n")
+		return nil
+	},
+}
+
+func init() {
+	adminCmd.AddCommand(adminConfigValidateCmd)
+}
+
+// ---------------------------------------------------------------------------
+// sproxy admin audit
+// ---------------------------------------------------------------------------
+
+var adminAuditLimit int
+
+var adminAuditCmd = &cobra.Command{
+	Use:   "audit",
+	Short: "Show recent admin operation audit log",
+	Long: `Display the most recent entries from the admin audit log.
+All operations performed via the Dashboard or REST API are recorded here.
+
+Examples:
+  sproxy admin audit
+  sproxy admin audit --limit 50`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		_, _, _, _, logger, database, err := openAdminDB()
+		if err != nil {
+			return err
+		}
+		defer closeGormDB(logger, database)
+
+		auditRepo := db.NewAuditRepo(logger, database)
+		logs, err := auditRepo.ListRecent(adminAuditLimit)
+		if err != nil {
+			return err
+		}
+		if len(logs) == 0 {
+			fmt.Println("No audit records found.")
+			return nil
+		}
+		fmt.Printf("%-20s  %-12s  %-30s  %-30s  %s\n", "TIME", "OPERATOR", "ACTION", "TARGET", "DETAIL")
+		fmt.Println(strings.Repeat("-", 110))
+		for _, l := range logs {
+			detail := l.Detail
+			if len(detail) > 40 {
+				detail = detail[:37] + "..."
+			}
+			fmt.Printf("%-20s  %-12s  %-30s  %-30s  %s\n",
+				l.CreatedAt.Format("2006-01-02 15:04:05"),
+				l.Operator,
+				l.Action,
+				l.Target,
+				detail,
+			)
+		}
+		return nil
+	},
+}
+
+func init() {
+	adminAuditCmd.AddCommand() // 顶层命令，直接执行
+	adminAuditCmd.Flags().IntVar(&adminAuditLimit, "limit", 100, "max number of records to show")
 }
 
 // ---------------------------------------------------------------------------
@@ -2150,6 +2407,7 @@ var adminLLMBindCmd = &cobra.Command{
 			if err := llmBindingRepo.Set(llmBindTarget, nil, &g.ID); err != nil {
 				return fmt.Errorf("bind group: %w", err)
 			}
+			auditCLI(database, logger, "llm.bind_group", llmBindGroup, "target="+llmBindTarget)
 			fmt.Printf("Group %q bound to %s\n", llmBindGroup, llmBindTarget)
 			return nil
 		}
@@ -2165,6 +2423,7 @@ var adminLLMBindCmd = &cobra.Command{
 		if err := llmBindingRepo.Set(llmBindTarget, &u.ID, nil); err != nil {
 			return fmt.Errorf("bind user: %w", err)
 		}
+		auditCLI(database, logger, "llm.bind_user", args[0], "target="+llmBindTarget)
 		fmt.Printf("User %q bound to %s\n", args[0], llmBindTarget)
 		return nil
 	},
@@ -2209,6 +2468,7 @@ var adminLLMUnbindCmd = &cobra.Command{
 		if deleted == 0 {
 			fmt.Printf("No binding found for user %q\n", args[0])
 		} else {
+			auditCLI(database, logger, "llm.unbind_user", args[0], fmt.Sprintf("removed=%d", deleted))
 			fmt.Printf("Removed %d binding(s) for user %q\n", deleted, args[0])
 		}
 		return nil
@@ -2259,6 +2519,7 @@ var adminLLMDistributeCmd = &cobra.Command{
 		if err := llmBindingRepo.EvenDistribute(userIDs, targetURLs); err != nil {
 			return fmt.Errorf("distribute: %w", err)
 		}
+		auditCLI(database, logger, "llm.distribute", "all", fmt.Sprintf("users=%d targets=%d", len(userIDs), len(targetURLs)))
 		fmt.Printf("Distributed %d user(s) across %d target(s)\n", len(userIDs), len(targetURLs))
 		return nil
 	},

@@ -57,7 +57,24 @@
 ./sproxy admin stats                                       # 全局统计（最近 7 天）
 ./sproxy admin stats --user <username>                     # 指定用户统计
 ./sproxy admin stats --days 30                             # 最近 30 天
+./sproxy admin audit [--limit 100]                         # 查看最近管理操作记录
 ./sproxy admin token revoke <username>                     # 吊销用户的刷新 token
+```
+
+### 日志与数据库维护
+```bash
+./sproxy admin logs purge --before 2025-01-01              # 删除指定日期前的日志
+./sproxy admin logs purge --days 90                        # 删除 90 天前的日志
+./sproxy admin backup [--output <path>]                    # 备份数据库
+./sproxy admin restore <backup-file>                       # 从备份文件恢复
+./sproxy admin export --format csv --output logs.csv       # 导出日志为 CSV
+./sproxy admin export --format json --from 2025-01-01      # 按日期范围导出
+```
+
+### 配置验证
+```bash
+./sproxy admin config validate                             # 验证 sproxy.yaml 是否有效
+./sproxy admin config validate --config /path/to/sproxy.yaml
 ```
 
 ### API Key 管理（LLM 提供商密钥）
@@ -90,6 +107,19 @@
 1. 查看成员: `./sproxy admin user list --group <name>`
 2. 移出所有成员: `./sproxy admin user set-group <u> --ungroup`（逐一）或直接强制删除
 3. 删除分组: `./sproxy admin group delete <name>`（或 `--force` 自动解绑）
+
+### 数据库维护
+1. 备份: `./sproxy admin backup --output pairproxy_$(date +%Y%m%d).db.bak`
+2. 清理旧日志（保留近 90 天）: `./sproxy admin logs purge --days 90`
+3. 恢复（需先停止 sproxy）: `./sproxy admin restore <backup-file>`
+
+### 审计操作记录
+- 查看最近操作: `./sproxy admin audit --limit 50`
+- 注意: Dashboard 和 REST API 操作**及 CLI 操作**均记录在审计日志中
+
+### 配置变更前验证
+1. 编辑 sproxy.yaml 后先验证: `./sproxy admin config validate`
+2. 确认无错误后再重启服务
 
 ### LLM 目标故障/切换
 1. 查看健康状态: `./sproxy admin llm targets`

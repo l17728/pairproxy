@@ -452,6 +452,23 @@ func (r *UsageRepo) SumCostUSD(from, to time.Time) (float64, error) {	var result
 	return result.Total, nil
 }
 
+// DeleteBefore 删除 created_at < before 的使用日志，返回删除行数。
+func (r *UsageRepo) DeleteBefore(before time.Time) (int64, error) {
+	result := r.db.Where("created_at < ?", before).Delete(&UsageLog{})
+	if result.Error != nil {
+		r.logger.Error("failed to delete old usage logs",
+			zap.Time("before", before),
+			zap.Error(result.Error),
+		)
+		return 0, fmt.Errorf("delete usage logs before %s: %w", before.Format("2006-01-02"), result.Error)
+	}
+	r.logger.Info("old usage logs deleted",
+		zap.Time("before", before),
+		zap.Int64("rows_deleted", result.RowsAffected),
+	)
+	return result.RowsAffected, nil
+}
+
 // ListUnsynced 查询未上报给 sp-1 的记录（sp-2+ 使用）
 func (r *UsageRepo) ListUnsynced(limit int) ([]UsageLog, error) {
 	if limit <= 0 {
