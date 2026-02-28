@@ -159,8 +159,11 @@ var startCmd = &cobra.Command{
 
 var startConfigFlag string
 
+var startDaemonFlag bool
+
 func init() {
 	startCmd.Flags().StringVar(&startConfigFlag, "config", "", "path to cproxy.yaml (default: ~/.config/pairproxy/cproxy.yaml)")
+	startCmd.Flags().BoolVar(&startDaemonFlag, "daemon", false, "run in background, detached from the terminal (Linux/macOS only; use 'cproxy install-service' on Windows)")
 }
 
 func runStart(cmd *cobra.Command, args []string) error {
@@ -273,12 +276,26 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 	addr := cfg.Listen.Addr()
 	logger.Info("cproxy listening", zap.String("addr", addr))
-	fmt.Printf("cproxy listening on http://%s\n", addr)
 
 	server := &http.Server{
 		Addr:    addr,
 		Handler: mux,
 	}
+
+	// Windows service mode: lifecycle managed by the Service Control Manager.
+	if isWindowsService() {
+		return runAsWindowsService(server, logger)
+	}
+
+	// Daemon mode: re-exec detached from the terminal (--daemon flag).
+	// On Windows, daemonize() returns an error directing the user to install-service.
+	if startDaemonFlag {
+		return daemonize(startConfigFlag)
+	}
+
+	// Foreground mode.
+	fmt.Printf("cproxy listening on http://%s\n", addr)
+	fmt.Println("Press Ctrl+C to stop.")
 
 	// 启动 HTTP 服务（阻塞）
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {

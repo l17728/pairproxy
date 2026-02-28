@@ -769,52 +769,46 @@ INFO  token valid, expires in 23h 58m
 INFO  connected to sproxy: http://proxy.company.com:9000 [healthy]
 ```
 
-> **注意**：cproxy 默认在前台运行，**关闭这个终端窗口后 cproxy 会停止**。请在专用的终端窗口或后台方式运行（见 6.4 节）。
+> **注意**：cproxy 默认在前台运行，**关闭这个终端窗口后 cproxy 会停止**。Linux/macOS 可加 `--daemon` 标志让它在后台运行；Windows 请使用 `cproxy install-service`（见 6.4 节）。
 
 ### 6.4 让 cproxy 在后台持续运行
 
-cproxy 必须保持运行状态，Claude Code 才能正常工作。以下是各平台的推荐方案：
+cproxy 必须保持运行状态，Claude Code 才能正常工作。各平台均提供一键后台运行方案：
 
-**macOS — 使用 launchd（推荐，系统级后台服务）**：
+---
+
+#### Linux / macOS — `--daemon` 标志（最简单）
 
 ```bash
-# 创建 launchd plist 文件
-mkdir -p ~/Library/LaunchAgents
-cat > ~/Library/LaunchAgents/com.pairproxy.cproxy.plist <<'EOF'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>com.pairproxy.cproxy</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/usr/local/bin/cproxy</string>
-    <string>start</string>
-  </array>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <true/>
-  <key>StandardOutPath</key>
-  <string>/tmp/cproxy.log</string>
-  <key>StandardErrorPath</key>
-  <string>/tmp/cproxy.log</string>
-</dict>
-</plist>
-EOF
+# 启动并立刻返回命令行（cproxy 在后台运行）
+cproxy start --daemon
 
-# 加载并启动
-launchctl load ~/Library/LaunchAgents/com.pairproxy.cproxy.plist
-
-# 查看运行状态
-launchctl list | grep cproxy
-
-# 查看日志
-tail -f /tmp/cproxy.log
+# 输出示例：
+# ✓ cproxy started in background (PID 12345)
+#   Logs: /home/alice/.config/pairproxy/cproxy.log
+#   PID:  /home/alice/.config/pairproxy/cproxy.pid
+#   Stop: kill $(cat /home/alice/.config/pairproxy/cproxy.pid)
 ```
 
-**Linux — 使用 systemd user service**：
+停止后台进程：
+
+```bash
+kill $(cat ~/.config/pairproxy/cproxy.pid)
+```
+
+查看日志：
+
+```bash
+tail -f ~/.config/pairproxy/cproxy.log
+```
+
+> `--daemon` 会将 cproxy 进程从当前终端彻底分离（新建会话），关闭终端后进程继续运行。
+
+---
+
+#### Linux — 开机自启（systemd user service，推荐用于服务器）
+
+如果需要在用户登录前就启动（例如服务器环境），可以使用 systemd：
 
 ```bash
 mkdir -p ~/.config/systemd/user
@@ -832,35 +826,131 @@ RestartSec=5s
 WantedBy=default.target
 EOF
 
+# 启用并立刻启动
 systemctl --user enable --now cproxy
+
+# 查看状态
 systemctl --user status cproxy
-```
-
-**Windows — 使用计划任务（开机自动运行）**：
-
-在 PowerShell 中执行（以管理员身份运行）：
-
-```powershell
-$action = New-ScheduledTaskAction -Execute "C:\pairproxy\cproxy.exe" -Argument "start"
-$trigger = New-ScheduledTaskTrigger -AtLogOn
-$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit 0
-Register-ScheduledTask -TaskName "PairProxy cproxy" -Action $action -Trigger $trigger -Settings $settings -RunLevel Highest
-Start-ScheduledTask -TaskName "PairProxy cproxy"
-```
-
-**最简单的方式（任意平台）—— 使用 tmux 或 screen 保活**：
-
-```bash
-# 安装 tmux（Linux/macOS）
-# Ubuntu: sudo apt install tmux
-# macOS: brew install tmux
-
-tmux new-session -d -s cproxy 'cproxy start'
 
 # 查看日志
-tmux attach -t cproxy
-# 按 Ctrl+B 然后按 D 退出（不会停止 cproxy）
+journalctl --user -u cproxy -f
 ```
+
+---
+
+#### macOS — 开机自启（launchd，推荐用于个人 Mac）
+
+```bash
+mkdir -p ~/Library/LaunchAgents
+cat > ~/Library/LaunchAgents/com.pairproxy.cproxy.plist <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>         <string>com.pairproxy.cproxy</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/cproxy</string>
+    <string>start</string>
+  </array>
+  <key>RunAtLoad</key>     <true/>
+  <key>KeepAlive</key>     <true/>
+  <key>StandardOutPath</key>  <string>/tmp/cproxy.log</string>
+  <key>StandardErrorPath</key><string>/tmp/cproxy.log</string>
+</dict>
+</plist>
+EOF
+
+# 加载（登录时自动启动）
+launchctl load ~/Library/LaunchAgents/com.pairproxy.cproxy.plist
+
+# 手动立刻启动
+launchctl start com.pairproxy.cproxy
+
+# 停止
+launchctl stop com.pairproxy.cproxy
+
+# 卸载自启
+launchctl unload ~/Library/LaunchAgents/com.pairproxy.cproxy.plist
+```
+
+---
+
+#### Windows — 系统服务（`cproxy install-service`，推荐）
+
+Windows 不使用 `--daemon` 标志，而是将 cproxy 安装为 Windows 系统服务，实现开机自动启动、系统托管重启。
+
+**第一步：以管理员权限打开 PowerShell 或命令提示符。**
+
+**第二步：准备系统级配置目录**（服务以 LocalSystem 身份运行，无法访问你的用户目录 `%APPDATA%`）：
+
+```powershell
+# 创建系统级目录
+New-Item -ItemType Directory -Path "C:\ProgramData\pairproxy" -Force
+
+# 将当前登录令牌复制到系统级目录
+Copy-Item "$env:APPDATA\pairproxy\token.json" "C:\ProgramData\pairproxy\token.json"
+```
+
+**第三步：创建服务专用配置文件** `C:\ProgramData\pairproxy\cproxy.yaml`：
+
+```yaml
+listen:
+  host: "127.0.0.1"
+  port: 8080
+
+sproxy:
+  primary: "http://proxy.company.com:9000"
+
+auth:
+  token_dir: "C:\\ProgramData\\pairproxy"   # 指向系统级目录
+
+log:
+  level: info
+```
+
+**第四步：安装服务**（管理员权限）：
+
+```powershell
+cproxy install-service --config "C:\ProgramData\pairproxy\cproxy.yaml"
+```
+
+成功输出：
+```
+✓ Service "CProxy" installed successfully.
+  Binary: C:\pairproxy\cproxy.exe
+  Config: C:\ProgramData\pairproxy\cproxy.yaml
+
+  Start:  sc start CProxy
+  Stop:   sc stop  CProxy
+  Status: sc query CProxy
+```
+
+**服务管理**：
+
+```powershell
+# 立刻启动
+sc start CProxy
+
+# 查看状态
+sc query CProxy
+
+# 停止
+sc stop CProxy
+
+# 查看日志（Windows 事件查看器）
+# 开始菜单 → "事件查看器" → Windows 日志 → 应用程序
+# 来源筛选: CProxy
+```
+
+**卸载服务**（管理员权限）：
+
+```powershell
+cproxy uninstall-service
+```
+
+> **令牌过期提醒**：Windows 服务使用的令牌文件存放在 `C:\ProgramData\pairproxy\token.json`。令牌过期后，你需要重新登录并将新令牌复制到该目录，或配置自动刷新（令牌有效期 24 小时，刷新令牌 7 天）。
 
 ### 6.5 查看运行状态
 
@@ -1150,12 +1240,20 @@ tar xzf pairproxy-darwin-arm64.tar.gz
 sudo mv cproxy /usr/local/bin/cproxy
 
 # 重启 cproxy（用哪种方式启动的就用哪种方式重启）
+
+# 如果用 --daemon（Linux/macOS）：
+kill $(cat ~/.config/pairproxy/cproxy.pid)
+cproxy start --daemon
+
 # 如果用 launchd（macOS）：
 launchctl unload ~/Library/LaunchAgents/com.pairproxy.cproxy.plist
 launchctl load ~/Library/LaunchAgents/com.pairproxy.cproxy.plist
 
 # 如果用 systemd（Linux）：
 systemctl --user restart cproxy
+
+# 如果用 Windows 服务：
+sc stop CProxy && sc start CProxy
 ```
 
 升级后无需重新登录，本地已保存的令牌继续有效。
@@ -1242,7 +1340,7 @@ cproxy login --server http://proxy.company.com:9000  # 重新登录
 
 **原因**：cproxy 以前台进程方式运行，关闭终端后进程随之退出。
 
-**解决**：参考第 6.4 节，将 cproxy 配置为后台服务（使用 launchd、systemd 或计划任务）。
+**解决**：参考第 6.4 节，将 cproxy 配置为后台运行（Linux/macOS 使用 `cproxy start --daemon` 或 systemd/launchd；Windows 使用 `cproxy install-service`）。
 
 ---
 
