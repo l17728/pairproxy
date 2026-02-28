@@ -5,6 +5,7 @@ package metrics
 import (
 	"fmt"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -13,11 +14,28 @@ import (
 	"github.com/l17728/pairproxy/internal/db"
 )
 
+// QuotaCacheStats 供 Handler 读取配额缓存命中/未命中计数。
+// 实现方为 *quota.QuotaCache。
+type QuotaCacheStats interface {
+	Hits() int64
+	Misses() int64
+}
+
+// ReporterStats 供 Handler 读取 worker 心跳统计。
+// 实现方为 *cluster.Reporter。
+type ReporterStats interface {
+	HeartbeatFailures() int64
+	LastLatencyMs() int64
+}
+
 // Handler 提供 GET /metrics 端点（Prometheus text format）
 type Handler struct {
 	logger    *zap.Logger
 	usageRepo *db.UsageRepo
 	userRepo  *db.UserRepo
+	dbPath    string          // SQLite 文件路径，用于获取文件大小（空串=跳过）
+	qcStats   QuotaCacheStats // 可选：配额缓存统计
+	rpStats   ReporterStats   // 可选：worker 心跳统计
 
 	// 30 秒缓存，避免频繁查 DB
 	cache struct {
@@ -34,6 +52,21 @@ func NewHandler(logger *zap.Logger, usageRepo *db.UsageRepo, userRepo *db.UserRe
 		usageRepo: usageRepo,
 		userRepo:  userRepo,
 	}
+}
+
+// SetDBPath 设置 SQLite 文件路径，以便在指标中暴露数据库文件大小。
+func (h *Handler) SetDBPath(path string) {
+	h.dbPath = path
+}
+
+// SetQuotaCacheStats 注入配额缓存统计源（可选）。
+func (h *Handler) SetQuotaCacheStats(qc QuotaCacheStats) {
+	h.qcStats = qc
+}
+
+// SetReporterStats 注入 worker 心跳统计源（可选）。
+func (h *Handler) SetReporterStats(rs ReporterStats) {
+	h.rpStats = rs
 }
 
 // RegisterRoutes 注册 /metrics 路由（无需认证，供 Prometheus 抓取）
@@ -71,7 +104,7 @@ func (h *Handler) getMetrics() ([]byte, error) {
 	return body, nil
 }
 
-// collect 从 DB 收集当前指标
+// collect 从 DB 及运行时计数器收集当前指标
 func (h *Handler) collect() ([]byte, error) {
 	now := time.Now()
 	todayStart := now.Truncate(24 * time.Hour)
@@ -138,6 +171,40 @@ func (h *Handler) collect() ([]byte, error) {
 	w("# TYPE pairproxy_requests_month gauge\n")
 	w("pairproxy_requests_month{status=\"success\"} %d\n", month.RequestCount-month.ErrorCount)
 	w("pairproxy_requests_month{status=\"error\"} %d\n", month.ErrorCount)
+
+	// --- database size (P2-2) ---
+	if h.dbPath != "" {
+		if fi, statErr := os.Stat(h.dbPath); statErr == nil {
+			w("# HELP pairproxy_database_size_bytes SQLite database file size in bytes\n")
+			w("# TYPE pairproxy_database_size_bytes gauge\n")
+			w("pairproxy_database_size_bytes %d\n", fi.Size())
+		}
+	}
+
+	// --- quota cache hits / misses (P2-2) ---
+	if h.qcStats != nil {
+		w("# HELP pairproxy_quota_cache_hits_total Total quota cache hits since startup\n")
+		w("# TYPE pairproxy_quota_cache_hits_total counter\n")
+		w("pairproxy_quota_cache_hits_total %d\n", h.qcStats.Hits())
+
+		w("# HELP pairproxy_quota_cache_misses_total Total quota cache misses since startup\n")
+		w("# TYPE pairproxy_quota_cache_misses_total counter\n")
+		w("pairproxy_quota_cache_misses_total %d\n", h.qcStats.Misses())
+	}
+
+	// --- worker heartbeat stats (P2-2) ---
+	if h.rpStats != nil {
+		w("# HELP pairproxy_usage_report_failures_total Total worker heartbeat failures since startup\n")
+		w("# TYPE pairproxy_usage_report_failures_total counter\n")
+		w("pairproxy_usage_report_failures_total %d\n", h.rpStats.HeartbeatFailures())
+
+		latency := h.rpStats.LastLatencyMs()
+		if latency >= 0 {
+			w("# HELP pairproxy_usage_report_latency_ms Latest worker heartbeat round-trip latency in milliseconds\n")
+			w("# TYPE pairproxy_usage_report_latency_ms gauge\n")
+			w("pairproxy_usage_report_latency_ms %d\n", latency)
+		}
+	}
 
 	h.logger.Debug("metrics collected",
 		zap.Int64("today_requests", today.RequestCount),

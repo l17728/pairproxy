@@ -201,6 +201,154 @@ func TestCProxyLoadBalancing(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// TestCProxyAutoRefresh — P2-4: auto-refresh when token is expired
+// ---------------------------------------------------------------------------
+
+func TestCProxyAutoRefresh(t *testing.T) {
+	const newAccessToken = "new-access-token-after-refresh"
+	const newRefreshJTI = "new-refresh-jti"
+
+	var capturedRefreshBody map[string]string
+	var capturedPairProxyAuth string
+
+	// Mock s-proxy that handles both /auth/refresh and normal requests.
+	mockSProxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/auth/refresh" {
+			_ = json.NewDecoder(r.Body).Decode(&capturedRefreshBody)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"access_token":  newAccessToken,
+				"refresh_token": newRefreshJTI,
+				"expires_in":    86400,
+			})
+			return
+		}
+		capturedPairProxyAuth = r.Header.Get("X-PairProxy-Auth")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"type":"message"}`)
+	}))
+	defer mockSProxy.Close()
+
+	// Expired token (5 minutes in the past) — NeedsRefresh() = true, IsValid() = false.
+	expiredTF := &auth.TokenFile{
+		AccessToken:  "old-expired-token",
+		RefreshToken: "old-refresh-jti",
+		ExpiresAt:    time.Now().Add(-5 * time.Minute),
+		ServerAddr:   mockSProxy.URL,
+		Username:     "alice",
+	}
+
+	cp, _ := newTestCProxy(t, mockSProxy.URL, expiredTF)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer dummy")
+	rr := httptest.NewRecorder()
+	cp.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (refresh should succeed); body: %s", rr.Code, rr.Body.String())
+	}
+
+	// Verify refresh was called with the old refresh JTI.
+	if capturedRefreshBody["refresh_token"] != "old-refresh-jti" {
+		t.Errorf("refresh request body refresh_token = %q, want old-refresh-jti", capturedRefreshBody["refresh_token"])
+	}
+
+	// Verify the proxy forwarded with the NEW access token.
+	if capturedPairProxyAuth != newAccessToken {
+		t.Errorf("X-PairProxy-Auth after refresh = %q, want %q", capturedPairProxyAuth, newAccessToken)
+	}
+}
+
+func TestCProxyAutoRefreshFailure(t *testing.T) {
+	// Mock s-proxy that always fails the refresh endpoint.
+	mockSProxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/auth/refresh" {
+			http.Error(w, "invalid refresh token", http.StatusUnauthorized)
+			return
+		}
+		t.Error("proxy endpoint should not be reached after failed refresh")
+	}))
+	defer mockSProxy.Close()
+
+	expiredTF := &auth.TokenFile{
+		AccessToken:  "old-expired-token",
+		RefreshToken: "bad-refresh-jti",
+		ExpiresAt:    time.Now().Add(-5 * time.Minute),
+		ServerAddr:   mockSProxy.URL,
+		Username:     "bob",
+	}
+
+	cp, _ := newTestCProxy(t, mockSProxy.URL, expiredTF)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer dummy")
+	rr := httptest.NewRecorder()
+	cp.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401 after failed refresh", rr.Code)
+	}
+	var resp errorResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Error != "not_authenticated" {
+		t.Errorf("error = %q, want not_authenticated", resp.Error)
+	}
+	if !strings.Contains(resp.Message, "cproxy login") {
+		t.Errorf("message should mention 'cproxy login', got: %q", resp.Message)
+	}
+}
+
+func TestCProxyAutoRefreshTimeout(t *testing.T) {
+	// done signals the mock handler to exit so mockSProxy.Close() can finish.
+	done := make(chan struct{})
+
+	// Mock s-proxy that hangs on /auth/refresh until done is closed.
+	mockSProxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/auth/refresh" {
+			select {
+			case <-done:
+			case <-time.After(30 * time.Second):
+			}
+			return
+		}
+		t.Error("proxy endpoint should not be reached after refresh timeout")
+	}))
+
+	expiredTF := &auth.TokenFile{
+		AccessToken:  "old-expired-token",
+		RefreshToken: "jti-for-slow-server",
+		ExpiresAt:    time.Now().Add(-5 * time.Minute),
+		ServerAddr:   mockSProxy.URL,
+		Username:     "carol",
+	}
+
+	cp, _ := newTestCProxy(t, mockSProxy.URL, expiredTF)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer dummy")
+	rr := httptest.NewRecorder()
+
+	start := time.Now()
+	cp.Handler().ServeHTTP(rr, req)
+	elapsed := time.Since(start)
+
+	// Unblock the mock handler goroutine so Close() can complete.
+	close(done)
+	mockSProxy.Close()
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401 after refresh timeout", rr.Code)
+	}
+	// Should have timed out within ~5s (allow some margin for test env variance).
+	if elapsed > 10*time.Second {
+		t.Errorf("refresh took %v; expected timeout around 5s", elapsed)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // TestCProxyRoutingTableUpdate — 从响应头读取路由更新并应用
 // ---------------------------------------------------------------------------
 

@@ -218,7 +218,7 @@ func TestGroupSetQuota(t *testing.T) {
 
 	daily := int64(10000)
 	monthly := int64(200000)
-	if err := groupRepo.SetQuota(g.ID, &daily, &monthly, nil); err != nil {
+	if err := groupRepo.SetQuota(g.ID, &daily, &monthly, nil, nil, nil); err != nil {
 		t.Fatalf("SetQuota: %v", err)
 	}
 

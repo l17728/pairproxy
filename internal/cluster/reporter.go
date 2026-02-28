@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -23,16 +24,26 @@ const (
 //  1. 向 sp-1 发送心跳注册（POST /api/internal/register）
 //  2. 批量上报本地采集的 usage 记录（POST /api/internal/usage）
 type Reporter struct {
-	logger         *zap.Logger
-	sp1Addr        string // sp-1 地址，如 "http://sp-1:9000"
-	selfID         string // 本节点 ID，如 "sp-2"
-	selfAddr       string // 本节点对外地址，如 "http://sp-2:9000"
-	selfWeight     int
-	interval       time.Duration
-	client         *http.Client
-	usageRepo      *db.UsageRepo // 从本地 DB 读取待上报记录（可为 nil，则不上报用量）
-	sharedSecret   string        // 用于对 sp-1 内部 API 鉴权
+	logger       *zap.Logger
+	sp1Addr      string // sp-1 地址，如 "http://sp-1:9000"
+	selfID       string // 本节点 ID，如 "sp-2"
+	selfAddr     string // 本节点对外地址，如 "http://sp-2:9000"
+	selfWeight   int
+	interval     time.Duration
+	client       *http.Client
+	usageRepo    *db.UsageRepo // 从本地 DB 读取待上报记录（可为 nil，则不上报用量）
+	sharedSecret string        // 用于对 sp-1 内部 API 鉴权
+
+	// 可观测性指标（原子操作，供 /metrics 端点读取）
+	heartbeatFailures atomic.Int64 // 心跳失败累计次数
+	lastLatencyMs     atomic.Int64 // 最近一次心跳的延迟（毫秒），-1 表示从未成功
 }
+
+// HeartbeatFailures 返回累计心跳失败次数。
+func (r *Reporter) HeartbeatFailures() int64 { return r.heartbeatFailures.Load() }
+
+// LastLatencyMs 返回最近一次成功心跳的延迟（毫秒），-1 表示从未成功。
+func (r *Reporter) LastLatencyMs() int64 { return r.lastLatencyMs.Load() }
 
 // ReporterConfig 配置 Reporter。
 type ReporterConfig struct {
@@ -54,7 +65,7 @@ func NewReporter(logger *zap.Logger, cfg ReporterConfig, usageRepo *db.UsageRepo
 	if weight <= 0 {
 		weight = 1
 	}
-	return &Reporter{
+	r := &Reporter{
 		logger:       logger.Named("reporter"),
 		sp1Addr:      cfg.SP1Addr,
 		selfID:       cfg.SelfID,
@@ -65,6 +76,8 @@ func NewReporter(logger *zap.Logger, cfg ReporterConfig, usageRepo *db.UsageRepo
 		usageRepo:    usageRepo,
 		sharedSecret: cfg.SharedSecret,
 	}
+	r.lastLatencyMs.Store(-1) // -1 表示从未成功
+	return r
 }
 
 // Start 启动后台上报 goroutine。
@@ -108,6 +121,7 @@ func (r *Reporter) sendHeartbeat() {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		r.logger.Error("failed to marshal register payload", zap.Error(err))
+		r.heartbeatFailures.Add(1)
 		return
 	}
 
@@ -115,6 +129,7 @@ func (r *Reporter) sendHeartbeat() {
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(data))
 	if err != nil {
 		r.logger.Error("failed to create register request", zap.Error(err))
+		r.heartbeatFailures.Add(1)
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -122,22 +137,30 @@ func (r *Reporter) sendHeartbeat() {
 		req.Header.Set("Authorization", "Bearer "+r.sharedSecret)
 	}
 
+	start := time.Now()
 	resp, err := r.client.Do(req)
 	if err != nil {
 		r.logger.Warn("heartbeat failed", zap.String("sp1", r.sp1Addr), zap.Error(err))
+		r.heartbeatFailures.Add(1)
 		return
 	}
 	resp.Body.Close()
+	latencyMs := time.Since(start).Milliseconds()
 
 	if resp.StatusCode != http.StatusOK {
 		r.logger.Warn("heartbeat non-200",
 			zap.String("sp1", r.sp1Addr),
 			zap.Int("status", resp.StatusCode),
 		)
+		r.heartbeatFailures.Add(1)
 		return
 	}
 
-	r.logger.Debug("heartbeat sent", zap.String("sp1", r.sp1Addr))
+	r.lastLatencyMs.Store(latencyMs)
+	r.logger.Debug("heartbeat sent",
+		zap.String("sp1", r.sp1Addr),
+		zap.Int64("latency_ms", latencyMs),
+	)
 }
 
 // UsageReportPayload 用量批量上报请求体。

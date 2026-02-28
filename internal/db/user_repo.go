@@ -129,6 +129,31 @@ func (r *UserRepo) UpdatePassword(id string, hash string) error {
 	return nil
 }
 
+// GetByExternalID 按外部系统 ID 和认证提供者查询用户（LDAP JIT 配置用）。
+// 未找到时返回 nil, nil。
+func (r *UserRepo) GetByExternalID(provider, externalID string) (*User, error) {
+	var u User
+	err := r.db.Preload("Group").
+		Where("auth_provider = ? AND external_id = ?", provider, externalID).
+		First(&u).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			r.logger.Debug("user not found by external id",
+				zap.String("provider", provider),
+				zap.String("external_id", externalID),
+			)
+			return nil, nil
+		}
+		r.logger.Error("failed to get user by external id",
+			zap.String("provider", provider),
+			zap.String("external_id", externalID),
+			zap.Error(err),
+		)
+		return nil, fmt.Errorf("get user by external id (%s, %s): %w", provider, externalID, err)
+	}
+	return &u, nil
+}
+
 // ListByGroup 按分组列出用户（groupID="" 表示列出所有用户）
 func (r *UserRepo) ListByGroup(groupID string) ([]User, error) {
 	var users []User
@@ -214,11 +239,13 @@ func (r *GroupRepo) GetByName(name string) (*Group, error) {
 }
 
 // SetQuota 设置分组配额（nil 表示无限制）
-func (r *GroupRepo) SetQuota(id string, daily, monthly *int64, rpm *int) error {
+func (r *GroupRepo) SetQuota(id string, daily, monthly *int64, rpm *int, maxReqTokens *int64, concurrent *int) error {
 	updates := map[string]interface{}{
-		"daily_token_limit":   daily,
-		"monthly_token_limit": monthly,
-		"requests_per_minute": rpm,
+		"daily_token_limit":     daily,
+		"monthly_token_limit":   monthly,
+		"requests_per_minute":   rpm,
+		"max_tokens_per_request": maxReqTokens,
+		"concurrent_requests":   concurrent,
 	}
 	if err := r.db.Model(&Group{}).Where("id = ?", id).Updates(updates).Error; err != nil {
 		r.logger.Error("failed to set group quota",
@@ -232,6 +259,8 @@ func (r *GroupRepo) SetQuota(id string, daily, monthly *int64, rpm *int) error {
 		zap.Any("daily_limit", daily),
 		zap.Any("monthly_limit", monthly),
 		zap.Any("rpm", rpm),
+		zap.Any("max_tokens_per_request", maxReqTokens),
+		zap.Any("concurrent_requests", concurrent),
 	)
 	return nil
 }

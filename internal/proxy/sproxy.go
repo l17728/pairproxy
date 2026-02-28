@@ -14,6 +14,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.uber.org/zap"
 
 	"github.com/l17728/pairproxy/internal/auth"
@@ -24,26 +27,28 @@ import (
 	"github.com/l17728/pairproxy/internal/version"
 )
 
-// LLMTarget 代表一个 LLM 后端（含 API Key）。
+// LLMTarget 代表一个 LLM 后端（含 API Key 和 provider 类型）。
 type LLMTarget struct {
-	URL    string
-	APIKey string
+	URL      string
+	APIKey   string
+	Provider string // "anthropic"（默认）| "openai" | "ollama"
 }
 
 // SProxy s-proxy 核心处理器
 type SProxy struct {
-	logger         *zap.Logger
-	jwtMgr         *auth.Manager
-	writer         *db.UsageWriter
-	targets        []LLMTarget
-	idx            atomic.Uint32 // 轮询计数器（LLM 目标通常只有一个，简单轮询即可）
-	transport      http.RoundTripper
-	clusterMgr     *cluster.Manager // 可选，nil 表示单节点模式（不注入路由头）
-	sourceNode     string           // 来源节点标识（用于 usage_logs）
-	quotaChecker   *quota.Checker   // 可选，nil 表示不检查配额
-	startTime      time.Time        // 进程启动时间（供 /health 返回 uptime）
-	activeRequests atomic.Int64     // 当前正在处理的代理请求数
-	sqlDB          *sql.DB          // 可选，用于 /health 检查 DB 可达性
+	logger          *zap.Logger
+	jwtMgr          *auth.Manager
+	writer          *db.UsageWriter
+	targets         []LLMTarget
+	idx             atomic.Uint32 // 轮询计数器（LLM 目标通常只有一个，简单轮询即可）
+	transport       http.RoundTripper
+	clusterMgr      *cluster.Manager // 可选，nil 表示单节点模式（不注入路由头）
+	sourceNode      string           // 来源节点标识（用于 usage_logs）
+	quotaChecker    *quota.Checker   // 可选，nil 表示不检查配额
+	startTime       time.Time        // 进程启动时间（供 /health 返回 uptime）
+	activeRequests  atomic.Int64     // 当前正在处理的代理请求数
+	sqlDB           *sql.DB          // 可选，用于 /health 检查 DB 可达性
+	apiKeyResolver  func(userID string) (apiKey string, found bool) // 可选，动态 API Key 解析
 }
 
 // NewSProxy 创建 SProxy。
@@ -107,6 +112,12 @@ func (sp *SProxy) SetDB(gormDB interface{ DB() (*sql.DB, error) }) {
 	} else {
 		sp.logger.Warn("health check: failed to get underlying sql.DB", zap.Error(err))
 	}
+}
+
+// SetAPIKeyResolver 设置动态 API Key 解析器（可选）。
+// fn 根据 userID 返回解密后的 API Key；found=false 时回退到配置文件中的静态 Key。
+func (sp *SProxy) SetAPIKeyResolver(fn func(userID string) (string, bool)) {
+	sp.apiKeyResolver = fn
 }
 
 // Handler 构建并返回完整的 s-proxy HTTP 处理链：
@@ -216,13 +227,46 @@ func (sp *SProxy) HealthHandler() http.HandlerFunc {
 	}
 }
 
-// pickTarget 按轮询选择 LLM 目标。
-func (sp *SProxy) pickTarget() LLMTarget {
+// pickTarget 按请求路径选出匹配 provider 的目标，再轮询选择。
+// 路由规则：
+//   - /v1/messages           → Anthropic（provider="" 或 "anthropic"）
+//   - /v1/chat/completions   → OpenAI / Ollama（provider="openai" 或 "ollama"）
+//   - 其他路径              → 不过滤，全部候选
+//
+// 如果过滤后候选为空（未配置对应 provider 的目标），回退到全量轮询。
+func (sp *SProxy) pickTarget(r *http.Request) LLMTarget {
+	path := r.URL.Path
+
+	// 按路径推断期望的 provider 类型
+	var preferredProviders map[string]bool
+	switch {
+	case strings.HasPrefix(path, "/v1/chat/completions"):
+		preferredProviders = map[string]bool{"openai": true, "ollama": true}
+	case strings.HasPrefix(path, "/v1/messages"):
+		preferredProviders = map[string]bool{"": true, "anthropic": true}
+	}
+
+	// 过滤候选目标
+	var candidates []LLMTarget
+	if preferredProviders != nil {
+		for _, t := range sp.targets {
+			if preferredProviders[t.Provider] {
+				candidates = append(candidates, t)
+			}
+		}
+	}
+	// 无过滤结果时回退到全量（向后兼容：所有目标均无 provider 字段时也能正常工作）
+	if len(candidates) == 0 {
+		candidates = sp.targets
+	}
+
 	n := sp.idx.Add(1)
-	t := sp.targets[int(n-1)%len(sp.targets)]
+	t := candidates[int(n-1)%len(candidates)]
 	sp.logger.Debug("picked LLM target",
 		zap.String("url", t.URL),
-		zap.Int("index", int(n-1)%len(sp.targets)),
+		zap.String("provider", t.Provider),
+		zap.String("path", path),
+		zap.Int("candidates", len(candidates)),
 		zap.Int("total_targets", len(sp.targets)),
 	)
 	return t
@@ -243,12 +287,57 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 读取 c-proxy 发来的本地路由版本（用于决定是否下发路由更新）
+	// OTel span：记录代理请求的完整生命周期
+	ctx, span := otel.Tracer("pairproxy.sproxy").Start(r.Context(), "pairproxy.proxy")
+	defer span.End()
+	span.SetAttributes(
+		attribute.String("user_id", claims.UserID),
+		attribute.String("path", r.URL.Path),
+	)
+	r = r.WithContext(ctx)
 	clientRoutingVersion := parseRoutingVersion(r.Header.Get("X-Routing-Version"))
 	// 移除路由版本头，不转发给 LLM
 	r.Header.Del("X-Routing-Version")
 
-	target := sp.pickTarget()
+	// F-3: 单次请求大小限制 + 并发请求限制
+	if sp.quotaChecker != nil {
+		// 1. 单次请求 max_tokens 检查：读取请求 body 中的 max_tokens 字段，还原 body
+		if r.Body != nil && r.ContentLength != 0 {
+			bodyBytes, readErr := io.ReadAll(r.Body)
+			r.Body.Close()
+			r.Body = io.NopCloser(strings.NewReader(string(bodyBytes)))
+			if readErr == nil {
+				var reqBody struct {
+					MaxTokens int64 `json:"max_tokens"`
+				}
+				if jsonErr := json.Unmarshal(bodyBytes, &reqBody); jsonErr == nil && reqBody.MaxTokens > 0 {
+					if sizeErr := sp.quotaChecker.CheckRequestSize(claims.UserID, reqBody.MaxTokens); sizeErr != nil {
+						sp.logger.Warn("request rejected: request size limit",
+							zap.String("request_id", reqID),
+							zap.String("user_id", claims.UserID),
+							zap.Int64("max_tokens", reqBody.MaxTokens),
+						)
+						writeJSONError(w, http.StatusTooManyRequests, "quota_exceeded", sizeErr.Error())
+						return
+					}
+				}
+			}
+		}
+
+		// 2. 并发请求限制：TryAcquire 槽，请求结束后自动 Release
+		release, concErr := sp.quotaChecker.TryAcquireConcurrent(claims.UserID)
+		if concErr != nil {
+			sp.logger.Warn("request rejected: concurrent limit",
+				zap.String("request_id", reqID),
+				zap.String("user_id", claims.UserID),
+			)
+			writeJSONError(w, http.StatusTooManyRequests, "quota_exceeded", concErr.Error())
+			return
+		}
+		defer release()
+	}
+
+	target := sp.pickTarget(r)
 	targetURL, err := url.Parse(target.URL)
 	if err != nil {
 		sp.logger.Error("invalid LLM target URL",
@@ -256,9 +345,16 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 			zap.String("url", target.URL),
 			zap.Error(err),
 		)
+		span.SetStatus(codes.Error, "invalid upstream URL")
 		writeJSONError(w, http.StatusBadGateway, "bad_gateway", "invalid upstream URL")
 		return
 	}
+
+	// 补充 span attributes（target 确定后）
+	span.SetAttributes(
+		attribute.String("provider", target.Provider),
+		attribute.String("upstream_url", target.URL),
+	)
 
 	startTime := time.Now()
 
@@ -271,9 +367,13 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 		SourceNode:  sp.sourceNode,
 		CreatedAt:   time.Now(),
 	}
+	if usageRecord.Model != "" {
+		span.SetAttributes(attribute.String("model", usageRecord.Model))
+	}
 
 	// 用 TeeResponseWriter 包装（streaming + non-streaming 均适用）
-	tw := tap.NewTeeResponseWriter(w, sp.logger, sp.writer, usageRecord)
+	// provider 决定解析器类型（Anthropic SSE / OpenAI SSE / Ollama SSE）
+	tw := tap.NewTeeResponseWriter(w, sp.logger, sp.writer, usageRecord, target.Provider)
 
 	proxy := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
@@ -282,8 +382,18 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 			req.Host = targetURL.Host
 
 			// 删除 c-proxy 注入的认证头，注入真实 API Key
+			// F-5: 优先使用 DB 中的动态 API Key，未找到则回退到配置文件中的静态 Key
 			req.Header.Del("X-PairProxy-Auth")
-			req.Header.Set("Authorization", "Bearer "+target.APIKey)
+			apiKey := target.APIKey
+			if sp.apiKeyResolver != nil {
+				if k, ok := sp.apiKeyResolver(claims.UserID); ok {
+					apiKey = k
+					sp.logger.Debug("using dynamic api key for user",
+						zap.String("user_id", claims.UserID),
+					)
+				}
+			}
+			req.Header.Set("Authorization", "Bearer "+apiKey)
 			req.Header.Del("X-Forwarded-For")
 
 			sp.logger.Debug("proxying request to LLM",

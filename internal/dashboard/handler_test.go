@@ -42,6 +42,7 @@ func newDashEnv(t *testing.T) *dashEnv {
 	userRepo := db.NewUserRepo(gormDB, logger)
 	groupRepo := db.NewGroupRepo(gormDB, logger)
 	usageRepo := db.NewUsageRepo(gormDB, logger)
+	auditRepo := db.NewAuditRepo(logger, gormDB)
 
 	jwtMgr, err := auth.NewManager(logger, "dashboard-test-jwt-secret")
 	if err != nil {
@@ -54,7 +55,7 @@ func newDashEnv(t *testing.T) *dashEnv {
 		t.Fatalf("bcrypt: %v", err)
 	}
 
-	h := dashboard.NewHandler(logger, jwtMgr, userRepo, groupRepo, usageRepo, string(hash), time.Hour)
+	h := dashboard.NewHandler(logger, jwtMgr, userRepo, groupRepo, usageRepo, auditRepo, string(hash), time.Hour)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 

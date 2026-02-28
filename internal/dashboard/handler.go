@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"embed"
+	"encoding/json"
 	"html/template"
 	"net/http"
 	"strconv"
@@ -24,6 +25,7 @@ type Handler struct {
 	userRepo          *db.UserRepo
 	groupRepo         *db.GroupRepo
 	usageRepo         *db.UsageRepo
+	auditRepo         *db.AuditRepo
 	adminPasswordHash string
 	tokenTTL          time.Duration
 }
@@ -35,6 +37,7 @@ func NewHandler(
 	userRepo *db.UserRepo,
 	groupRepo *db.GroupRepo,
 	usageRepo *db.UsageRepo,
+	auditRepo *db.AuditRepo,
 	adminPasswordHash string,
 	tokenTTL time.Duration,
 ) *Handler {
@@ -44,6 +47,7 @@ func NewHandler(
 		userRepo:          userRepo,
 		groupRepo:         groupRepo,
 		usageRepo:         usageRepo,
+		auditRepo:         auditRepo,
 		adminPasswordHash: adminPasswordHash,
 		tokenTTL:          tokenTTL,
 	}
@@ -67,6 +71,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /dashboard/groups", h.requireSession(http.HandlerFunc(h.handleCreateGroup)))
 	mux.Handle("POST /dashboard/groups/{id}/quota", h.requireSession(http.HandlerFunc(h.handleSetQuota)))
 	mux.Handle("GET /dashboard/logs", h.requireSession(http.HandlerFunc(h.handleLogsPage)))
+	mux.Handle("GET /dashboard/audit", h.requireSession(http.HandlerFunc(h.handleAuditPage)))
 }
 
 // ---------------------------------------------------------------------------
@@ -314,6 +319,11 @@ func (h *Handler) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.logger.Info("dashboard: user created", zap.String("username", username))
+	if detailBytes, jerr := json.Marshal(map[string]interface{}{"group_id": groupID, "is_active": true}); jerr == nil {
+		if aerr := h.auditRepo.Create("admin", "user.create", username, string(detailBytes)); aerr != nil {
+			h.logger.Warn("audit write failed", zap.Error(aerr))
+		}
+	}
 	http.Redirect(w, r, "/dashboard/users?flash=用户已创建", http.StatusFound)
 }
 
@@ -327,6 +337,11 @@ func (h *Handler) handleToggleActive(w http.ResponseWriter, r *http.Request) {
 	if err := h.userRepo.SetActive(id, active); err != nil {
 		http.Redirect(w, r, "/dashboard/users?error=操作失败", http.StatusFound)
 		return
+	}
+	if detailBytes, jerr := json.Marshal(map[string]bool{"active": active}); jerr == nil {
+		if aerr := h.auditRepo.Create("admin", "user.set_active", id, string(detailBytes)); aerr != nil {
+			h.logger.Warn("audit write failed", zap.Error(aerr))
+		}
 	}
 	action := "已启用"
 	if !active {
@@ -356,6 +371,9 @@ func (h *Handler) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.logger.Info("dashboard: password reset", zap.String("user_id", id))
+	if aerr := h.auditRepo.Create("admin", "user.reset_password", id, ""); aerr != nil {
+		h.logger.Warn("audit write failed", zap.Error(aerr))
+	}
 	http.Redirect(w, r, "/dashboard/users?flash=密码已重置", http.StatusFound)
 }
 
@@ -403,6 +421,11 @@ func (h *Handler) handleCreateGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.logger.Info("dashboard: group created", zap.String("name", name))
+	if detailBytes, jerr := json.Marshal(map[string]interface{}{"daily_limit": g.DailyTokenLimit, "monthly_limit": g.MonthlyTokenLimit, "rpm": g.RequestsPerMinute}); jerr == nil {
+		if aerr := h.auditRepo.Create("admin", "group.create", name, string(detailBytes)); aerr != nil {
+			h.logger.Warn("audit write failed", zap.Error(aerr))
+		}
+	}
 	http.Redirect(w, r, "/dashboard/groups?flash=分组已创建", http.StatusFound)
 }
 
@@ -415,11 +438,16 @@ func (h *Handler) handleSetQuota(w http.ResponseWriter, r *http.Request) {
 	daily := parseOptionalInt64(r.FormValue("daily_limit"))
 	monthly := parseOptionalInt64(r.FormValue("monthly_limit"))
 	rpm := parseOptionalInt(r.FormValue("rpm"))
-	if err := h.groupRepo.SetQuota(id, daily, monthly, rpm); err != nil {
+	if err := h.groupRepo.SetQuota(id, daily, monthly, rpm, nil, nil); err != nil {
 		http.Redirect(w, r, "/dashboard/groups?error=更新失败", http.StatusFound)
 		return
 	}
 	h.logger.Info("dashboard: group quota updated", zap.String("group_id", id))
+	if detailBytes, jerr := json.Marshal(map[string]interface{}{"daily_limit": daily, "monthly_limit": monthly, "rpm": rpm}); jerr == nil {
+		if aerr := h.auditRepo.Create("admin", "group.set_quota", id, string(detailBytes)); aerr != nil {
+			h.logger.Warn("audit write failed", zap.Error(aerr))
+		}
+	}
 	http.Redirect(w, r, "/dashboard/groups?flash=配额已更新", http.StatusFound)
 }
 
@@ -476,4 +504,27 @@ func parseOptionalInt(s string) *int {
 		return nil
 	}
 	return &v
+}
+
+// ---------------------------------------------------------------------------
+// 审计日志页（P2-3）
+// ---------------------------------------------------------------------------
+
+type auditPageData struct {
+	baseData
+	Logs  []db.AuditLog
+	Limit int
+}
+
+func (h *Handler) handleAuditPage(w http.ResponseWriter, r *http.Request) {
+	limit := 200
+	logs, _ := h.auditRepo.ListRecent(limit)
+	h.renderPage(w, "audit.html", auditPageData{
+		baseData: baseData{
+			Flash: r.URL.Query().Get("flash"),
+			Error: r.URL.Query().Get("error"),
+		},
+		Logs:  logs,
+		Limit: limit,
+	})
 }

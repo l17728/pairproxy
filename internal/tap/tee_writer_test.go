@@ -38,7 +38,7 @@ func setupTeeWriter(t *testing.T, rr *httptest.ResponseRecorder) (*TeeResponseWr
 		SourceNode:  "local",
 	}
 
-	tw := NewTeeResponseWriter(rr, logger, writer, record)
+	tw := NewTeeResponseWriter(rr, logger, writer, record, "")
 	return tw, writer, cancel
 }
 
@@ -140,7 +140,7 @@ func TestTeeWriterUsageRecordedStreaming(t *testing.T) {
 		SourceNode: "local",
 	}
 
-	tw := NewTeeResponseWriter(rr, logger, writer, record)
+	tw := NewTeeResponseWriter(rr, logger, writer, record, "")
 	// 设置 streaming Content-Type
 	tw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
 	tw.WriteHeader(http.StatusOK)
@@ -207,7 +207,7 @@ func TestTeeWriterUsageRecordedNonStreaming(t *testing.T) {
 		SourceNode: "local",
 	}
 
-	tw := NewTeeResponseWriter(rr, logger, writer, record)
+	tw := NewTeeResponseWriter(rr, logger, writer, record, "")
 	tw.ResponseWriter.Header().Set("Content-Type", "application/json")
 	tw.WriteHeader(http.StatusOK)
 
@@ -319,7 +319,7 @@ func TestTeeWriterLargeSSEStream(t *testing.T) {
 	sse := BuildAnthropicSSE(1000, 500, chunks)
 
 	record := db.UsageRecord{RequestID: "req-large", UserID: "user-large", SourceNode: "local"}
-	tw := NewTeeResponseWriter(rr, logger, writer, record)
+	tw := NewTeeResponseWriter(rr, logger, writer, record, "")
 	tw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
 
 	// 按 64 字节 chunk 写入

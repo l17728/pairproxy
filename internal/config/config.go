@@ -14,6 +14,15 @@ type CProxyConfig struct {
 	Log    LogConfig    `yaml:"log"`
 }
 
+// TelemetryConfig OpenTelemetry 分布式追踪配置
+type TelemetryConfig struct {
+	Enabled      bool    `yaml:"enabled"`        // 默认 false
+	OTLPEndpoint string  `yaml:"otlp_endpoint"`  // 如 "http://jaeger:4318"
+	OTLPProtocol string  `yaml:"otlp_protocol"`  // "grpc"（默认）| "http" | "stdout"
+	ServiceName  string  `yaml:"service_name"`   // 显示在追踪后端中的服务名
+	SamplingRate float64 `yaml:"sampling_rate"`  // 0.0~1.0，默认 1.0（全量采样）
+}
+
 // SProxyFullConfig s-proxy 完整配置
 type SProxyFullConfig struct {
 	Listen    ListenConfig    `yaml:"listen"`
@@ -24,6 +33,7 @@ type SProxyFullConfig struct {
 	Cluster   ClusterConfig   `yaml:"cluster"`
 	Dashboard DashboardConfig `yaml:"dashboard"`
 	Pricing   PricingConfig   `yaml:"pricing"`
+	Telemetry TelemetryConfig `yaml:"telemetry"`
 	Log       LogConfig       `yaml:"log"`
 }
 
@@ -85,9 +95,10 @@ type LLMConfig struct {
 
 // LLMTarget 单个 LLM 上游节点
 type LLMTarget struct {
-	URL    string `yaml:"url"`     // e.g. "https://api.anthropic.com"
-	APIKey string `yaml:"api_key"` // 支持 ${ENV_VAR} 替换
-	Weight int    `yaml:"weight"`  // 默认 1
+	URL      string `yaml:"url"`      // e.g. "https://api.anthropic.com"
+	APIKey   string `yaml:"api_key"`  // 支持 ${ENV_VAR} 替换
+	Weight   int    `yaml:"weight"`   // 默认 1
+	Provider string `yaml:"provider"` // "anthropic"（默认）| "openai" | "ollama"
 }
 
 // DatabaseConfig SQLite 数据库配置
@@ -97,29 +108,50 @@ type DatabaseConfig struct {
 	FlushInterval   time.Duration `yaml:"flush_interval"`    // 强制 flush 间隔，默认 5s
 }
 
+// LDAPConfig LDAP 连接配置
+type LDAPConfig struct {
+	ServerAddr   string `yaml:"server_addr"`   // host:port，如 "ldap.example.com:389"
+	BaseDN       string `yaml:"base_dn"`       // 如 "dc=example,dc=com"
+	BindDN       string `yaml:"bind_dn"`       // 服务账户 DN（空=匿名绑定）
+	BindPassword string `yaml:"bind_password"` // 支持 ${ENV_VAR}
+	UserFilter   string `yaml:"user_filter"`   // 搜索过滤器，如 "(uid=%s)"
+	UseTLS       bool   `yaml:"use_tls"`       // 是否使用 LDAPS
+}
+
 // SProxyAuth s-proxy JWT 配置
 type SProxyAuth struct {
 	JWTSecret       string        `yaml:"jwt_secret"`        // 支持 ${ENV_VAR}
 	AccessTokenTTL  time.Duration `yaml:"access_token_ttl"`  // 默认 24h
 	RefreshTokenTTL time.Duration `yaml:"refresh_token_ttl"` // 默认 168h (7d)
+	Provider        string        `yaml:"provider"`           // "local"（默认）| "ldap"
+	LDAP            LDAPConfig    `yaml:"ldap"`              // LDAP 配置（provider="ldap" 时生效）
 }
 
 // AdminConfig s-proxy 管理员配置
 type AdminConfig struct {
-	PasswordHash string `yaml:"password_hash"` // bcrypt hash，支持 ${ENV_VAR}
+	PasswordHash      string `yaml:"password_hash"`       // bcrypt hash，支持 ${ENV_VAR}
+	KeyEncryptionKey  string `yaml:"key_encryption_key"`  // AES-256-GCM 密钥（用于加密 API Key），支持 ${ENV_VAR}
+}
+
+// WebhookTarget 单个 Webhook 告警目标
+type WebhookTarget struct {
+	URL      string   `yaml:"url"`      // Webhook URL
+	Events   []string `yaml:"events"`   // 空 = 所有事件；填写则只推送指定事件类型
+	Template string   `yaml:"template"` // 空 = 默认 JSON；Go text/template 渲染请求 body
 }
 
 // ClusterConfig 集群配置（s-proxy）
 type ClusterConfig struct {
-	Role                string        `yaml:"role"`                  // "primary" | "worker"
-	Primary             string        `yaml:"primary"`               // worker 用：sp-1 的地址
-	SelfAddr            string        `yaml:"self_addr"`             // 本节点对外地址
-	SelfWeight          int           `yaml:"self_weight"`           // 建议权重，默认 50
-	AlertThreshold      int           `yaml:"alert_threshold"`       // active_req 超过此值触发告警，默认 80
-	AlertWebhook        string        `yaml:"alert_webhook"`         // 可选 Webhook URL
-	ReportInterval      time.Duration `yaml:"report_interval"`       // worker 用量上报间隔，默认 30s
-	PeerMonitorInterval time.Duration `yaml:"peer_monitor_interval"` // primary 监控 peer 间隔，默认 30s
-	SharedSecret        string        `yaml:"shared_secret"`         // 集群内部 API 共享密钥（HMAC Bearer token）
+	Role                string          `yaml:"role"`                  // "primary" | "worker"
+	Primary             string          `yaml:"primary"`               // worker 用：sp-1 的地址
+	SelfAddr            string          `yaml:"self_addr"`             // 本节点对外地址
+	SelfWeight          int             `yaml:"self_weight"`           // 建议权重，默认 50
+	AlertThreshold      int             `yaml:"alert_threshold"`       // active_req 超过此值触发告警，默认 80
+	AlertWebhook        string          `yaml:"alert_webhook"`         // 旧字段，向后兼容（单 URL）
+	AlertWebhooks       []WebhookTarget `yaml:"alert_webhooks"`        // 新字段：多 webhook + 事件过滤 + 自定义模板
+	ReportInterval      time.Duration   `yaml:"report_interval"`       // worker 用量上报间隔，默认 30s
+	PeerMonitorInterval time.Duration   `yaml:"peer_monitor_interval"` // primary 监控 peer 间隔，默认 30s
+	SharedSecret        string          `yaml:"shared_secret"`         // 集群内部 API 共享密钥（HMAC Bearer token）
 }
 
 // DashboardConfig Dashboard 配置
@@ -192,8 +224,22 @@ func (c *SProxyFullConfig) Validate() error {
 // Validate 校验 c-proxy 配置的必填字段和合法性。
 // 应在 applyDefaults 之后调用。
 func (c *CProxyConfig) Validate() error {
+	var errs []string
 	if c.Listen.Port < 1 || c.Listen.Port > 65535 {
-		return fmt.Errorf("config validation failed: listen.port %d is out of range (1–65535)", c.Listen.Port)
+		errs = append(errs, fmt.Sprintf("listen.port %d is out of range (1–65535)", c.Listen.Port))
+	}
+	if c.Auth.RefreshThreshold < 0 {
+		errs = append(errs, fmt.Sprintf("auth.refresh_threshold %s must not be negative", c.Auth.RefreshThreshold))
+	}
+	if c.Log.Level != "" {
+		switch c.Log.Level {
+		case "debug", "info", "warn", "error":
+		default:
+			errs = append(errs, fmt.Sprintf("log.level %q is invalid; must be debug, info, warn, or error", c.Log.Level))
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("config validation failed:\n  - %s", strings.Join(errs, "\n  - "))
 	}
 	return nil
 }

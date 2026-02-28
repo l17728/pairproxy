@@ -181,6 +181,18 @@ environments, ensure that the connection between c-proxy and s-proxy uses TLS
 
 ---
 
+## LDAP Authentication (F-4)
+
+When `auth.provider: "ldap"` is configured:
+
+- **Credentials flow**: The user's plaintext password is forwarded from s-proxy to the LDAP server over the network. **Always use `use_tls: true` (LDAPS) in production** to prevent credential interception.
+- **Service account**: The `bind_dn` / `bind_password` are used only for searching user DNs (read-only). Store `bind_password` in an environment variable (e.g., `${LDAP_BIND_PASSWORD}`).
+- **JIT provisioning**: On first successful LDAP login, a `users` row is created with `auth_provider = 'ldap'` and `password_hash = ''`. These users cannot log in via the local auth path.
+- **User disabling**: Disabling a user in s-proxy (`sproxy admin user disable`) prevents login even if the LDAP account is still active. The reverse (LDAP account disabled, s-proxy user still active) is **not** automatically enforced — the user can still obtain a token until the s-proxy entry is disabled.
+- **JIT users have no group**: Newly provisioned LDAP users have no group (unlimited quota). Assign groups via the Admin Dashboard or API after provisioning.
+
+---
+
 ## Logging and Auditing
 
 PairProxy uses structured logging (zap) with the following security-relevant

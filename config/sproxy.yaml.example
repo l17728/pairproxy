@@ -45,14 +45,31 @@ llm:
 
   # targets: 上游 LLM 节点列表
   # 支持多 API Key 轮询（同一 API Endpoint 配置多条，轮换使用不同 key）
+  # provider: 指定 LLM provider（影响 token 解析方式）
+  #   "anthropic"（默认）— Anthropic Claude API（/v1/messages）
+  #   "openai"           — OpenAI Chat Completions API（/v1/chat/completions）
+  #   "ollama"           — Ollama 本地推理服务（与 OpenAI 格式兼容）
   targets:
     - url: "https://api.anthropic.com"
       api_key: "${ANTHROPIC_API_KEY_1}"   # 从环境变量读取，不要明文写 key
       weight: 1
+      # provider: "anthropic"             # 可省略，默认即为 anthropic
 
     - url: "https://api.anthropic.com"
       api_key: "${ANTHROPIC_API_KEY_2}"
       weight: 1
+
+    # 示例：接入 OpenAI API
+    # - url: "https://api.openai.com"
+    #   api_key: "${OPENAI_API_KEY}"
+    #   weight: 1
+    #   provider: "openai"
+
+    # 示例：接入 Ollama 本地推理（与 OpenAI 格式兼容）
+    # - url: "http://localhost:11434"
+    #   api_key: "ollama"                 # Ollama 不需要真实 key，随意填写
+    #   weight: 1
+    #   provider: "ollama"
 
     # 示例：接入其他兼容 Anthropic API 的服务（如 AWS Bedrock 中转层）
     # - url: "https://bedrock-proxy.company.com"
@@ -90,6 +107,20 @@ auth:
 
   # refresh_token_ttl: refresh token 有效期（过期需重新登录）
   refresh_token_ttl: 168h   # 7 天
+
+  # provider: 认证提供者，"local"（默认）或 "ldap"
+  # - local：使用本地数据库验证用户名/密码
+  # - ldap：通过 LDAP 服务器验证，首次登录自动创建用户（JIT 配置）
+  # provider: "local"
+
+  # ldap — LDAP 配置（provider: "ldap" 时生效）
+  # ldap:
+  #   server_addr: "ldap.example.com:389"   # LDAP 服务器地址（host:port）
+  #   base_dn: "dc=example,dc=com"           # 搜索根 DN
+  #   bind_dn: "cn=service,dc=example,dc=com" # 服务账户 DN（空=匿名绑定）
+  #   bind_password: "${LDAP_BIND_PASSWORD}" # 服务账户密码
+  #   user_filter: "(uid=%s)"               # 用户搜索过滤器（%s 替换为用户名）
+  #   use_tls: false                          # true 使用 LDAPS（端口 636）
 
 
 # ------------------------------------------------------------------------------
@@ -194,6 +225,17 @@ pricing:
       input_per_1k: 0.015
       output_per_1k: 0.075
 
+
+# ------------------------------------------------------------------------------
+# telemetry — OpenTelemetry 分布式追踪配置（F-7）
+# ------------------------------------------------------------------------------
+# telemetry:
+#   enabled: false              # 默认禁用（零开销）
+#   otlp_protocol: "grpc"       # "grpc"（默认）| "http" | "stdout"（调试用）
+#   otlp_endpoint: ""           # OTLP 接收端地址，如 "http://jaeger:4317"（gRPC）
+#                               #                    "http://jaeger:4318"（HTTP）
+#   service_name: "pairproxy"   # 显示在追踪后端中的服务名
+#   sampling_rate: 1.0          # 采样率，0.0~1.0（1.0=全量采样）
 
 # ------------------------------------------------------------------------------
 # log — 日志配置

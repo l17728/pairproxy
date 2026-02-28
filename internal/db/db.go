@@ -76,6 +76,9 @@ func Migrate(logger *zap.Logger, db *gorm.DB) error {
 		&RefreshToken{},
 		&UsageLog{},
 		&Peer{},
+		&AuditLog{},         // P2-3: 管理操作审计日志
+		&APIKey{},           // F-5: 多 API Key 管理
+		&APIKeyAssignment{}, // F-5: API Key 分配
 	}
 
 	for _, model := range models {

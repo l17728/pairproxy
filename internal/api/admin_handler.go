@@ -1,7 +1,9 @@
 package api
 
 import (
+	"encoding/csv"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -25,6 +27,9 @@ type AdminHandler struct {
 	userRepo          *db.UserRepo
 	groupRepo         *db.GroupRepo
 	usageRepo         *db.UsageRepo
+	auditRepo         *db.AuditRepo
+	apiKeyRepo        *db.APIKeyRepo                // 可选，F-5 多 API Key 管理
+	encryptFn         func(string) (string, error)  // 可选，加密 API Key 明文
 	adminPasswordHash string
 	tokenTTL          time.Duration
 }
@@ -36,6 +41,7 @@ func NewAdminHandler(
 	userRepo *db.UserRepo,
 	groupRepo *db.GroupRepo,
 	usageRepo *db.UsageRepo,
+	auditRepo *db.AuditRepo,
 	adminPasswordHash string,
 	tokenTTL time.Duration,
 ) *AdminHandler {
@@ -45,9 +51,16 @@ func NewAdminHandler(
 		userRepo:          userRepo,
 		groupRepo:         groupRepo,
 		usageRepo:         usageRepo,
+		auditRepo:         auditRepo,
 		adminPasswordHash: adminPasswordHash,
 		tokenTTL:          tokenTTL,
 	}
+}
+
+// SetAPIKeyRepo 设置 API Key 仓库（可选；不设置则 api-keys 端点返回 501）。
+func (h *AdminHandler) SetAPIKeyRepo(repo *db.APIKeyRepo, encryptFn func(string) (string, error)) {
+	h.apiKeyRepo = repo
+	h.encryptFn = encryptFn
 }
 
 // RegisterRoutes 注册管理员路由到 mux
@@ -70,6 +83,18 @@ func (h *AdminHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/admin/stats/summary", h.RequireAdmin(http.HandlerFunc(h.handleStatsSummary)))
 	mux.Handle("GET /api/admin/stats/users", h.RequireAdmin(http.HandlerFunc(h.handleStatsUsers)))
 	mux.Handle("GET /api/admin/stats/logs", h.RequireAdmin(http.HandlerFunc(h.handleStatsLogs)))
+
+	// 审计日志（P2-3）
+	mux.Handle("GET /api/admin/audit", h.RequireAdmin(http.HandlerFunc(h.handleListAudit)))
+
+	// 数据导出（F-2）
+	mux.Handle("GET /api/admin/export", h.RequireAdmin(http.HandlerFunc(h.handleExport)))
+
+	// API Key 管理（F-5）
+	mux.Handle("GET /api/admin/api-keys", h.RequireAdmin(http.HandlerFunc(h.handleListAPIKeys)))
+	mux.Handle("POST /api/admin/api-keys", h.RequireAdmin(http.HandlerFunc(h.handleCreateAPIKey)))
+	mux.Handle("POST /api/admin/api-keys/{id}/assign", h.RequireAdmin(http.HandlerFunc(h.handleAssignAPIKey)))
+	mux.Handle("DELETE /api/admin/api-keys/{id}", h.RequireAdmin(http.HandlerFunc(h.handleRevokeAPIKey)))
 }
 
 // RequireAdmin 中间件：验证 Bearer token 或 cookie 中携带有效的管理员 JWT
@@ -232,6 +257,11 @@ func (h *AdminHandler) handleCreateUser(w http.ResponseWriter, r *http.Request) 
 	}
 
 	h.logger.Info("admin created user", zap.String("username", req.Username))
+	if detailBytes, jerr := json.Marshal(map[string]interface{}{"group_id": req.GroupID, "is_active": isActive}); jerr == nil {
+		if aerr := h.auditRepo.Create("admin", "user.create", req.Username, string(detailBytes)); aerr != nil {
+			h.logger.Warn("audit write failed", zap.Error(aerr))
+		}
+	}
 	writeJSON(w, http.StatusCreated, userToResponse(*user))
 }
 
@@ -255,6 +285,11 @@ func (h *AdminHandler) handleSetUserActive(w http.ResponseWriter, r *http.Reques
 		zap.String("user_id", id),
 		zap.Bool("active", req.Active),
 	)
+	if detailBytes, jerr := json.Marshal(map[string]bool{"active": req.Active}); jerr == nil {
+		if aerr := h.auditRepo.Create("admin", "user.set_active", id, string(detailBytes)); aerr != nil {
+			h.logger.Warn("audit write failed", zap.Error(aerr))
+		}
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -284,6 +319,9 @@ func (h *AdminHandler) handleResetPassword(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	h.logger.Info("admin reset user password", zap.String("user_id", id))
+	if aerr := h.auditRepo.Create("admin", "user.reset_password", id, ""); aerr != nil {
+		h.logger.Warn("audit write failed", zap.Error(aerr))
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -355,13 +393,20 @@ func (h *AdminHandler) handleCreateGroup(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	h.logger.Info("admin created group", zap.String("name", req.Name))
+	if detailBytes, jerr := json.Marshal(map[string]interface{}{"daily_limit": req.DailyTokenLimit, "monthly_limit": req.MonthlyTokenLimit, "rpm": req.RequestsPerMinute}); jerr == nil {
+		if aerr := h.auditRepo.Create("admin", "group.create", req.Name, string(detailBytes)); aerr != nil {
+			h.logger.Warn("audit write failed", zap.Error(aerr))
+		}
+	}
 	writeJSON(w, http.StatusCreated, groupToResponse(*g))
 }
 
 type setQuotaRequest struct {
-	DailyTokenLimit   *int64 `json:"daily_token_limit"`
-	MonthlyTokenLimit *int64 `json:"monthly_token_limit"`
-	RequestsPerMinute *int   `json:"requests_per_minute"`
+	DailyTokenLimit     *int64 `json:"daily_token_limit"`
+	MonthlyTokenLimit   *int64 `json:"monthly_token_limit"`
+	RequestsPerMinute   *int   `json:"requests_per_minute"`
+	MaxTokensPerRequest *int64 `json:"max_tokens_per_request"`
+	ConcurrentRequests  *int   `json:"concurrent_requests"`
 }
 
 func (h *AdminHandler) handleSetGroupQuota(w http.ResponseWriter, r *http.Request) {
@@ -371,7 +416,7 @@ func (h *AdminHandler) handleSetGroupQuota(w http.ResponseWriter, r *http.Reques
 		writeJSONError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
 		return
 	}
-	if err := h.groupRepo.SetQuota(id, req.DailyTokenLimit, req.MonthlyTokenLimit, req.RequestsPerMinute); err != nil {
+	if err := h.groupRepo.SetQuota(id, req.DailyTokenLimit, req.MonthlyTokenLimit, req.RequestsPerMinute, req.MaxTokensPerRequest, req.ConcurrentRequests); err != nil {
 		h.logger.Error("set group quota failed", zap.String("group_id", id), zap.Error(err))
 		writeJSONError(w, http.StatusInternalServerError, "internal_error", "failed to update quota")
 		return
@@ -381,7 +426,20 @@ func (h *AdminHandler) handleSetGroupQuota(w http.ResponseWriter, r *http.Reques
 		zap.Any("daily", req.DailyTokenLimit),
 		zap.Any("monthly", req.MonthlyTokenLimit),
 		zap.Any("rpm", req.RequestsPerMinute),
+		zap.Any("max_tokens_per_request", req.MaxTokensPerRequest),
+		zap.Any("concurrent_requests", req.ConcurrentRequests),
 	)
+	if detailBytes, jerr := json.Marshal(map[string]interface{}{
+		"daily_limit":            req.DailyTokenLimit,
+		"monthly_limit":          req.MonthlyTokenLimit,
+		"rpm":                    req.RequestsPerMinute,
+		"max_tokens_per_request": req.MaxTokensPerRequest,
+		"concurrent_requests":    req.ConcurrentRequests,
+	}); jerr == nil {
+		if aerr := h.auditRepo.Create("admin", "group.set_quota", id, string(detailBytes)); aerr != nil {
+			h.logger.Warn("audit write failed", zap.Error(aerr))
+		}
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -534,4 +592,329 @@ func parseDays(r *http.Request, defaultVal int) int {
 		}
 	}
 	return defaultVal
+}
+
+// ---------------------------------------------------------------------------
+// 审计日志（P2-3）
+// ---------------------------------------------------------------------------
+
+type auditLogResponse struct {
+	ID        uint   `json:"id"`
+	Operator  string `json:"operator"`
+	Action    string `json:"action"`
+	Target    string `json:"target"`
+	Detail    string `json:"detail"`
+	CreatedAt string `json:"created_at"`
+}
+
+// GET /api/admin/audit?limit=100
+func (h *AdminHandler) handleListAudit(w http.ResponseWriter, r *http.Request) {
+	limit := 100
+	if s := r.URL.Query().Get("limit"); s != "" {
+		if l, err := strconv.Atoi(s); err == nil && l > 0 {
+			limit = l
+		}
+	}
+	logs, err := h.auditRepo.ListRecent(limit)
+	if err != nil {
+		h.logger.Error("list audit failed", zap.Error(err))
+		writeJSONError(w, http.StatusInternalServerError, "internal_error", "failed to list audit logs")
+		return
+	}
+	resp := make([]auditLogResponse, 0, len(logs))
+	for _, l := range logs {
+		resp = append(resp, auditLogResponse{
+			ID:        l.ID,
+			Operator:  l.Operator,
+			Action:    l.Action,
+			Target:    l.Target,
+			Detail:    l.Detail,
+			CreatedAt: l.CreatedAt.UTC().Format(time.RFC3339),
+		})
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// ---------------------------------------------------------------------------
+// 数据导出（F-2）
+// ---------------------------------------------------------------------------
+
+// exportCSVHeaders CSV 列头（与 exportLogToCSVRecord 顺序一致）
+var exportCSVHeaders = []string{
+	"id", "request_id", "user_id", "model",
+	"input_tokens", "output_tokens", "total_tokens",
+	"is_streaming", "status_code", "duration_ms",
+	"cost_usd", "source_node", "upstream_url", "created_at",
+}
+
+// GET /api/admin/export?format=csv|json&from=2024-01-01&to=2024-01-31
+//
+// 响应为流式文件下载（Content-Disposition: attachment）。
+// format=json  → NDJSON（每行一个 JSON 对象），便于大文件增量处理
+// format=csv   → CSV，首行为列头（含 UTF-8 BOM，兼容 Excel）
+func (h *AdminHandler) handleExport(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	format := q.Get("format")
+	if format == "" {
+		format = "json"
+	}
+	if format != "csv" && format != "json" {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "format must be csv or json")
+		return
+	}
+
+	// 解析时间范围（默认近 30 天）
+	now := time.Now().UTC()
+	from := now.AddDate(0, 0, -30).Truncate(24 * time.Hour)
+	to := now
+
+	if s := q.Get("from"); s != "" {
+		t, err := time.Parse("2006-01-02", s)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid_request", "from must be YYYY-MM-DD")
+			return
+		}
+		from = t.UTC()
+	}
+	if s := q.Get("to"); s != "" {
+		t, err := time.Parse("2006-01-02", s)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid_request", "to must be YYYY-MM-DD")
+			return
+		}
+		// 包含当天的最后一刻
+		to = t.UTC().Add(24*time.Hour - time.Nanosecond)
+	}
+
+	h.logger.Info("export requested",
+		zap.String("format", format),
+		zap.Time("from", from),
+		zap.Time("to", to),
+	)
+
+	// 设置下载响应头
+	filename := fmt.Sprintf("pairproxy-export-%s-to-%s.%s",
+		from.Format("2006-01-02"), to.Format("2006-01-02"), format)
+	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
+
+	if format == "csv" {
+		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+		// 写 UTF-8 BOM（兼容 Excel 直接打开）
+		if _, err := fmt.Fprint(w, "\xEF\xBB\xBF"); err != nil {
+			h.logger.Warn("export csv: failed to write BOM", zap.Error(err))
+			return
+		}
+		cw := csv.NewWriter(w)
+		if err := cw.Write(exportCSVHeaders); err != nil {
+			h.logger.Warn("export csv: failed to write header", zap.Error(err))
+			return
+		}
+		exported := 0
+		err := h.usageRepo.ExportLogs(from, to, func(l db.UsageLog) error {
+			if werr := cw.Write(exportLogToCSVRecord(l)); werr != nil {
+				return werr
+			}
+			exported++
+			if exported%500 == 0 {
+				cw.Flush()
+			}
+			return nil
+		})
+		cw.Flush()
+		if err != nil {
+			h.logger.Error("export csv: failed", zap.Error(err))
+		} else {
+			h.logger.Info("export csv complete", zap.Int("rows", exported))
+		}
+	} else {
+		// NDJSON（Newline Delimited JSON）
+		w.Header().Set("Content-Type", "application/x-ndjson; charset=utf-8")
+		enc := json.NewEncoder(w)
+		exported := 0
+		err := h.usageRepo.ExportLogs(from, to, func(l db.UsageLog) error {
+			if werr := enc.Encode(exportLogToJSON(l)); werr != nil {
+				return werr
+			}
+			exported++
+			if exported%500 == 0 {
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			h.logger.Error("export json: failed", zap.Error(err))
+		} else {
+			h.logger.Info("export json complete", zap.Int("rows", exported))
+		}
+	}
+}
+
+// exportLogToJSON 将 UsageLog 转为导出 JSON 对象。
+func exportLogToJSON(l db.UsageLog) map[string]interface{} {
+	return map[string]interface{}{
+		"id":            l.ID,
+		"request_id":    l.RequestID,
+		"user_id":       l.UserID,
+		"model":         l.Model,
+		"input_tokens":  l.InputTokens,
+		"output_tokens": l.OutputTokens,
+		"total_tokens":  l.TotalTokens,
+		"is_streaming":  l.IsStreaming,
+		"status_code":   l.StatusCode,
+		"duration_ms":   l.DurationMs,
+		"cost_usd":      l.CostUSD,
+		"source_node":   l.SourceNode,
+		"upstream_url":  l.UpstreamURL,
+		"created_at":    l.CreatedAt.UTC().Format(time.RFC3339),
+	}
+}
+
+// exportLogToCSVRecord 将 UsageLog 转为 CSV 行（与 exportCSVHeaders 对应）。
+func exportLogToCSVRecord(l db.UsageLog) []string {
+	return []string{
+		strconv.FormatUint(uint64(l.ID), 10),
+		l.RequestID,
+		l.UserID,
+		l.Model,
+		strconv.Itoa(l.InputTokens),
+		strconv.Itoa(l.OutputTokens),
+		strconv.Itoa(l.TotalTokens),
+		strconv.FormatBool(l.IsStreaming),
+		strconv.Itoa(l.StatusCode),
+		strconv.FormatInt(l.DurationMs, 10),
+		fmt.Sprintf("%.6f", l.CostUSD),
+		l.SourceNode,
+		l.UpstreamURL,
+		l.CreatedAt.UTC().Format(time.RFC3339),
+	}
+}
+
+// ---------------------------------------------------------------------------
+// F-5: API Key 管理
+// ---------------------------------------------------------------------------
+
+type createAPIKeyRequest struct {
+	Name     string `json:"name"`
+	Value    string `json:"value"`    // 明文 API Key 值（由 encryptFn 加密后存储）
+	Provider string `json:"provider"` // "anthropic" | "openai" | "ollama"
+}
+
+type apiKeyResponse struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Provider  string `json:"provider"`
+	IsActive  bool   `json:"is_active"`
+	CreatedAt string `json:"created_at"`
+}
+
+func apiKeyToResponse(k db.APIKey) apiKeyResponse {
+	return apiKeyResponse{
+		ID:        k.ID,
+		Name:      k.Name,
+		Provider:  k.Provider,
+		IsActive:  k.IsActive,
+		CreatedAt: k.CreatedAt.UTC().Format(time.RFC3339),
+	}
+}
+
+// GET /api/admin/api-keys
+func (h *AdminHandler) handleListAPIKeys(w http.ResponseWriter, r *http.Request) {
+	if h.apiKeyRepo == nil {
+		writeJSONError(w, http.StatusNotImplemented, "not_implemented", "api key management not configured")
+		return
+	}
+	keys, err := h.apiKeyRepo.List()
+	if err != nil {
+		h.logger.Error("list api keys failed", zap.Error(err))
+		writeJSONError(w, http.StatusInternalServerError, "internal_error", "failed to list api keys")
+		return
+	}
+	resp := make([]apiKeyResponse, 0, len(keys))
+	for _, k := range keys {
+		resp = append(resp, apiKeyToResponse(k))
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// POST /api/admin/api-keys
+func (h *AdminHandler) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
+	if h.apiKeyRepo == nil || h.encryptFn == nil {
+		writeJSONError(w, http.StatusNotImplemented, "not_implemented", "api key management not configured")
+		return
+	}
+	var req createAPIKeyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		return
+	}
+	if req.Name == "" || req.Value == "" {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "name and value are required")
+		return
+	}
+	encrypted, err := h.encryptFn(req.Value)
+	if err != nil {
+		h.logger.Error("encrypt api key failed", zap.Error(err))
+		writeJSONError(w, http.StatusInternalServerError, "internal_error", "failed to encrypt api key")
+		return
+	}
+	key, err := h.apiKeyRepo.Create(req.Name, encrypted, req.Provider)
+	if err != nil {
+		h.logger.Error("create api key failed", zap.String("name", req.Name), zap.Error(err))
+		writeJSONError(w, http.StatusInternalServerError, "internal_error", "failed to create api key")
+		return
+	}
+	h.logger.Info("admin created api key", zap.String("name", req.Name), zap.String("provider", key.Provider))
+	writeJSON(w, http.StatusCreated, apiKeyToResponse(*key))
+}
+
+type assignAPIKeyRequest struct {
+	UserID  *string `json:"user_id"`  // 分配给用户（优先）
+	GroupID *string `json:"group_id"` // 分配给分组（兜底）
+}
+
+// POST /api/admin/api-keys/{id}/assign
+func (h *AdminHandler) handleAssignAPIKey(w http.ResponseWriter, r *http.Request) {
+	if h.apiKeyRepo == nil {
+		writeJSONError(w, http.StatusNotImplemented, "not_implemented", "api key management not configured")
+		return
+	}
+	id := r.PathValue("id")
+	var req assignAPIKeyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		return
+	}
+	if req.UserID == nil && req.GroupID == nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "user_id or group_id required")
+		return
+	}
+	if err := h.apiKeyRepo.Assign(id, req.UserID, req.GroupID); err != nil {
+		h.logger.Error("assign api key failed", zap.String("key_id", id), zap.Error(err))
+		writeJSONError(w, http.StatusInternalServerError, "internal_error", "failed to assign api key")
+		return
+	}
+	h.logger.Info("admin assigned api key",
+		zap.String("key_id", id),
+		zap.Any("user_id", req.UserID),
+		zap.Any("group_id", req.GroupID),
+	)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// DELETE /api/admin/api-keys/{id}
+func (h *AdminHandler) handleRevokeAPIKey(w http.ResponseWriter, r *http.Request) {
+	if h.apiKeyRepo == nil {
+		writeJSONError(w, http.StatusNotImplemented, "not_implemented", "api key management not configured")
+		return
+	}
+	id := r.PathValue("id")
+	if err := h.apiKeyRepo.Revoke(id); err != nil {
+		h.logger.Error("revoke api key failed", zap.String("key_id", id), zap.Error(err))
+		writeJSONError(w, http.StatusInternalServerError, "internal_error", "failed to revoke api key")
+		return
+	}
+	h.logger.Info("admin revoked api key", zap.String("key_id", id))
+	w.WriteHeader(http.StatusNoContent)
 }

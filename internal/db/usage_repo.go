@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -188,6 +190,11 @@ func (w *UsageWriter) runLoop(ctx context.Context) {
 
 // writeBatch 批量写入 DB（使用 INSERT OR IGNORE 保证幂等）
 func (w *UsageWriter) writeBatch(batch []UsageRecord) {
+	ctx := context.Background()
+	_, span := otel.Tracer("pairproxy.db").Start(ctx, "pairproxy.db.write")
+	span.SetAttributes(attribute.Int("batch_size", len(batch)))
+	defer span.End()
+
 	logs := make([]UsageLog, 0, len(batch))
 	for _, r := range batch {
 		total := r.InputTokens + r.OutputTokens
@@ -373,9 +380,67 @@ func (r *UsageRepo) UserStats(from, to time.Time, limit int) ([]UserStatRow, err
 	return rows, nil
 }
 
+// ExportLogs 以流式方式导出时间段内的所有用量日志，每条记录调用一次 fn 回调。
+// 使用分批查询（pageSize 条/批）避免一次性加载全部数据占用大量内存。
+// fn 返回非 nil error 时立即停止遍历并返回该 error（可用于提前中断）。
+//
+// 参数 pageSize 为 0 时使用默认值 500。
+func (r *UsageRepo) ExportLogs(from, to time.Time, fn func(UsageLog) error) error {
+	const defaultPageSize = 500
+	pageSize := defaultPageSize
+	offset := 0
+
+	r.logger.Info("export logs started",
+		zap.Time("from", from),
+		zap.Time("to", to),
+	)
+
+	total := 0
+	for {
+		var batch []UsageLog
+		err := r.db.Model(&UsageLog{}).
+			Where("created_at >= ? AND created_at <= ?", from, to).
+			Order("created_at ASC, id ASC").
+			Limit(pageSize).
+			Offset(offset).
+			Find(&batch).Error
+		if err != nil {
+			r.logger.Error("export logs: query failed",
+				zap.Int("offset", offset),
+				zap.Error(err),
+			)
+			return fmt.Errorf("export logs query at offset %d: %w", offset, err)
+		}
+		if len(batch) == 0 {
+			break
+		}
+		for _, log := range batch {
+			if err := fn(log); err != nil {
+				r.logger.Debug("export logs: callback interrupted",
+					zap.Int("exported_so_far", total),
+					zap.Error(err),
+				)
+				return err
+			}
+			total++
+		}
+		r.logger.Debug("export logs: batch done",
+			zap.Int("batch_size", len(batch)),
+			zap.Int("total_so_far", total),
+			zap.Int("offset", offset),
+		)
+		if len(batch) < pageSize {
+			break // 最后一批，不足 pageSize 条
+		}
+		offset += len(batch)
+	}
+
+	r.logger.Info("export logs completed", zap.Int("total", total))
+	return nil
+}
+
 // SumCostUSD 计算时间段内的总估算费用（USD）
-func (r *UsageRepo) SumCostUSD(from, to time.Time) (float64, error) {
-	var result struct{ Total float64 }
+func (r *UsageRepo) SumCostUSD(from, to time.Time) (float64, error) {	var result struct{ Total float64 }
 	err := r.db.Model(&UsageLog{}).
 		Select("COALESCE(SUM(cost_usd), 0) as total").
 		Where("created_at >= ? AND created_at <= ?", from, to).

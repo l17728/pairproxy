@@ -1,0 +1,37 @@
+{{define "content"}}
+<div class="flex items-center justify-between mb-6">
+  <h2 class="text-xl font-bold text-gray-800">管理操作审计日志</h2>
+  <span class="text-sm text-gray-400">最近 {{.Limit}} 条记录</span>
+</div>
+
+<div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+  <div class="overflow-x-auto">
+    <table class="min-w-full divide-y divide-gray-100 text-sm">
+      <thead class="bg-gray-50 text-xs text-gray-500 uppercase">
+        <tr>
+          <th class="px-4 py-3 text-left">时间</th>
+          <th class="px-4 py-3 text-left">操作者</th>
+          <th class="px-4 py-3 text-left">操作类型</th>
+          <th class="px-4 py-3 text-left">对象</th>
+          <th class="px-4 py-3 text-left">详情</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-50 text-gray-700">
+        {{range .Logs}}
+        <tr class="hover:bg-gray-50">
+          <td class="px-4 py-3 text-gray-400 text-xs whitespace-nowrap">{{.CreatedAt.Format "01-02 15:04:05"}}</td>
+          <td class="px-4 py-3 text-sm font-medium text-indigo-700">{{.Operator}}</td>
+          <td class="px-4 py-3">
+            <span class="inline-block text-xs font-mono bg-gray-100 text-gray-600 px-2 py-0.5 rounded">{{.Action}}</span>
+          </td>
+          <td class="px-4 py-3 text-sm text-gray-700">{{if .Target}}{{.Target}}{{else}}<span class="text-gray-300">—</span>{{end}}</td>
+          <td class="px-4 py-3 text-xs text-gray-400 font-mono max-w-xs truncate">{{if .Detail}}{{.Detail}}{{else}}<span class="text-gray-300">—</span>{{end}}</td>
+        </tr>
+        {{else}}
+        <tr><td colspan="5" class="px-4 py-6 text-center text-gray-400">暂无审计记录</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+{{end}}

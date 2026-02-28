@@ -24,6 +24,9 @@
 |------|------|
 | **零侵入接入** | 用户只需设置两个环境变量，无需修改 Claude Code 配置 |
 | **JWT 认证** | 每位用户独立 JWT，access token 24h，refresh token 7天，支持自动刷新 |
+| **LDAP / AD 集成** | 一行配置接入企业 LDAP / Active Directory，首次登录自动 JIT 创建用户，支持 LDAPS |
+| **多 Provider 支持** | 透传 Anthropic / OpenAI / Ollama 请求，按路径自动路由，精确解析各 provider token 用量 |
+| **数据导出** | `sproxy admin export --format csv\|json` CLI 导出或 `GET /api/admin/export` 流式下载；`sproxy admin backup` 一键备份 SQLite |
 | **Token 统计** | 同步/流式（SSE）请求均精确统计 input/output tokens，不缓冲不延迟 |
 | **费用估算** | 按模型定价配置，Dashboard 实时显示 USD 消耗 |
 | **用户配额** | 按分组设置每日/每月 token 上限，超额返回 429 |
@@ -33,8 +36,12 @@
 | **集群模式** | primary + worker 多节点，路由表自动下发给 cproxy |
 | **Web Dashboard** | Go 模板 + Tailwind CSS，内嵌二进制，无需前端构建 |
 | **Admin CLI** | 命令行管理用户、分组、配额、统计 |
-| **Prometheus 指标** | GET /metrics，标准文本格式，可接 Grafana |
+| **Prometheus 指标** | GET /metrics，标准文本格式，可接 Grafana；含 DB 文件大小、配额缓存命中率、心跳延迟 |
 | **Webhook 告警** | 节点故障、配额超限等事件推送到 Slack/飞书/企业微信 |
+| **OpenTelemetry 追踪** | 可选启用，支持 gRPC/HTTP/stdout exporter；自动对接 Jaeger、Grafana Tempo 等后端 |
+| **登录频率限制** | 每 IP 5 次失败后锁定 5 分钟，防暴力破解 |
+| **管理审计日志** | 所有用户/分组增删改操作记录到 audit_logs，可在 Dashboard 查看 |
+| **Token 自动刷新** | cproxy 自动检测 token 过期，5s 内向 sproxy 换取新 token |
 
 ---
 
@@ -207,6 +214,7 @@ cproxy 启动
 | **用户** | 用量排行、创建用户、启用/禁用、重置密码 |
 | **分组** | 分组管理、设置每日/每月 token 上限和 RPM |
 | **日志** | 最近 N 条请求记录，支持按用户 ID 过滤 |
+| **审计** | 管理员操作审计日志（用户/分组增删改操作） |
 
 ---
 
@@ -553,6 +561,8 @@ pairproxy/
 | [docs/CLUSTER_DESIGN.md](docs/CLUSTER_DESIGN.md) | 多节点集群架构设计（路由分发、心跳、故障恢复） |
 | [docs/SECURITY.md](docs/SECURITY.md) | 安全模型说明（JWT 防护、集群 API 鉴权、TLS 配置、密钥轮换） |
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | 故障排查手册（启动失败、JWT 错误、配额超限、集群问题、性能调优） |
+| [docs/UPGRADE.md](docs/UPGRADE.md) | 版本升级指南（Schema 变更、回滚方法、不兼容变更清单） |
+| [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | 性能调优指南（缓冲区、WAL 模式、连接池、缓存调优） |
 
 ---
 

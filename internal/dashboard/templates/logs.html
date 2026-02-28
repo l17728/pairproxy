@@ -1,15 +1,23 @@
 {{define "content"}}
 <div class="flex items-center justify-between mb-6">
   <h2 class="text-xl font-bold text-gray-800">请求日志</h2>
-  <form method="GET" action="/dashboard/logs" class="flex gap-2 items-center">
-    <input type="text" name="user_id" value="{{.FilterUserID}}" placeholder="按用户 ID 过滤"
-      class="border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 w-48">
-    <button type="submit"
-      class="bg-indigo-600 hover:bg-indigo-700 text-white text-sm px-3 py-1.5 rounded transition-colors">筛选</button>
-    {{if .FilterUserID}}
-    <a href="/dashboard/logs" class="text-sm text-gray-400 hover:underline">清除</a>
-    {{end}}
-  </form>
+  <div class="flex gap-2 items-center flex-wrap">
+    <form method="GET" action="/dashboard/logs" class="flex gap-2 items-center">
+      <input type="text" name="user_id" value="{{.FilterUserID}}" placeholder="按用户 ID 过滤"
+        class="border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 w-48">
+      <button type="submit"
+        class="bg-indigo-600 hover:bg-indigo-700 text-white text-sm px-3 py-1.5 rounded transition-colors">筛选</button>
+      {{if .FilterUserID}}
+      <a href="/dashboard/logs" class="text-sm text-gray-400 hover:underline">清除</a>
+      {{end}}
+    </form>
+    <div class="flex gap-1">
+      <a href="/api/admin/export?format=json" target="_blank"
+        class="bg-emerald-600 hover:bg-emerald-700 text-white text-sm px-3 py-1.5 rounded transition-colors">↓ JSON</a>
+      <a href="/api/admin/export?format=csv" target="_blank"
+        class="bg-teal-600 hover:bg-teal-700 text-white text-sm px-3 py-1.5 rounded transition-colors">↓ CSV</a>
+    </div>
+  </div>
 </div>
 
 <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">

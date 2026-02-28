@@ -39,7 +39,7 @@ var rootCmd = &cobra.Command{
 }
 
 func init() {
-	rootCmd.AddCommand(loginCmd, startCmd, statusCmd, logoutCmd, versionCmd)
+	rootCmd.AddCommand(loginCmd, startCmd, statusCmd, logoutCmd, versionCmd, configCmd)
 }
 
 // ---------------------------------------------------------------------------
@@ -465,9 +465,34 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		fmt.Printf("User:    %s\n", tf.Username)
 	}
 	fmt.Printf("Server:  %s\n", tf.ServerAddr)
-	fmt.Printf("Expires: %s (%s remaining)\n", tf.ExpiresAt.Format(time.RFC3339), remaining.Truncate(time.Second))
+	fmt.Printf("Expires: %s\n", tf.ExpiresAt.Format(time.RFC3339))
+
+	// Token TTL progress bar (assumes 24h standard access token lifetime)
+	const totalTTL = 24 * time.Hour
+	pct := 0
+	if remaining > 0 {
+		pct = int(remaining * 100 / totalTTL)
+		if pct > 100 {
+			pct = 100
+		}
+	}
+	bar := renderProgressBar(pct, 20)
+	fmt.Printf("TTL:     %s %d%% (%s remaining)\n", bar, pct, remaining.Truncate(time.Second))
+
 	fmt.Printf("Version: %s\n", version.Short())
 	return nil
+}
+
+// renderProgressBar renders a Unicode block progress bar.
+// pct is clamped to [0, 100]; width is the bar character count.
+func renderProgressBar(pct, width int) string {
+	if pct < 0 {
+		pct = 0
+	} else if pct > 100 {
+		pct = 100
+	}
+	filled := pct * width / 100
+	return "[" + strings.Repeat("█", filled) + strings.Repeat("░", width-filled) + "]"
 }
 
 // ---------------------------------------------------------------------------
@@ -510,5 +535,83 @@ func runLogout(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("delete token: %w", err)
 	}
 	fmt.Println("✓ Logged out successfully")
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// cproxy config validate
+// ---------------------------------------------------------------------------
+
+var configCmd = &cobra.Command{
+	Use:   "config",
+	Short: "Configuration management commands",
+}
+
+var configValidateCmd = &cobra.Command{
+	Use:   "validate",
+	Short: "Validate cproxy configuration file and report issues",
+	RunE:  runConfigValidate,
+}
+
+var configValidateConfigFlag string
+
+func init() {
+	configCmd.AddCommand(configValidateCmd)
+	configValidateCmd.Flags().StringVar(&configValidateConfigFlag, "config", "",
+		"path to cproxy.yaml (default: "+config.DefaultCProxyConfigPath()+")")
+}
+
+func runConfigValidate(cmd *cobra.Command, args []string) error {
+	cfgPath := configValidateConfigFlag
+	if cfgPath == "" {
+		cfgPath = config.DefaultCProxyConfigPath()
+	}
+
+	fmt.Printf("Config file: %s\n\n", cfgPath)
+
+	// Parse without validation so we can always show the effective config.
+	cfg, warnings, parseErr := config.ParseCProxyConfig(cfgPath)
+	if parseErr != nil {
+		fmt.Printf("✗ Load error: %v\n", parseErr)
+		os.Exit(1)
+	}
+
+	// Show missing env-var warnings.
+	if len(warnings) > 0 {
+		fmt.Println("Warnings:")
+		for _, w := range warnings {
+			fmt.Printf("  ⚠  %s\n", w)
+		}
+		fmt.Println()
+	}
+
+	// Show effective configuration (after defaults are applied).
+	fmt.Println("Effective configuration:")
+	fmt.Printf("  Listen:             %s\n", cfg.Listen.Addr())
+	sproxySummary := cfg.SProxy.Primary
+	if sproxySummary == "" && len(cfg.SProxy.Targets) > 0 {
+		sproxySummary = strings.Join(cfg.SProxy.Targets, ", ")
+	}
+	if sproxySummary == "" {
+		sproxySummary = "(not set — will rely on routing cache)"
+	}
+	fmt.Printf("  S-Proxy primary:    %s\n", sproxySummary)
+	if len(cfg.SProxy.Targets) > 0 {
+		fmt.Printf("  S-Proxy targets:    %s\n", strings.Join(cfg.SProxy.Targets, ", "))
+	}
+	fmt.Printf("  Health check:       every %s\n", cfg.SProxy.HealthCheckInterval)
+	fmt.Printf("  Request timeout:    %s\n", cfg.SProxy.RequestTimeout)
+	fmt.Printf("  Auto-refresh:       %v\n", cfg.Auth.AutoRefresh)
+	fmt.Printf("  Refresh threshold:  %s\n", cfg.Auth.RefreshThreshold)
+	fmt.Printf("  Log level:          %s\n", cfg.Log.Level)
+	fmt.Println()
+
+	// Run validation and report result.
+	if err := cfg.Validate(); err != nil {
+		fmt.Printf("Validation: ✗ FAILED\n%v\n", err)
+		return fmt.Errorf("configuration is invalid")
+	}
+
+	fmt.Println("Validation: ✓ All checks passed")
 	return nil
 }

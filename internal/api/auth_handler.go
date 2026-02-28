@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -27,11 +28,13 @@ var DefaultAuthConfig = AuthConfig{
 
 // AuthHandler 处理登录、刷新、登出 HTTP 请求
 type AuthHandler struct {
-	logger    *zap.Logger
-	jwtMgr    *auth.Manager
-	userRepo  *db.UserRepo
-	tokenRepo *db.RefreshTokenRepo
-	cfg       AuthConfig
+	logger       *zap.Logger
+	jwtMgr       *auth.Manager
+	userRepo     *db.UserRepo
+	tokenRepo    *db.RefreshTokenRepo
+	cfg          AuthConfig
+	loginLimiter *LoginLimiter // 登录失败速率限制器
+	provider     auth.Provider // 可选；非 nil 时使用 Provider 认证（LDAP 等）+ JIT 自动创建用户
 }
 
 // NewAuthHandler 创建 AuthHandler
@@ -43,11 +46,12 @@ func NewAuthHandler(
 	cfg AuthConfig,
 ) *AuthHandler {
 	return &AuthHandler{
-		logger:    logger.Named("auth_handler"),
-		jwtMgr:    jwtMgr,
-		userRepo:  userRepo,
-		tokenRepo: tokenRepo,
-		cfg:       cfg,
+		logger:       logger.Named("auth_handler"),
+		jwtMgr:       jwtMgr,
+		userRepo:     userRepo,
+		tokenRepo:    tokenRepo,
+		cfg:          cfg,
+		loginLimiter: NewLoginLimiter(5, time.Minute, 5*time.Minute),
 	}
 }
 
@@ -56,6 +60,13 @@ func (h *AuthHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /auth/login", h.handleLogin)
 	mux.HandleFunc("POST /auth/refresh", h.handleRefresh)
 	mux.HandleFunc("POST /auth/logout", h.handleLogout)
+}
+
+// SetProvider 设置外部认证提供者（如 LDAP）。
+// 设置后登录流程将使用 Provider.Authenticate 进行认证，并自动 JIT 创建用户（首次登录时）。
+// 若不调用此方法，AuthHandler 使用默认的本地数据库认证。
+func (h *AuthHandler) SetProvider(p auth.Provider) {
+	h.provider = p
 }
 
 // ---------------------------------------------------------------------------
@@ -94,6 +105,20 @@ type logoutRequest struct {
 // ---------------------------------------------------------------------------
 
 func (h *AuthHandler) handleLogin(w http.ResponseWriter, r *http.Request) {
+	clientIP := realIP(r)
+
+	// 速率限制检查：IP 是否被锁定
+	if allowed, retryAfter := h.loginLimiter.Check(clientIP); !allowed {
+		h.logger.Warn("login blocked: too many failures",
+			zap.String("remote_ip", clientIP),
+			zap.Duration("retry_after", retryAfter),
+		)
+		w.Header().Set("Retry-After", fmt.Sprintf("%.0f", retryAfter.Seconds()))
+		writeJSONError(w, http.StatusTooManyRequests, "too_many_attempts",
+			fmt.Sprintf("too many failed login attempts; try again in %.0f seconds", retryAfter.Seconds()))
+		return
+	}
+
 	var req loginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.logger.Debug("login: invalid request body", zap.Error(err))
@@ -106,24 +131,89 @@ func (h *AuthHandler) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.logger.Info("login attempt", zap.String("username", req.Username))
+	h.logger.Info("login attempt", zap.String("username", req.Username), zap.String("remote_ip", clientIP))
 
-	user, err := h.userRepo.GetByUsername(req.Username)
-	if err != nil {
-		h.logger.Error("login: DB error", zap.String("username", req.Username), zap.Error(err))
-		writeJSONError(w, http.StatusInternalServerError, "internal_error", "database error")
-		return
-	}
+	var user *db.User
 
-	// 不区分"用户不存在"和"密码错误"，统一返回 401（防止用户枚举）
-	if user == nil || !auth.VerifyPassword(h.logger, user.PasswordHash, req.Password) {
-		h.logger.Warn("login failed: invalid credentials", zap.String("username", req.Username))
-		writeJSONError(w, http.StatusUnauthorized, "invalid_credentials", "username or password is incorrect")
-		return
+	if h.provider != nil {
+		// Provider 认证路径（LDAP 等）：验证凭据 + JIT 自动创建用户
+		providerUser, authErr := h.provider.Authenticate(r.Context(), req.Username, req.Password)
+		if authErr != nil {
+			h.logger.Warn("login failed: provider authentication error",
+				zap.String("username", req.Username),
+				zap.String("remote_ip", clientIP),
+				zap.Error(authErr),
+			)
+			h.loginLimiter.RecordFailure(clientIP)
+			writeJSONError(w, http.StatusUnauthorized, "invalid_credentials", "username or password is incorrect")
+			return
+		}
+
+		// JIT 配置：按 ExternalID 查找已有用户记录
+		existing, dbErr := h.userRepo.GetByExternalID(providerUser.AuthProvider, providerUser.ExternalID)
+		if dbErr != nil {
+			h.logger.Error("login: JIT lookup failed",
+				zap.String("username", req.Username),
+				zap.Error(dbErr),
+			)
+			writeJSONError(w, http.StatusInternalServerError, "internal_error", "database error")
+			return
+		}
+
+		if existing == nil {
+			// 首次登录：自动创建用户记录（JIT provisioning）
+			h.logger.Info("login: JIT provisioning new user",
+				zap.String("username", req.Username),
+				zap.String("auth_provider", providerUser.AuthProvider),
+				zap.String("external_id", providerUser.ExternalID),
+			)
+			newUser := &db.User{
+				Username:     req.Username,
+				PasswordHash: "", // Provider 认证不使用本地密码
+				AuthProvider: providerUser.AuthProvider,
+				ExternalID:   providerUser.ExternalID,
+				IsActive:     true,
+			}
+			if createErr := h.userRepo.Create(newUser); createErr != nil {
+				h.logger.Error("login: JIT create user failed",
+					zap.String("username", req.Username),
+					zap.Error(createErr),
+				)
+				writeJSONError(w, http.StatusInternalServerError, "internal_error", "failed to create user")
+				return
+			}
+			user = newUser
+		} else {
+			user = existing
+		}
+	} else {
+		// 本地认证路径（默认）：查询数据库并验证 bcrypt 密码
+		var dbErr error
+		user, dbErr = h.userRepo.GetByUsername(req.Username)
+		if dbErr != nil {
+			h.logger.Error("login: DB error", zap.String("username", req.Username), zap.Error(dbErr))
+			writeJSONError(w, http.StatusInternalServerError, "internal_error", "database error")
+			return
+		}
+
+		// 不区分"用户不存在"和"密码错误"，统一返回 401（防止用户枚举）
+		if user == nil || !auth.VerifyPassword(h.logger, user.PasswordHash, req.Password) {
+			h.logger.Warn("login failed: invalid credentials",
+				zap.String("username", req.Username),
+				zap.String("remote_ip", clientIP),
+			)
+			h.loginLimiter.RecordFailure(clientIP)
+			writeJSONError(w, http.StatusUnauthorized, "invalid_credentials", "username or password is incorrect")
+			return
+		}
 	}
 
 	if !user.IsActive {
-		h.logger.Warn("login failed: user inactive", zap.String("username", req.Username))
+		h.logger.Warn("login failed: user inactive",
+			zap.String("username", req.Username),
+			zap.String("remote_ip", clientIP),
+		)
+		h.loginLimiter.RecordFailure(clientIP)
 		writeJSONError(w, http.StatusForbidden, "account_disabled", "this account has been disabled")
 		return
 	}
@@ -164,9 +254,13 @@ func (h *AuthHandler) handleLogin(w http.ResponseWriter, r *http.Request) {
 		_ = h.userRepo.UpdateLastLogin(user.ID, time.Now())
 	}()
 
+	// 登录成功，清除该 IP 的失败记录
+	h.loginLimiter.RecordSuccess(clientIP)
+
 	h.logger.Info("login successful",
 		zap.String("user_id", user.ID),
 		zap.String("username", user.Username),
+		zap.String("remote_ip", clientIP),
 	)
 
 	writeJSON(w, http.StatusOK, loginResponse{

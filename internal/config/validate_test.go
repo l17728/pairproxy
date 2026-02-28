@@ -3,6 +3,7 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -174,6 +175,47 @@ func TestValidateSProxy_EmptyTargetURL(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "url") {
 		t.Errorf("error should mention url, got: %v", err)
+	}
+}
+
+func TestValidateCProxy_InvalidLogLevel(t *testing.T) {
+	cfg := &CProxyConfig{}
+	applyDefaults(cfg)
+	cfg.Log.Level = "verbose" // invalid
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for invalid log level, got nil")
+	}
+	if !strings.Contains(err.Error(), "log.level") {
+		t.Errorf("error should mention log.level, got: %v", err)
+	}
+}
+
+func TestValidateCProxy_NegativeRefreshThreshold(t *testing.T) {
+	cfg := &CProxyConfig{}
+	applyDefaults(cfg)
+	cfg.Auth.RefreshThreshold = -1 * time.Minute
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for negative refresh_threshold, got nil")
+	}
+	if !strings.Contains(err.Error(), "refresh_threshold") {
+		t.Errorf("error should mention refresh_threshold, got: %v", err)
+	}
+}
+
+func TestValidateCProxy_MultipleErrors(t *testing.T) {
+	cfg := &CProxyConfig{}
+	cfg.Listen.Port = 70000
+	cfg.Log.Level = "verbose"
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected multiple errors, got nil")
+	}
+	for _, keyword := range []string{"listen.port", "log.level"} {
+		if !strings.Contains(err.Error(), keyword) {
+			t.Errorf("error should mention %q, got: %v", keyword, err)
+		}
 	}
 }
 

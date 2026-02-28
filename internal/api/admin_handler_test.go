@@ -42,8 +42,9 @@ func setupAdminTest(t *testing.T, adminPasswordHash string) (*AdminHandler, *aut
 	userRepo := db.NewUserRepo(gormDB, logger)
 	groupRepo := db.NewGroupRepo(gormDB, logger)
 	usageRepo := db.NewUsageRepo(gormDB, logger)
+	auditRepo := db.NewAuditRepo(logger, gormDB)
 
-	handler := NewAdminHandler(logger, jwtMgr, userRepo, groupRepo, usageRepo, adminPasswordHash, time.Hour)
+	handler := NewAdminHandler(logger, jwtMgr, userRepo, groupRepo, usageRepo, auditRepo, adminPasswordHash, time.Hour)
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -310,6 +311,113 @@ func TestAdminStatsLogs(t *testing.T) {
 	if logs == nil {
 		t.Error("expected non-nil (possibly empty) slice")
 	}
+}
+
+// ---------------------------------------------------------------------------
+// TestAdminAudit — 审计日志端点（P2-3）
+// ---------------------------------------------------------------------------
+
+func TestAdminAuditEndpoint(t *testing.T) {
+	hash, _ := auth.HashPassword(zaptest.NewLogger(t), "adminpass")
+	_, jwtMgr, mux := setupAdminTest(t, hash)
+	tok := adminToken(t, jwtMgr)
+	authHeader := "Bearer " + tok
+
+	// GET /api/admin/audit on empty DB → 200 with empty array.
+	t.Run("empty audit log returns 200", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/admin/audit", nil)
+		req.Header.Set("Authorization", authHeader)
+		rr := httptest.NewRecorder()
+		mux.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Errorf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+		}
+		var resp []auditLogResponse
+		if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if resp == nil {
+			t.Error("expected non-nil slice")
+		}
+	})
+
+	// Create a user → expect an audit entry for user.create.
+	t.Run("create user writes audit record", func(t *testing.T) {
+		body := `{"username":"bob","password":"pw123456"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/admin/users", bytes.NewBufferString(body))
+		req.Header.Set("Authorization", authHeader)
+		rr := httptest.NewRecorder()
+		mux.ServeHTTP(rr, req)
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("create user: status = %d, want 201; body: %s", rr.Code, rr.Body.String())
+		}
+
+		// Now retrieve audit log.
+		req2 := httptest.NewRequest(http.MethodGet, "/api/admin/audit", nil)
+		req2.Header.Set("Authorization", authHeader)
+		rr2 := httptest.NewRecorder()
+		mux.ServeHTTP(rr2, req2)
+		if rr2.Code != http.StatusOK {
+			t.Fatalf("audit list: status = %d; body: %s", rr2.Code, rr2.Body.String())
+		}
+		var logs []auditLogResponse
+		if err := json.Unmarshal(rr2.Body.Bytes(), &logs); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if len(logs) == 0 {
+			t.Fatal("expected at least one audit record after user creation")
+		}
+		found := false
+		for _, l := range logs {
+			if l.Action == "user.create" && l.Target == "bob" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("audit log missing user.create for bob; got: %+v", logs)
+		}
+	})
+
+	// Create group → expect group.create audit entry.
+	t.Run("create group writes audit record", func(t *testing.T) {
+		body := `{"name":"devops"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/admin/groups", bytes.NewBufferString(body))
+		req.Header.Set("Authorization", authHeader)
+		rr := httptest.NewRecorder()
+		mux.ServeHTTP(rr, req)
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("create group: status = %d; body: %s", rr.Code, rr.Body.String())
+		}
+
+		req2 := httptest.NewRequest(http.MethodGet, "/api/admin/audit", nil)
+		req2.Header.Set("Authorization", authHeader)
+		rr2 := httptest.NewRecorder()
+		mux.ServeHTTP(rr2, req2)
+		var logs []auditLogResponse
+		_ = json.Unmarshal(rr2.Body.Bytes(), &logs)
+
+		found := false
+		for _, l := range logs {
+			if l.Action == "group.create" && l.Target == "devops" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("audit log missing group.create for devops; got: %+v", logs)
+		}
+	})
+
+	// GET /api/admin/audit without auth → 401.
+	t.Run("audit list requires auth", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/admin/audit", nil)
+		rr := httptest.NewRecorder()
+		mux.ServeHTTP(rr, req)
+		if rr.Code != http.StatusUnauthorized {
+			t.Errorf("status = %d, want 401", rr.Code)
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------

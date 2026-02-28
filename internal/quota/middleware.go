@@ -34,7 +34,7 @@ func NewMiddleware(
 			}
 
 			start := time.Now()
-			if err := checker.Check(userID); err != nil {
+			if err := checker.Check(r.Context(), userID); err != nil {
 				var qErr *ExceededError
 				if errors.As(err, &qErr) {
 					logger.Warn("request blocked: quota exceeded",

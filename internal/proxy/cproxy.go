@@ -1,11 +1,18 @@
 package proxy
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"strconv"
+	"strings"
+	"sync"
 	"sync/atomic"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -24,6 +31,8 @@ type CProxy struct {
 
 	routingVersion atomic.Int64 // c-proxy 本地已知的路由表版本
 	cacheDir       string       // 路由表缓存目录（空串=不持久化）
+
+	refreshMu sync.Mutex // 防止并发刷新（P2-4）
 }
 
 // NewCProxy 创建 CProxy。
@@ -89,12 +98,31 @@ func (cp *CProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !cp.tokenStore.IsValid(tf) {
-		cp.logger.Warn("no valid token available",
-			zap.String("request_id", reqID),
-		)
-		writeJSONError(w, http.StatusUnauthorized, "not_authenticated",
-			"no valid token found; run 'cproxy login' first")
-		return
+		if cp.tokenStore.NeedsRefresh(tf) {
+			// Token is within the refresh window or just expired — auto-refresh with 5s timeout.
+			cp.logger.Info("token near expiry, attempting auto-refresh",
+				zap.String("request_id", reqID),
+				zap.String("username", tf.Username),
+			)
+			newTF, err := cp.tryRefresh(r.Context(), tf)
+			if err != nil {
+				cp.logger.Warn("token auto-refresh failed",
+					zap.String("request_id", reqID),
+					zap.Error(err),
+				)
+				writeJSONError(w, http.StatusUnauthorized, "not_authenticated",
+					"token expired and auto-refresh failed; run 'cproxy login' again")
+				return
+			}
+			tf = newTF
+		} else {
+			cp.logger.Warn("no valid token available",
+				zap.String("request_id", reqID),
+			)
+			writeJSONError(w, http.StatusUnauthorized, "not_authenticated",
+				"no valid token found; run 'cproxy login' first")
+			return
+		}
 	}
 
 	target, err := cp.balancer.Pick()
@@ -158,6 +186,76 @@ func (cp *CProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	proxy.ServeHTTP(w, r)
+}
+
+// tryRefresh 使用 refresh_token 向 s-proxy 换取新的 access_token。
+// 使用互斥锁防止并发刷新（仅一个 goroutine 实际发出请求，其余等待后复用结果）。
+// HTTP 请求使用 5s context 超时（P2-4）。
+func (cp *CProxy) tryRefresh(ctx context.Context, tf *auth.TokenFile) (*auth.TokenFile, error) {
+	cp.refreshMu.Lock()
+	defer cp.refreshMu.Unlock()
+
+	// 获取锁后重新加载：其他 goroutine 可能已完成刷新。
+	if current, err := cp.tokenStore.Load(cp.tokenDir); err == nil && cp.tokenStore.IsValid(current) {
+		cp.logger.Debug("token already refreshed by another goroutine")
+		return current, nil
+	}
+
+	if tf.ServerAddr == "" {
+		return nil, fmt.Errorf("token has no server_addr; cannot refresh")
+	}
+
+	refreshCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	refreshURL := strings.TrimRight(tf.ServerAddr, "/") + "/auth/refresh"
+	body, _ := json.Marshal(map[string]string{"refresh_token": tf.RefreshToken})
+	req, err := http.NewRequestWithContext(refreshCtx, http.MethodPost, refreshURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create refresh request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("refresh request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("refresh: upstream returned %d", resp.StatusCode)
+	}
+
+	var refreshResp struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		ExpiresIn    int64  `json:"expires_in"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&refreshResp); err != nil {
+		return nil, fmt.Errorf("decode refresh response: %w", err)
+	}
+	if refreshResp.AccessToken == "" {
+		return nil, fmt.Errorf("refresh response missing access_token")
+	}
+
+	newTF := &auth.TokenFile{
+		AccessToken:  refreshResp.AccessToken,
+		RefreshToken: refreshResp.RefreshToken,
+		ExpiresAt:    time.Now().Add(time.Duration(refreshResp.ExpiresIn) * time.Second),
+		ServerAddr:   tf.ServerAddr,
+		Username:     tf.Username,
+	}
+
+	if err := cp.tokenStore.Save(cp.tokenDir, newTF); err != nil {
+		// 非致命：token 已更新，即使持久化失败本次请求仍可进行
+		cp.logger.Warn("failed to persist refreshed token", zap.Error(err))
+	}
+
+	cp.logger.Info("token auto-refreshed",
+		zap.String("username", newTF.Username),
+		zap.Time("new_expires_at", newTF.ExpiresAt),
+	)
+	return newTF, nil
 }
 
 // processRoutingHeaders 从响应头中读取路由更新并应用。

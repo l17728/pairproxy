@@ -185,6 +185,13 @@ func ParseNonStreaming(body []byte) (inputTokens, outputTokens int, err error) {
 	return resp.Usage.InputTokens, resp.Usage.OutputTokens, nil
 }
 
+// ParseNonStreaming 实现 ResponseParser 接口：解析 Anthropic 非 streaming JSON 响应。
+// 解析失败时返回 0, 0。
+func (p *AnthropicSSEParser) ParseNonStreaming(body []byte) (inputTokens, outputTokens int) {
+	in, out, _ := ParseNonStreaming(body)
+	return in, out
+}
+
 // ---------------------------------------------------------------------------
 // 工具：完整 SSE 序列构建（测试辅助）
 // ---------------------------------------------------------------------------

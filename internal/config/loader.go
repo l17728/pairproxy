@@ -83,6 +83,24 @@ func LoadCProxyConfig(path string) (*CProxyConfig, []string, error) {
 	return &cfg, missing, nil
 }
 
+// ParseCProxyConfig loads, parses, and applies defaults for a c-proxy config
+// WITHOUT running validation. Used by 'cproxy config validate' to inspect the
+// effective configuration before reporting validation issues.
+// Returns the config and any missing environment variable names.
+func ParseCProxyConfig(path string) (*CProxyConfig, []string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read cproxy config %q: %w", path, err)
+	}
+	expanded, missing := expandEnvInBytes(data)
+	var cfg CProxyConfig
+	if err := yaml.Unmarshal(expanded, &cfg); err != nil {
+		return nil, missing, fmt.Errorf("parse cproxy config %q: %w", path, err)
+	}
+	applyDefaults(&cfg)
+	return &cfg, missing, nil
+}
+
 // LoadSProxyConfig 从文件加载 s-proxy 配置，并展开环境变量
 func LoadSProxyConfig(path string) (*SProxyFullConfig, []string, error) {
 	data, err := os.ReadFile(path)

@@ -3,6 +3,7 @@ package quota
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -16,8 +17,10 @@ type usageEntry struct {
 // QuotaCache 缓存每个用户的近期用量，避免每次请求都查询 DB。
 // 使用 sync.Map 保证并发安全；TTL 到期后下次访问时惰性刷新。
 type QuotaCache struct {
-	m   sync.Map
-	ttl time.Duration
+	m      sync.Map
+	ttl    time.Duration
+	hits   atomic.Int64 // 缓存命中次数（供 Prometheus /metrics 使用）
+	misses atomic.Int64 // 缓存未命中次数
 }
 
 // NewQuotaCache 创建 QuotaCache。ttl 建议 60s。
@@ -28,17 +31,26 @@ func NewQuotaCache(ttl time.Duration) *QuotaCache {
 	return &QuotaCache{ttl: ttl}
 }
 
+// Hits 返回自启动以来的缓存命中总次数。
+func (c *QuotaCache) Hits() int64 { return c.hits.Load() }
+
+// Misses 返回自启动以来的缓存未命中总次数。
+func (c *QuotaCache) Misses() int64 { return c.misses.Load() }
+
 // get 取缓存条目，若不存在或已过期则返回 nil。
 func (c *QuotaCache) get(userID string) *usageEntry {
 	v, ok := c.m.Load(userID)
 	if !ok {
+		c.misses.Add(1)
 		return nil
 	}
 	e := v.(*usageEntry)
 	if time.Now().After(e.expiresAt) {
 		c.m.Delete(userID)
+		c.misses.Add(1)
 		return nil
 	}
+	c.hits.Add(1)
 	return e
 }
 

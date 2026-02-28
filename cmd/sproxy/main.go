@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/csv"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -12,6 +15,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"golang.org/x/term"
@@ -26,6 +30,7 @@ import (
 	"github.com/l17728/pairproxy/internal/db"
 	"github.com/l17728/pairproxy/internal/lb"
 	"github.com/l17728/pairproxy/internal/metrics"
+	pptel "github.com/l17728/pairproxy/internal/otel"
 	"github.com/l17728/pairproxy/internal/preflight"
 	"github.com/l17728/pairproxy/internal/proxy"
 	"github.com/l17728/pairproxy/internal/quota"
@@ -117,6 +122,24 @@ func runStart(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("preflight: %w", err)
 	}
 
+	// F-7: OpenTelemetry 初始化（disabled 时为 noop，零开销）
+	otelCfg := pptel.TelemetryConfig{
+		Enabled:      cfg.Telemetry.Enabled,
+		OTLPEndpoint: cfg.Telemetry.OTLPEndpoint,
+		OTLPProtocol: cfg.Telemetry.OTLPProtocol,
+		ServiceName:  cfg.Telemetry.ServiceName,
+		SamplingRate: cfg.Telemetry.SamplingRate,
+	}
+	if otelCfg.ServiceName == "" {
+		otelCfg.ServiceName = "pairproxy-sproxy"
+	}
+	otelShutdown, otelErr := pptel.Setup(context.Background(), otelCfg, logger)
+	if otelErr != nil {
+		logger.Warn("otel: init failed, continuing without tracing", zap.Error(otelErr))
+	} else {
+		defer otelShutdown(context.Background())
+	}
+
 	// 打开数据库
 	database, err := db.Open(logger, cfg.Database.Path)
 	if err != nil {
@@ -151,10 +174,14 @@ func runStart(cmd *cobra.Command, args []string) error {
 	llmTargets := make([]proxy.LLMTarget, 0, len(cfg.LLM.Targets))
 	for _, t := range cfg.LLM.Targets {
 		llmTargets = append(llmTargets, proxy.LLMTarget{
-			URL:    t.URL,
-			APIKey: t.APIKey,
+			URL:      t.URL,
+			APIKey:   t.APIKey,
+			Provider: t.Provider,
 		})
-		logger.Info("LLM target configured", zap.String("url", t.URL))
+		logger.Info("LLM target configured",
+			zap.String("url", t.URL),
+			zap.String("provider", t.Provider),
+		)
 	}
 
 	// ---------------------------------------------------------------------------
@@ -268,6 +295,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	userRepo := db.NewUserRepo(database, logger)
 	usageRepo := db.NewUsageRepo(database, logger)
 	groupRepo := db.NewGroupRepo(database, logger)
+	auditRepo := db.NewAuditRepo(logger, database) // P2-3: 审计日志仓库
 	quotaCache := quota.NewQuotaCache(60 * time.Second)
 	quotaChecker := quota.NewChecker(logger, userRepo, usageRepo, quotaCache)
 	sp.SetQuotaChecker(quotaChecker)
@@ -287,11 +315,28 @@ func runStart(cmd *cobra.Command, args []string) error {
 		)
 	}
 
-	// Phase 6: 告警通知器
-	if cfg.Cluster.AlertWebhook != "" {
-		notifier := alert.NewNotifier(logger, cfg.Cluster.AlertWebhook)
+	// Phase 6: 告警通知器（支持多 webhook 目标 + 事件过滤 + 自定义模板）
+	{
+		var targets []alert.WebhookTargetConfig
+		for _, wt := range cfg.Cluster.AlertWebhooks {
+			targets = append(targets, alert.WebhookTargetConfig{
+				URL:      wt.URL,
+				Events:   wt.Events,
+				Template: wt.Template,
+			})
+		}
+		notifier := alert.NewNotifierMulti(logger, targets, cfg.Cluster.AlertWebhook)
 		quotaChecker.SetNotifier(notifier)
-		logger.Info("alert notifier enabled", zap.String("webhook", cfg.Cluster.AlertWebhook))
+		totalTargets := len(targets)
+		if cfg.Cluster.AlertWebhook != "" {
+			totalTargets++ // legacy URL（若不重复）
+		}
+		if totalTargets > 0 {
+			logger.Info("alert notifier enabled",
+				zap.Int("targets", totalTargets),
+				zap.String("legacy_webhook", cfg.Cluster.AlertWebhook),
+			)
+		}
 	}
 
 	// Phase 6: 速率限制器定期清理（每分钟清理过期窗口）
@@ -319,14 +364,72 @@ func runStart(cmd *cobra.Command, args []string) error {
 	}
 	authHandler := api.NewAuthHandler(logger, jwtMgr, userRepo, tokenRepo, authCfg)
 
+	// F-4: LDAP 认证提供者（provider="ldap" 时启用）
+	if cfg.Auth.Provider == "ldap" {
+		ldapCfg := auth.LDAPConfig{
+			ServerAddr:   cfg.Auth.LDAP.ServerAddr,
+			BaseDN:       cfg.Auth.LDAP.BaseDN,
+			BindDN:       cfg.Auth.LDAP.BindDN,
+			BindPassword: cfg.Auth.LDAP.BindPassword,
+			UserFilter:   cfg.Auth.LDAP.UserFilter,
+			UseTLS:       cfg.Auth.LDAP.UseTLS,
+		}
+		if ldapCfg.UserFilter == "" {
+			ldapCfg.UserFilter = "(uid=%s)" // 默认过滤器
+		}
+		ldapProvider := auth.NewLDAPProvider(logger, ldapCfg)
+		authHandler.SetProvider(ldapProvider)
+		logger.Info("auth: LDAP provider enabled",
+			zap.String("server", ldapCfg.ServerAddr),
+			zap.String("base_dn", ldapCfg.BaseDN),
+		)
+	}
+
 	adminTokenTTL := cfg.Auth.AccessTokenTTL
 	if adminTokenTTL <= 0 {
 		adminTokenTTL = 24 * time.Hour
 	}
 	adminHandler := api.NewAdminHandler(
-		logger, jwtMgr, userRepo, groupRepo, usageRepo,
+		logger, jwtMgr, userRepo, groupRepo, usageRepo, auditRepo,
 		cfg.Admin.PasswordHash, adminTokenTTL,
 	)
+
+	// F-5: 多 API Key 管理（需要 key_encryption_key 配置）
+	if cfg.Admin.KeyEncryptionKey != "" {
+		apiKeyRepo := db.NewAPIKeyRepo(database, logger)
+		encryptFn := func(plain string) (string, error) {
+			return auth.Encrypt(plain, cfg.Admin.KeyEncryptionKey)
+		}
+		decryptFn := func(encrypted string) (string, error) {
+			return auth.Decrypt(encrypted, cfg.Admin.KeyEncryptionKey)
+		}
+		adminHandler.SetAPIKeyRepo(apiKeyRepo, encryptFn)
+		// 在 Director 中动态查找并使用 DB 里的 API Key
+		sp.SetAPIKeyResolver(func(userID string) (string, bool) {
+			user, err := userRepo.GetByID(userID)
+			if err != nil || user == nil {
+				return "", false
+			}
+			groupID := ""
+			if user.GroupID != nil {
+				groupID = *user.GroupID
+			}
+			key, err := apiKeyRepo.FindForUser(userID, groupID)
+			if err != nil || key == nil {
+				return "", false
+			}
+			plain, err := decryptFn(key.EncryptedValue)
+			if err != nil {
+				logger.Warn("failed to decrypt api key",
+					zap.String("key_name", key.Name),
+					zap.Error(err),
+				)
+				return "", false
+			}
+			return plain, true
+		})
+		logger.Info("F-5: dynamic api key management enabled")
+	}
 
 	// ---------------------------------------------------------------------------
 	// 注册路由
@@ -360,7 +463,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// Dashboard（Phase 5）
 	if cfg.Dashboard.Enabled || isPrimary {
 		dashHandler := dashboard.NewHandler(
-			logger, jwtMgr, userRepo, groupRepo, usageRepo,
+			logger, jwtMgr, userRepo, groupRepo, usageRepo, auditRepo,
 			cfg.Admin.PasswordHash, adminTokenTTL,
 		)
 		dashHandler.RegisterRoutes(mux)
@@ -369,11 +472,21 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 	// Phase 6: Prometheus metrics 端点
 	metricsHandler := metrics.NewHandler(logger, usageRepo, userRepo)
+	metricsHandler.SetDBPath(cfg.Database.Path)           // P2-2: 数据库文件大小指标
+	metricsHandler.SetQuotaCacheStats(quotaCache)         // P2-2: 配额缓存命中/未命中指标
+	if reporter != nil {
+		metricsHandler.SetReporterStats(reporter)         // P2-2: worker 心跳延迟/失败指标
+	}
 	metricsHandler.RegisterRoutes(mux)
 	logger.Info("metrics endpoint registered at GET /metrics")
 
 	// 代理所有其他请求（需要 JWT 认证）
-	mux.Handle("/", sp.Handler())
+	// F-7: 若 OTel 启用，用 otelhttp 包装以捕获 HTTP 层 span
+	proxyHandler := sp.Handler()
+	if cfg.Telemetry.Enabled {
+		proxyHandler = wrapOtelHTTP(proxyHandler, "pairproxy.sproxy")
+	}
+	mux.Handle("/", proxyHandler)
 
 	addr := cfg.Listen.Addr()
 	server := &http.Server{
@@ -504,7 +617,7 @@ var adminConfigFlag string
 
 func init() {
 	adminCmd.PersistentFlags().StringVar(&adminConfigFlag, "config", "", "path to sproxy.yaml (default: sproxy.yaml)")
-	adminCmd.AddCommand(adminUserCmd, adminGroupCmd, adminStatsCmd, adminTokenCmd)
+	adminCmd.AddCommand(adminUserCmd, adminGroupCmd, adminStatsCmd, adminTokenCmd, adminBackupCmd, adminExportCmd, adminApikeyCmd)
 }
 
 // closeGormDB 优雅关闭 GORM 数据库连接，释放文件锁和文件描述符。
@@ -806,9 +919,11 @@ func init() {
 // --- group add ---
 
 var (
-	groupAddDailyLimit   int64
-	groupAddMonthlyLimit int64
-	groupAddRPM          int
+	groupAddDailyLimit        int64
+	groupAddMonthlyLimit      int64
+	groupAddRPM               int
+	groupAddMaxReqTokens      int64
+	groupAddConcurrentReqs    int
 )
 
 var adminGroupAddCmd = &cobra.Command{
@@ -833,6 +948,12 @@ var adminGroupAddCmd = &cobra.Command{
 		if cmd.Flags().Changed("rpm") {
 			g.RequestsPerMinute = &groupAddRPM
 		}
+		if cmd.Flags().Changed("max-tokens-per-request") {
+			g.MaxTokensPerRequest = &groupAddMaxReqTokens
+		}
+		if cmd.Flags().Changed("concurrent-requests") {
+			g.ConcurrentRequests = &groupAddConcurrentReqs
+		}
 		if err := groupRepo.Create(g); err != nil {
 			return fmt.Errorf("create group: %w", err)
 		}
@@ -845,6 +966,8 @@ func init() {
 	adminGroupAddCmd.Flags().Int64Var(&groupAddDailyLimit, "daily-limit", 0, "daily token limit (0 = unlimited)")
 	adminGroupAddCmd.Flags().Int64Var(&groupAddMonthlyLimit, "monthly-limit", 0, "monthly token limit (0 = unlimited)")
 	adminGroupAddCmd.Flags().IntVar(&groupAddRPM, "rpm", 0, "max requests per minute (0 = unlimited)")
+	adminGroupAddCmd.Flags().Int64Var(&groupAddMaxReqTokens, "max-tokens-per-request", 0, "max max_tokens a user may request per call (0 = unlimited)")
+	adminGroupAddCmd.Flags().IntVar(&groupAddConcurrentReqs, "concurrent-requests", 0, "max concurrent requests per user (0 = unlimited)")
 }
 
 // --- group list ---
@@ -862,8 +985,8 @@ var adminGroupListCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("list groups: %w", err)
 		}
-		fmt.Printf("%-36s  %-20s  %-15s  %-15s  %-10s\n", "ID", "Name", "Daily Limit", "Monthly Limit", "RPM")
-		fmt.Println("-----------------------------------------------------------------------------------------------------------")
+		fmt.Printf("%-36s  %-20s  %-15s  %-15s  %-10s  %-20s  %-20s\n", "ID", "Name", "Daily Limit", "Monthly Limit", "RPM", "Max Req Tokens", "Concurrent")
+		fmt.Println("----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------")
 		for _, g := range groups {
 			daily := "unlimited"
 			if g.DailyTokenLimit != nil {
@@ -877,7 +1000,15 @@ var adminGroupListCmd = &cobra.Command{
 			if g.RequestsPerMinute != nil {
 				rpm = strconv.Itoa(*g.RequestsPerMinute)
 			}
-			fmt.Printf("%-36s  %-20s  %-15s  %-15s  %-10s\n", g.ID, g.Name, daily, monthly, rpm)
+			maxReqTok := "unlimited"
+			if g.MaxTokensPerRequest != nil {
+				maxReqTok = strconv.FormatInt(*g.MaxTokensPerRequest, 10)
+			}
+			concurrent := "unlimited"
+			if g.ConcurrentRequests != nil {
+				concurrent = strconv.Itoa(*g.ConcurrentRequests)
+			}
+			fmt.Printf("%-36s  %-20s  %-15s  %-15s  %-10s  %-20s  %-20s\n", g.ID, g.Name, daily, monthly, rpm, maxReqTok, concurrent)
 		}
 		return nil
 	},
@@ -886,9 +1017,11 @@ var adminGroupListCmd = &cobra.Command{
 // --- group set-quota ---
 
 var (
-	setQuotaDaily   int64
-	setQuotaMonthly int64
-	setQuotaRPM     int
+	setQuotaDaily          int64
+	setQuotaMonthly        int64
+	setQuotaRPM            int
+	setQuotaMaxReqTokens   int64
+	setQuotaConcurrentReqs int
 )
 
 var adminGroupSetQuotaCmd = &cobra.Command{
@@ -912,6 +1045,8 @@ var adminGroupSetQuotaCmd = &cobra.Command{
 
 		var daily, monthly *int64
 		var rpm *int
+		var maxReqTokens *int64
+		var concurrentReqs *int
 		if cmd.Flags().Changed("daily") {
 			daily = &setQuotaDaily
 		}
@@ -921,7 +1056,13 @@ var adminGroupSetQuotaCmd = &cobra.Command{
 		if cmd.Flags().Changed("rpm") {
 			rpm = &setQuotaRPM
 		}
-		if err := groupRepo.SetQuota(grp.ID, daily, monthly, rpm); err != nil {
+		if cmd.Flags().Changed("max-tokens-per-request") {
+			maxReqTokens = &setQuotaMaxReqTokens
+		}
+		if cmd.Flags().Changed("concurrent-requests") {
+			concurrentReqs = &setQuotaConcurrentReqs
+		}
+		if err := groupRepo.SetQuota(grp.ID, daily, monthly, rpm, maxReqTokens, concurrentReqs); err != nil {
 			return err
 		}
 		fmt.Printf("Quota updated for group %q\n", name)
@@ -933,6 +1074,8 @@ func init() {
 	adminGroupSetQuotaCmd.Flags().Int64Var(&setQuotaDaily, "daily", 0, "daily token limit (0 = remove limit)")
 	adminGroupSetQuotaCmd.Flags().Int64Var(&setQuotaMonthly, "monthly", 0, "monthly token limit (0 = remove limit)")
 	adminGroupSetQuotaCmd.Flags().IntVar(&setQuotaRPM, "rpm", 0, "max requests per minute (0 = remove limit)")
+	adminGroupSetQuotaCmd.Flags().Int64Var(&setQuotaMaxReqTokens, "max-tokens-per-request", 0, "max max_tokens per request (0 = remove limit)")
+	adminGroupSetQuotaCmd.Flags().IntVar(&setQuotaConcurrentReqs, "concurrent-requests", 0, "max concurrent requests per user (0 = remove limit)")
 }
 
 // ---------------------------------------------------------------------------
@@ -940,14 +1083,19 @@ func init() {
 // ---------------------------------------------------------------------------
 
 var (
-	statsUser string
-	statsDays int
+	statsUser   string
+	statsDays   int
+	statsFormat string
 )
 
 var adminStatsCmd = &cobra.Command{
 	Use:   "stats",
 	Short: "Show token usage statistics",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if statsFormat != "text" && statsFormat != "json" && statsFormat != "csv" {
+			return fmt.Errorf("invalid format %q: must be text, json, or csv", statsFormat)
+		}
+
 		userRepo, _, usageRepo, _, _, database, err := openAdminDB()
 		if err != nil {
 			return err
@@ -970,46 +1118,125 @@ var adminStatsCmd = &cobra.Command{
 			if err != nil {
 				return err
 			}
-			fmt.Printf("User: %s (%s)\n", user.Username, user.ID)
-			fmt.Printf("Period: last %d day(s) (%s ~ %s)\n", statsDays,
-				from.Format("2006-01-02"), now.Format("2006-01-02"))
-			fmt.Printf("Input tokens:  %d\n", input)
-			fmt.Printf("Output tokens: %d\n", output)
-			fmt.Printf("Total tokens:  %d\n", input+output)
-		} else {
-			// 全局统计
-			stats, err := usageRepo.GlobalSumTokens(from, now)
-			if err != nil {
-				return err
-			}
-			fmt.Printf("Period: last %d day(s) (%s ~ %s)\n", statsDays,
-				from.Format("2006-01-02"), now.Format("2006-01-02"))
-			fmt.Printf("Input tokens:   %d\n", stats.TotalInput)
-			fmt.Printf("Output tokens:  %d\n", stats.TotalOutput)
-			fmt.Printf("Total tokens:   %d\n", stats.TotalTokens)
-			fmt.Printf("Requests:       %d\n", stats.RequestCount)
-			fmt.Printf("Errors:         %d\n", stats.ErrorCount)
-
-			// 按用户排行
-			rows, err := usageRepo.UserStats(from, now, 10)
-			if err != nil {
-				return err
-			}
-			if len(rows) > 0 {
-				fmt.Println("\nTop users:")
-				fmt.Printf("  %-36s  %-12s\n", "User ID", "Total Tokens")
-				for _, r := range rows {
-					fmt.Printf("  %-36s  %-12d\n", r.UserID, r.TotalInput+r.TotalOutput)
-				}
-			}
+			return printUserStats(os.Stdout, statsFormat, user.Username, user.ID, input, output, statsDays, from, now)
 		}
-		return nil
+
+		// 全局统计
+		stats, err := usageRepo.GlobalSumTokens(from, now)
+		if err != nil {
+			return err
+		}
+		rows, err := usageRepo.UserStats(from, now, 10)
+		if err != nil {
+			return err
+		}
+		return printGlobalStats(os.Stdout, statsFormat, stats, rows, statsDays, from, now)
 	},
 }
 
 func init() {
 	adminStatsCmd.Flags().StringVar(&statsUser, "user", "", "filter by username")
 	adminStatsCmd.Flags().IntVar(&statsDays, "days", 7, "number of days to include")
+	adminStatsCmd.Flags().StringVar(&statsFormat, "format", "text", "output format: text|json|csv")
+}
+
+// printUserStats formats and writes per-user statistics to w in the requested format.
+func printUserStats(w io.Writer, format, username, userID string, input, output int64, days int, from, to time.Time) error {
+	total := input + output
+	switch format {
+	case "json":
+		out := map[string]interface{}{
+			"user":          username,
+			"user_id":       userID,
+			"period_days":   days,
+			"from":          from.Format("2006-01-02"),
+			"to":            to.Format("2006-01-02"),
+			"input_tokens":  input,
+			"output_tokens": output,
+			"total_tokens":  total,
+		}
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		return enc.Encode(out)
+	case "csv":
+		fmt.Fprintln(w, "username,user_id,period_days,from,to,input_tokens,output_tokens,total_tokens")
+		fmt.Fprintf(w, "%s,%s,%d,%s,%s,%d,%d,%d\n",
+			username, userID, days,
+			from.Format("2006-01-02"), to.Format("2006-01-02"),
+			input, output, total)
+	default: // text
+		fmt.Fprintf(w, "User: %s (%s)\n", username, userID)
+		fmt.Fprintf(w, "Period: last %d day(s) (%s ~ %s)\n", days,
+			from.Format("2006-01-02"), to.Format("2006-01-02"))
+		fmt.Fprintf(w, "Input tokens:  %d\n", input)
+		fmt.Fprintf(w, "Output tokens: %d\n", output)
+		fmt.Fprintf(w, "Total tokens:  %d\n", total)
+	}
+	return nil
+}
+
+// printGlobalStats formats and writes global statistics (including top-users) to w.
+func printGlobalStats(w io.Writer, format string, stats db.GlobalStats, rows []db.UserStatRow, days int, from, to time.Time) error {
+	type topUserEntry struct {
+		UserID       string `json:"user_id"`
+		InputTokens  int64  `json:"input_tokens"`
+		OutputTokens int64  `json:"output_tokens"`
+		TotalTokens  int64  `json:"total_tokens"`
+	}
+	switch format {
+	case "json":
+		topUsers := make([]topUserEntry, len(rows))
+		for i, r := range rows {
+			topUsers[i] = topUserEntry{
+				UserID:       r.UserID,
+				InputTokens:  r.TotalInput,
+				OutputTokens: r.TotalOutput,
+				TotalTokens:  r.TotalInput + r.TotalOutput,
+			}
+		}
+		out := map[string]interface{}{
+			"period_days":   days,
+			"from":          from.Format("2006-01-02"),
+			"to":            to.Format("2006-01-02"),
+			"input_tokens":  stats.TotalInput,
+			"output_tokens": stats.TotalOutput,
+			"total_tokens":  stats.TotalTokens,
+			"requests":      stats.RequestCount,
+			"errors":        stats.ErrorCount,
+			"top_users":     topUsers,
+		}
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		return enc.Encode(out)
+	case "csv":
+		fmt.Fprintln(w, "period_days,from,to,input_tokens,output_tokens,total_tokens,requests,errors")
+		fmt.Fprintf(w, "%d,%s,%s,%d,%d,%d,%d,%d\n",
+			days, from.Format("2006-01-02"), to.Format("2006-01-02"),
+			stats.TotalInput, stats.TotalOutput, stats.TotalTokens,
+			stats.RequestCount, stats.ErrorCount)
+		if len(rows) > 0 {
+			fmt.Fprintln(w, "user_id,input_tokens,output_tokens,total_tokens")
+			for _, r := range rows {
+				fmt.Fprintf(w, "%s,%d,%d,%d\n", r.UserID, r.TotalInput, r.TotalOutput, r.TotalInput+r.TotalOutput)
+			}
+		}
+	default: // text
+		fmt.Fprintf(w, "Period: last %d day(s) (%s ~ %s)\n", days,
+			from.Format("2006-01-02"), to.Format("2006-01-02"))
+		fmt.Fprintf(w, "Input tokens:   %d\n", stats.TotalInput)
+		fmt.Fprintf(w, "Output tokens:  %d\n", stats.TotalOutput)
+		fmt.Fprintf(w, "Total tokens:   %d\n", stats.TotalTokens)
+		fmt.Fprintf(w, "Requests:       %d\n", stats.RequestCount)
+		fmt.Fprintf(w, "Errors:         %d\n", stats.ErrorCount)
+		if len(rows) > 0 {
+			fmt.Fprintln(w, "\nTop users:")
+			fmt.Fprintf(w, "  %-36s  %-12s\n", "User ID", "Total Tokens")
+			for _, r := range rows {
+				fmt.Fprintf(w, "  %-36s  %-12d\n", r.UserID, r.TotalInput+r.TotalOutput)
+			}
+		}
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -1053,8 +1280,224 @@ var adminTokenRevokeCmd = &cobra.Command{
 }
 
 // ---------------------------------------------------------------------------
+// sproxy admin backup
+// ---------------------------------------------------------------------------
+
+var adminBackupOutput string
+
+var adminBackupCmd = &cobra.Command{
+	Use:   "backup",
+	Short: "Copy the SQLite database to a backup file",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		logger, err := zap.NewProduction()
+		if err != nil {
+			return fmt.Errorf("init logger: %w", err)
+		}
+		cfgPath := adminConfigFlag
+		if cfgPath == "" {
+			cfgPath = "sproxy.yaml"
+		}
+		cfg, _, err := config.LoadSProxyConfig(cfgPath)
+		if err != nil {
+			return fmt.Errorf("load config: %w", err)
+		}
+		src := cfg.Database.Path
+		if src == "" {
+			return fmt.Errorf("database.path is not set in config")
+		}
+
+		dst := adminBackupOutput
+		if dst == "" {
+			dst = src + ".bak"
+		}
+
+		logger.Info("starting database backup",
+			zap.String("src", src),
+			zap.String("dst", dst),
+		)
+
+		in, err := os.Open(src)
+		if err != nil {
+			return fmt.Errorf("open source database: %w", err)
+		}
+		defer in.Close()
+
+		out, err := os.Create(dst)
+		if err != nil {
+			return fmt.Errorf("create backup file: %w", err)
+		}
+		defer out.Close()
+
+		if _, err := io.Copy(out, in); err != nil {
+			return fmt.Errorf("copy database: %w", err)
+		}
+
+		fmt.Printf("Backup created: %s\n", dst)
+		logger.Info("database backup complete", zap.String("dst", dst))
+		return nil
+	},
+}
+
+func init() {
+	adminBackupCmd.Flags().StringVar(&adminBackupOutput, "output", "", "backup file path (default: <db-path>.bak)")
+}
+
+// ---------------------------------------------------------------------------
+// sproxy admin export
+// ---------------------------------------------------------------------------
+
+var (
+	exportFormat string
+	exportFrom   string
+	exportTo     string
+	exportOutput string
+)
+
+var adminExportCmd = &cobra.Command{
+	Use:   "export",
+	Short: "Export usage logs to CSV or JSON file",
+	Long: `Export usage logs from the SQLite database to a CSV or JSON file.
+
+Time range defaults to the last 30 days when --from/--to are not specified.
+
+Examples:
+  sproxy admin export --format csv --output logs.csv
+  sproxy admin export --format json --from 2024-01-01 --to 2024-01-31 --output jan.json`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if exportFormat != "csv" && exportFormat != "json" {
+			return fmt.Errorf("invalid format %q: must be csv or json", exportFormat)
+		}
+
+		_, _, usageRepo, _, logger, database, err := openAdminDB()
+		if err != nil {
+			return err
+		}
+		defer closeGormDB(zap.NewNop(), database)
+
+		now := time.Now().UTC()
+		from := now.AddDate(0, 0, -30).Truncate(24 * time.Hour)
+		to := now
+
+		if exportFrom != "" {
+			t, perr := time.Parse("2006-01-02", exportFrom)
+			if perr != nil {
+				return fmt.Errorf("invalid --from date (expected YYYY-MM-DD): %w", perr)
+			}
+			from = t.UTC()
+		}
+		if exportTo != "" {
+			t, perr := time.Parse("2006-01-02", exportTo)
+			if perr != nil {
+				return fmt.Errorf("invalid --to date (expected YYYY-MM-DD): %w", perr)
+			}
+			to = t.UTC().Add(24*time.Hour - time.Nanosecond)
+		}
+
+		// 确定输出目标
+		var out io.Writer = os.Stdout
+		var outFile *os.File
+		if exportOutput != "" {
+			outFile, err = os.Create(exportOutput)
+			if err != nil {
+				return fmt.Errorf("create output file: %w", err)
+			}
+			defer outFile.Close()
+			out = outFile
+		}
+
+		logger.Info("exporting usage logs",
+			zap.String("format", exportFormat),
+			zap.Time("from", from),
+			zap.Time("to", to),
+			zap.String("output", exportOutput),
+		)
+
+		exported := 0
+		var exportErr error
+
+		if exportFormat == "csv" {
+			// UTF-8 BOM for Excel compatibility
+			if _, err := fmt.Fprint(out, "\xEF\xBB\xBF"); err != nil {
+				return fmt.Errorf("write BOM: %w", err)
+			}
+			cw := csv.NewWriter(out)
+			headers := []string{
+				"id", "request_id", "user_id", "model",
+				"input_tokens", "output_tokens", "total_tokens",
+				"is_streaming", "status_code", "duration_ms",
+				"cost_usd", "source_node", "upstream_url", "created_at",
+			}
+			if err := cw.Write(headers); err != nil {
+				return fmt.Errorf("write CSV header: %w", err)
+			}
+			exportErr = usageRepo.ExportLogs(from, to, func(l db.UsageLog) error {
+				row := []string{
+					strconv.FormatUint(uint64(l.ID), 10),
+					l.RequestID, l.UserID, l.Model,
+					strconv.Itoa(l.InputTokens),
+					strconv.Itoa(l.OutputTokens),
+					strconv.Itoa(l.TotalTokens),
+					strconv.FormatBool(l.IsStreaming),
+					strconv.Itoa(l.StatusCode),
+					strconv.FormatInt(l.DurationMs, 10),
+					fmt.Sprintf("%.6f", l.CostUSD),
+					l.SourceNode, l.UpstreamURL,
+					l.CreatedAt.UTC().Format(time.RFC3339),
+				}
+				exported++
+				return cw.Write(row)
+			})
+			cw.Flush()
+			if cw.Error() != nil && exportErr == nil {
+				exportErr = cw.Error()
+			}
+		} else {
+			// NDJSON
+			enc := json.NewEncoder(out)
+			exportErr = usageRepo.ExportLogs(from, to, func(l db.UsageLog) error {
+				exported++
+				return enc.Encode(map[string]interface{}{
+					"id": l.ID, "request_id": l.RequestID,
+					"user_id": l.UserID, "model": l.Model,
+					"input_tokens": l.InputTokens, "output_tokens": l.OutputTokens,
+					"total_tokens": l.TotalTokens, "is_streaming": l.IsStreaming,
+					"status_code": l.StatusCode, "duration_ms": l.DurationMs,
+					"cost_usd": l.CostUSD, "source_node": l.SourceNode,
+					"upstream_url": l.UpstreamURL,
+					"created_at":   l.CreatedAt.UTC().Format(time.RFC3339),
+				})
+			})
+		}
+
+		if exportErr != nil {
+			return fmt.Errorf("export failed after %d rows: %w", exported, exportErr)
+		}
+
+		dest := exportOutput
+		if dest == "" {
+			dest = "stdout"
+		}
+		fmt.Fprintf(os.Stderr, "Exported %d rows (%s → %s)\n", exported, exportFormat, dest)
+		return nil
+	},
+}
+
+func init() {
+	adminExportCmd.Flags().StringVar(&exportFormat, "format", "csv", "output format: csv|json")
+	adminExportCmd.Flags().StringVar(&exportFrom, "from", "", "start date YYYY-MM-DD (default: 30 days ago)")
+	adminExportCmd.Flags().StringVar(&exportTo, "to", "", "end date YYYY-MM-DD (default: today)")
+	adminExportCmd.Flags().StringVar(&exportOutput, "output", "", "output file path (default: stdout)")
+}
+
+// ---------------------------------------------------------------------------
 // 日志级别辅助函数（支持 SIGHUP 热重载）
 // ---------------------------------------------------------------------------
+
+// wrapOtelHTTP 用 otelhttp.NewHandler 包装 handler，为每个 HTTP 请求创建 OTel span。
+// 仅在 cfg.Telemetry.Enabled=true 时调用；disabled 时 sp.Handler() 直接注册，无开销。
+func wrapOtelHTTP(h http.Handler, operation string) http.Handler {
+	return otelhttp.NewHandler(h, operation)
+}
 
 // buildLogger 使用给定的 AtomicLevel 构建一个结构化 JSON logger。
 // AtomicLevel 允许在运行时（例如通过 SIGHUP）动态修改日志级别。
@@ -1083,4 +1526,193 @@ func parseZapLevel(level string) zapcore.Level {
 	default:
 		return zapcore.InfoLevel
 	}
+}
+
+// ---------------------------------------------------------------------------
+// sproxy admin apikey
+// ---------------------------------------------------------------------------
+
+// openAdminConfig 加载配置并打开 DB，另外返回 config（供 apikey 命令使用）。
+func openAdminConfig() (*config.SProxyFullConfig, *db.APIKeyRepo, *zap.Logger, *gorm.DB, error) {
+	logger, err := zap.NewProduction()
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("init logger: %w", err)
+	}
+	cfgPath := adminConfigFlag
+	if cfgPath == "" {
+		cfgPath = "sproxy.yaml"
+	}
+	cfg, _, err := config.LoadSProxyConfig(cfgPath)
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("load config from %q: %w", cfgPath, err)
+	}
+	database, err := db.Open(logger, cfg.Database.Path)
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("open database: %w", err)
+	}
+	if err := db.Migrate(logger, database); err != nil {
+		closeGormDB(logger, database)
+		return nil, nil, nil, nil, fmt.Errorf("migrate database: %w", err)
+	}
+	return cfg, db.NewAPIKeyRepo(database, logger), logger, database, nil
+}
+
+var adminApikeyCmd = &cobra.Command{
+	Use:   "apikey",
+	Short: "Manage API keys",
+}
+
+// --- apikey add ---
+
+var (
+	apikeyAddValue    string
+	apikeyAddProvider string
+)
+
+var adminApikeyAddCmd = &cobra.Command{
+	Use:   "add <name>",
+	Short: "Add a new API key",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name := args[0]
+		cfg, repo, logger, database, err := openAdminConfig()
+		if err != nil {
+			return err
+		}
+		defer closeGormDB(logger, database)
+		if cfg.Admin.KeyEncryptionKey == "" {
+			return fmt.Errorf("admin.key_encryption_key is not configured in sproxy.yaml")
+		}
+		value := apikeyAddValue
+		if value == "" {
+			value, err = readPassword("API Key value: ")
+			if err != nil {
+				return fmt.Errorf("read api key: %w", err)
+			}
+		}
+		encrypted, err := auth.Encrypt(value, cfg.Admin.KeyEncryptionKey)
+		if err != nil {
+			return fmt.Errorf("encrypt key: %w", err)
+		}
+		key, err := repo.Create(name, encrypted, apikeyAddProvider)
+		if err != nil {
+			return fmt.Errorf("create api key: %w", err)
+		}
+		fmt.Printf("API key %q created (id: %s, provider: %s)\n", name, key.ID, key.Provider)
+		return nil
+	},
+}
+
+func init() {
+	adminApikeyAddCmd.Flags().StringVar(&apikeyAddValue, "value", "", "API key value (omit to read from prompt)")
+	adminApikeyAddCmd.Flags().StringVar(&apikeyAddProvider, "provider", "anthropic", "provider: anthropic|openai|ollama")
+}
+
+// --- apikey list ---
+
+var adminApikeyListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List API keys",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		_, repo, logger, database, err := openAdminConfig()
+		if err != nil {
+			return err
+		}
+		defer closeGormDB(logger, database)
+		keys, err := repo.List()
+		if err != nil {
+			return fmt.Errorf("list api keys: %w", err)
+		}
+		fmt.Printf("%-36s  %-20s  %-12s  %-8s  %s\n", "ID", "Name", "Provider", "Active", "Created")
+		fmt.Println("-------------------------------------------------------------------------------------------")
+		for _, k := range keys {
+			active := "yes"
+			if !k.IsActive {
+				active = "no"
+			}
+			fmt.Printf("%-36s  %-20s  %-12s  %-8s  %s\n",
+				k.ID, k.Name, k.Provider, active, k.CreatedAt.Format("2006-01-02"))
+		}
+		return nil
+	},
+}
+
+// --- apikey assign ---
+
+var (
+	apikeyAssignUser  string
+	apikeyAssignGroup string
+)
+
+var adminApikeyAssignCmd = &cobra.Command{
+	Use:   "assign <name>",
+	Short: "Assign an API key to a user or group",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name := args[0]
+		if apikeyAssignUser == "" && apikeyAssignGroup == "" {
+			return fmt.Errorf("--user or --group is required")
+		}
+		_, repo, logger, database, err := openAdminConfig()
+		if err != nil {
+			return err
+		}
+		defer closeGormDB(logger, database)
+		key, err := repo.GetByName(name)
+		if err != nil {
+			return fmt.Errorf("lookup api key: %w", err)
+		}
+		if key == nil {
+			return fmt.Errorf("api key %q not found", name)
+		}
+		var userID, groupID *string
+		if apikeyAssignUser != "" {
+			userID = &apikeyAssignUser
+		}
+		if apikeyAssignGroup != "" {
+			groupID = &apikeyAssignGroup
+		}
+		if err := repo.Assign(key.ID, userID, groupID); err != nil {
+			return fmt.Errorf("assign api key: %w", err)
+		}
+		fmt.Printf("API key %q assigned\n", name)
+		return nil
+	},
+}
+
+func init() {
+	adminApikeyAssignCmd.Flags().StringVar(&apikeyAssignUser, "user", "", "user ID to assign to")
+	adminApikeyAssignCmd.Flags().StringVar(&apikeyAssignGroup, "group", "", "group ID to assign to")
+}
+
+// --- apikey revoke ---
+
+var adminApikeyRevokeCmd = &cobra.Command{
+	Use:   "revoke <name>",
+	Short: "Revoke (deactivate) an API key",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name := args[0]
+		_, repo, logger, database, err := openAdminConfig()
+		if err != nil {
+			return err
+		}
+		defer closeGormDB(logger, database)
+		key, err := repo.GetByName(name)
+		if err != nil {
+			return fmt.Errorf("lookup api key: %w", err)
+		}
+		if key == nil {
+			return fmt.Errorf("api key %q not found", name)
+		}
+		if err := repo.Revoke(key.ID); err != nil {
+			return fmt.Errorf("revoke api key: %w", err)
+		}
+		fmt.Printf("API key %q revoked\n", name)
+		return nil
+	},
+}
+
+func init() {
+	adminApikeyCmd.AddCommand(adminApikeyAddCmd, adminApikeyListCmd, adminApikeyAssignCmd, adminApikeyRevokeCmd)
 }
