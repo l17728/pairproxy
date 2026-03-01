@@ -1,6 +1,6 @@
 # PairProxy 用户手册
 
-**版本 v1.2.0**
+**版本 v1.5.0**
 
 ---
 
@@ -1252,6 +1252,13 @@ GET http://服务器IP:9000/metrics
 | `pairproxy_cost_usd_today` | 今日估算费用（USD） |
 | `pairproxy_tokens_month{type="input/output"}` | 本月累计 token |
 | `pairproxy_requests_month{type="total/error"}` | 本月累计请求 |
+| `pairproxy_database_size_bytes` | SQLite 数据库文件大小 |
+| `pairproxy_quota_cache_hits_total` | 配额缓存命中次数 |
+| `pairproxy_quota_cache_misses_total` | 配额缓存未命中次数 |
+| `pairproxy_proxy_latency_ms` | 代理请求延迟直方图（毫秒） |
+| `pairproxy_llm_latency_ms` | LLM 上游延迟直方图（毫秒） |
+
+延迟直方图桶边界：100ms, 500ms, 1s, 5s, 30s, +Inf
 
 Prometheus 配置示例：
 

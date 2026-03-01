@@ -155,7 +155,22 @@ func (hc *HealthChecker) checkOne(t Target) {
 
 func (hc *HealthChecker) checkOneWithPath(t Target, healthPath string) {
 	url := t.Addr + healthPath
-	resp, err := hc.client.Get(url) //nolint:noctx
+
+	// 使用带超时的 context，避免健康检查无限阻塞
+	ctx, cancel := context.WithTimeout(context.Background(), hc.timeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		hc.logger.Debug("health check: failed to create request",
+			zap.String("target", t.ID),
+			zap.Error(err),
+		)
+		hc.recordFailure(t.ID)
+		return
+	}
+
+	resp, err := hc.client.Do(req)
 	if err != nil {
 		hc.logger.Debug("health check failed",
 			zap.String("target", t.ID),

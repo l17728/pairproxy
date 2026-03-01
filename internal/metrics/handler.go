@@ -206,6 +206,49 @@ func (h *Handler) collect() ([]byte, error) {
 		}
 	}
 
+	// --- latency histogram (P2 improvement) ---
+	if tracker := GetGlobalLatencyTracker(); tracker != nil {
+		// Proxy latency histogram
+		proxySnap := tracker.ProxyLatency().Snapshot()
+		if proxySnap.Count > 0 {
+			w("# HELP pairproxy_proxy_latency_ms Proxy request latency in milliseconds\n")
+			w("# TYPE pairproxy_proxy_latency_ms summary\n")
+			w("pairproxy_proxy_latency_ms{quantile=\"avg\"} %.2f\n", proxySnap.AvgMs)
+			w("pairproxy_proxy_latency_ms_sum %d\n", proxySnap.Sum)
+			w("pairproxy_proxy_latency_ms_count %d\n", proxySnap.Count)
+
+			// Histogram buckets
+			w("# TYPE pairproxy_proxy_latency_ms histogram\n")
+			cumulative := int64(0)
+			for i, bound := range LatencyBucketBounds {
+				cumulative += proxySnap.Buckets[i]
+				w("pairproxy_proxy_latency_ms_bucket{le=\"%d\"} %d\n", bound, cumulative)
+			}
+			cumulative += proxySnap.Buckets[len(proxySnap.Buckets)-1]
+			w("pairproxy_proxy_latency_ms_bucket{le=\"+Inf\"} %d\n", cumulative)
+		}
+
+		// LLM latency histogram
+		llmSnap := tracker.LLMLatency().Snapshot()
+		if llmSnap.Count > 0 {
+			w("# HELP pairproxy_llm_latency_ms LLM upstream latency in milliseconds\n")
+			w("# TYPE pairproxy_llm_latency_ms summary\n")
+			w("pairproxy_llm_latency_ms{quantile=\"avg\"} %.2f\n", llmSnap.AvgMs)
+			w("pairproxy_llm_latency_ms_sum %d\n", llmSnap.Sum)
+			w("pairproxy_llm_latency_ms_count %d\n", llmSnap.Count)
+
+			// Histogram buckets
+			w("# TYPE pairproxy_llm_latency_ms histogram\n")
+			cumulative := int64(0)
+			for i, bound := range LatencyBucketBounds {
+				cumulative += llmSnap.Buckets[i]
+				w("pairproxy_llm_latency_ms_bucket{le=\"%d\"} %d\n", bound, cumulative)
+			}
+			cumulative += llmSnap.Buckets[len(llmSnap.Buckets)-1]
+			w("pairproxy_llm_latency_ms_bucket{le=\"+Inf\"} %d\n", cumulative)
+		}
+	}
+
 	h.logger.Debug("metrics collected",
 		zap.Int64("today_requests", today.RequestCount),
 		zap.Int64("today_tokens", today.TotalTokens),

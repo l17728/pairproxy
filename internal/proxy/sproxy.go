@@ -24,6 +24,7 @@ import (
 	"github.com/l17728/pairproxy/internal/cluster"
 	"github.com/l17728/pairproxy/internal/db"
 	"github.com/l17728/pairproxy/internal/lb"
+	"github.com/l17728/pairproxy/internal/metrics"
 	"github.com/l17728/pairproxy/internal/quota"
 	"github.com/l17728/pairproxy/internal/tap"
 	"github.com/l17728/pairproxy/internal/version"
@@ -658,6 +659,12 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 			durationMs := time.Since(startTime).Milliseconds()
 			ct := resp.Header.Get("Content-Type")
 			isStreaming := strings.Contains(ct, "text/event-stream")
+
+			// 记录延迟到 metrics 追踪器
+			if tracker := metrics.GetGlobalLatencyTracker(); tracker != nil {
+				tracker.ObserveProxyLatency(durationMs)
+				tracker.ObserveLLMLatency(durationMs)
+			}
 
 			sp.logger.Info("LLM response received",
 				zap.String("request_id", reqID),

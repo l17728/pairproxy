@@ -142,6 +142,22 @@ func (h *AdminHandler) handleCreateLLMBinding(w http.ResponseWriter, r *http.Req
 		zap.Any("user_id", req.UserID),
 		zap.Any("group_id", req.GroupID),
 	)
+	// 审计日志
+	if detailBytes, jerr := json.Marshal(map[string]interface{}{
+		"target_url": req.TargetURL,
+		"user_id":    req.UserID,
+		"group_id":   req.GroupID,
+	}); jerr == nil {
+		target := ""
+		if req.UserID != nil {
+			target = *req.UserID
+		} else if req.GroupID != nil {
+			target = *req.GroupID
+		}
+		if aerr := h.auditRepo.Create("admin", "llm.bind", target, string(detailBytes)); aerr != nil {
+			h.logger.Warn("audit write failed", zap.Error(aerr))
+		}
+	}
 	w.WriteHeader(http.StatusCreated)
 }
 
@@ -162,6 +178,10 @@ func (h *AdminHandler) handleDeleteLLMBinding(w http.ResponseWriter, r *http.Req
 		return
 	}
 	h.logger.Info("LLM binding deleted", zap.String("id", id))
+	// 审计日志
+	if aerr := h.auditRepo.Create("admin", "llm.unbind", id, ""); aerr != nil {
+		h.logger.Warn("audit write failed", zap.Error(aerr))
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -220,5 +240,14 @@ func (h *AdminHandler) handleLLMDistribute(w http.ResponseWriter, r *http.Reques
 		zap.Int("users", len(req.UserIDs)),
 		zap.Int("targets", len(req.TargetURLs)),
 	)
+	// 审计日志
+	if detailBytes, jerr := json.Marshal(map[string]interface{}{
+		"user_count":  len(req.UserIDs),
+		"target_count": len(req.TargetURLs),
+	}); jerr == nil {
+		if aerr := h.auditRepo.Create("admin", "llm.distribute", "all_users", string(detailBytes)); aerr != nil {
+			h.logger.Warn("audit write failed", zap.Error(aerr))
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]int{"assigned": len(req.UserIDs)})
 }

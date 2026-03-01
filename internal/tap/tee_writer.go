@@ -80,6 +80,14 @@ func (tw *TeeResponseWriter) WriteHeader(statusCode int) {
 func (tw *TeeResponseWriter) Write(p []byte) (int, error) {
 	// 先写给客户端（不阻塞流传输）
 	n, err := tw.ResponseWriter.Write(p)
+	if err != nil {
+		tw.logger.Warn("failed to write to client",
+			zap.String("request_id", tw.record.RequestID),
+			zap.Int("bytes_attempted", len(p)),
+			zap.Int("bytes_written", n),
+			zap.Error(err),
+		)
+	}
 
 	// 判断是否 streaming（响应第一次写入时检测 Content-Type）
 	if !tw.isStreaming {

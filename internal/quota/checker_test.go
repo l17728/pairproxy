@@ -191,12 +191,15 @@ func TestCheckerMonthlyLimitExceeded(t *testing.T) {
 	}
 
 	// 本月两条记录共 600 tokens
+	// 注意：使用本月内的时间，避免跨月问题
 	now := time.Now()
+	// 第一条记录：本月早些时候（用-1小时确保在本月内）
 	writer.Record(db.UsageRecord{
 		RequestID: "req-3a", UserID: "u5",
 		InputTokens: 300, OutputTokens: 100,
-		StatusCode: 200, CreatedAt: now.Add(-2 * 24 * time.Hour),
+		StatusCode: 200, CreatedAt: now.Add(-1 * time.Hour),
 	})
+	// 第二条记录：当前时间
 	writer.Record(db.UsageRecord{
 		RequestID: "req-3b", UserID: "u5",
 		InputTokens: 150, OutputTokens: 50,

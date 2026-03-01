@@ -890,6 +890,15 @@ func (h *AdminHandler) handleCreateAPIKey(w http.ResponseWriter, r *http.Request
 		return
 	}
 	h.logger.Info("admin created api key", zap.String("name", req.Name), zap.String("provider", key.Provider))
+	// 审计日志
+	if detailBytes, jerr := json.Marshal(map[string]interface{}{
+		"name":     req.Name,
+		"provider": key.Provider,
+	}); jerr == nil {
+		if aerr := h.auditRepo.Create("admin", "apikey.create", req.Name, string(detailBytes)); aerr != nil {
+			h.logger.Warn("audit write failed", zap.Error(aerr))
+		}
+	}
 	writeJSON(w, http.StatusCreated, apiKeyToResponse(*key))
 }
 
@@ -924,6 +933,22 @@ func (h *AdminHandler) handleAssignAPIKey(w http.ResponseWriter, r *http.Request
 		zap.Any("user_id", req.UserID),
 		zap.Any("group_id", req.GroupID),
 	)
+	// 审计日志
+	if detailBytes, jerr := json.Marshal(map[string]interface{}{
+		"key_id":   id,
+		"user_id":  req.UserID,
+		"group_id": req.GroupID,
+	}); jerr == nil {
+		target := ""
+		if req.UserID != nil {
+			target = *req.UserID
+		} else if req.GroupID != nil {
+			target = *req.GroupID
+		}
+		if aerr := h.auditRepo.Create("admin", "apikey.assign", target, string(detailBytes)); aerr != nil {
+			h.logger.Warn("audit write failed", zap.Error(aerr))
+		}
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -940,6 +965,10 @@ func (h *AdminHandler) handleRevokeAPIKey(w http.ResponseWriter, r *http.Request
 		return
 	}
 	h.logger.Info("admin revoked api key", zap.String("key_id", id))
+	// 审计日志
+	if aerr := h.auditRepo.Create("admin", "apikey.revoke", id, ""); aerr != nil {
+		h.logger.Warn("audit write failed", zap.Error(aerr))
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
