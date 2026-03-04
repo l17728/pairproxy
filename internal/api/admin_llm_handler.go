@@ -96,7 +96,7 @@ func (h *AdminHandler) handleListLLMBindings(w http.ResponseWriter, r *http.Requ
 	bindings, err := h.llmBindingRepo.List()
 	if err != nil {
 		h.logger.Error("list LLM bindings failed", zap.Error(err))
-		writeJSONError(w, http.StatusInternalServerError, "db_error", err.Error())
+		writeJSONError(w, http.StatusInternalServerError, "internal_error", "an internal error occurred")
 		return
 	}
 	result := make([]llmBindingResponse, len(bindings))
@@ -134,7 +134,7 @@ func (h *AdminHandler) handleCreateLLMBinding(w http.ResponseWriter, r *http.Req
 	}
 	if err := h.llmBindingRepo.Set(req.TargetURL, req.UserID, req.GroupID); err != nil {
 		h.logger.Error("create LLM binding failed", zap.Error(err))
-		writeJSONError(w, http.StatusInternalServerError, "db_error", err.Error())
+		writeJSONError(w, http.StatusInternalServerError, "internal_error", "an internal error occurred")
 		return
 	}
 	h.logger.Info("LLM binding created",
@@ -174,7 +174,7 @@ func (h *AdminHandler) handleDeleteLLMBinding(w http.ResponseWriter, r *http.Req
 	}
 	if err := h.llmBindingRepo.Delete(id); err != nil {
 		h.logger.Error("delete LLM binding failed", zap.String("id", id), zap.Error(err))
-		writeJSONError(w, http.StatusInternalServerError, "db_error", err.Error())
+		writeJSONError(w, http.StatusInternalServerError, "internal_error", "an internal error occurred")
 		return
 	}
 	h.logger.Info("LLM binding deleted", zap.String("id", id))
@@ -220,7 +220,7 @@ func (h *AdminHandler) handleLLMDistribute(w http.ResponseWriter, r *http.Reques
 		users, err := h.userRepo.ListByGroup("")
 		if err != nil {
 			h.logger.Error("list users failed for distribute", zap.Error(err))
-			writeJSONError(w, http.StatusInternalServerError, "db_error", err.Error())
+			writeJSONError(w, http.StatusInternalServerError, "internal_error", "an internal error occurred")
 			return
 		}
 		for _, u := range users {
