@@ -90,14 +90,14 @@ func (r *Reporter) loop(ctx context.Context) {
 	defer ticker.Stop()
 
 	// 启动时立即注册一次
-	r.sendHeartbeat()
+	r.sendHeartbeat(ctx)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			r.sendHeartbeat()
+			r.sendHeartbeat(ctx)
 		}
 	}
 }
@@ -110,7 +110,7 @@ type RegisterPayload struct {
 	SourceNode string `json:"source_node"`
 }
 
-func (r *Reporter) sendHeartbeat() {
+func (r *Reporter) sendHeartbeat(ctx context.Context) {
 	payload := RegisterPayload{
 		ID:         r.selfID,
 		Addr:       r.selfAddr,
@@ -126,7 +126,7 @@ func (r *Reporter) sendHeartbeat() {
 	}
 
 	url := r.sp1Addr + defaultRegisterPath
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(data))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
 	if err != nil {
 		r.logger.Error("failed to create register request", zap.Error(err))
 		r.heartbeatFailures.Add(1)
@@ -170,7 +170,7 @@ type UsageReportPayload struct {
 }
 
 // ReportUsage 立即上报一批 usage 记录（供调用方手动调用或测试）。
-func (r *Reporter) ReportUsage(records []db.UsageRecord) error {
+func (r *Reporter) ReportUsage(ctx context.Context, records []db.UsageRecord) error {
 	if len(records) == 0 {
 		return nil
 	}
@@ -185,7 +185,7 @@ func (r *Reporter) ReportUsage(records []db.UsageRecord) error {
 	}
 
 	url := r.sp1Addr + defaultUsageReportPath
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(data))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
 	if err != nil {
 		return fmt.Errorf("create usage report request: %w", err)
 	}

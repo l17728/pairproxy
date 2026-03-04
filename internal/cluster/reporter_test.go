@@ -98,7 +98,7 @@ func TestReporterUsageReport(t *testing.T) {
 		{RequestID: "req-2", UserID: "user-2", InputTokens: 200, OutputTokens: 80},
 	}
 
-	if err := reporter.ReportUsage(records); err != nil {
+	if err := reporter.ReportUsage(context.Background(), records); err != nil {
 		t.Fatalf("ReportUsage: %v", err)
 	}
 
@@ -136,6 +136,6 @@ func TestReporterHeartbeatAuth(t *testing.T) {
 	}, nil)
 
 	// 只测试一次立即心跳
-	reporter.sendHeartbeat()
+	reporter.sendHeartbeat(context.Background())
 	// 测试不 panic，且 mock server 验证了 auth header
 }
