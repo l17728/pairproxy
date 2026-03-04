@@ -1312,11 +1312,20 @@ cluster:
 
 > 告警发送失败不影响正常代理功能，系统会静默忽略发送错误。
 
-### 10.3 动态调整日志级别（不重启服务）
+### 10.3 动态配置热重载（SIGHUP，不重启服务）
 
-在 Linux/macOS 上，可以在**不停止服务**的情况下即时调整日志级别：
+在 Linux/macOS 上，可以在**不停止服务**的情况下即时调整以下配置：
 
-1. 修改 `sproxy.yaml` 中的 `log.level` 字段（例如从 `info` 改为 `debug`）
+| 配置项 | 说明 |
+|--------|------|
+| `log.level` | 日志级别动态切换（`debug` / `info` / `warn` / `error`） |
+| `log.debug_file` | 双向转发内容 debug 日志：设置路径即启用，清空即关闭 |
+
+其他配置更改（如 LLM targets、JWT secret、端口）需要完整重启才生效。
+
+#### 热重载操作步骤
+
+1. 编辑 `sproxy.yaml` 中需要变更的字段
 2. 向 sproxy 进程发送 `SIGHUP` 信号：
 
 ```bash
@@ -1330,13 +1339,38 @@ kill -HUP $(pidof sproxy)
 kill -HUP $(cat /var/run/sproxy.pid)
 ```
 
-3. 排查完成后，将 `log.level` 改回 `info` 并再次发送 `SIGHUP`。
+#### 示例：开启 debug 转发日志
+
+```yaml
+# sproxy.yaml
+log:
+  level: "info"
+  debug_file: "/var/log/pairproxy/debug.log"   # 新增此行
+```
+
+```bash
+kill -HUP $(pidof sproxy)
+# 日志输出：INFO  debug file logging enabled via SIGHUP  path=/var/log/pairproxy/debug.log
+```
+
+关闭时，将 `debug_file` 行删除（或置为空字符串），再次发送 `SIGHUP` 即可。
+
+#### debug_file 格式说明
+
+启用后，每条请求产生四类 DEBUG 日志条目（均为 JSON 格式）：
+
+| 方向 | 日志消息 | 包含字段 |
+|------|----------|----------|
+| ← client request | 客户端（Claude Code）发来的原始请求 | method、path、headers、body（≤64KB） |
+| → LLM request | 转发给 LLM 上游的请求（已替换 Authorization） | method、target、headers |
+| ← LLM response | LLM 返回的响应头信息 | status、streaming、headers |
+| ← LLM stream chunk | streaming 模式下的每个 SSE chunk | data（≤64KB） |
+
+敏感 header（`Authorization`、`X-PairProxy-Auth`、`Cookie`）自动过滤，不写入日志文件。
 
 **注意**：
-
-- `SIGHUP` **只重载** `log.level`，其他配置更改（如 LLM targets、JWT secret）需要完整重启才生效
-- Windows 不支持 `SIGHUP`，必须重启服务：`Restart-Service sproxy`
-- sproxy 收到 `SIGHUP` 时会打印日志：`INFO  SIGHUP received — reloading config`，若日志级别发生变化，还会打印：`INFO  log level changed via SIGHUP  old=info  new=debug`
+- `SIGHUP` 热重载仅在 Linux/macOS 上支持；Windows 需完整重启服务：`Restart-Service sproxy`
+- sproxy 收到 `SIGHUP` 时始终打印：`INFO  SIGHUP received — reloading config`
 
 **可接受的日志级别**：`debug` | `info` | `warn` | `error`
 
