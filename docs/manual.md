@@ -1,6 +1,6 @@
 # PairProxy 用户手册
 
-**版本 v1.5.0**
+**版本 v2.1.0**
 
 ---
 
@@ -680,6 +680,7 @@ admin:
 cluster:
   role: "worker"                              # 必须是 worker
   primary: "http://sp1.company.com:9000"      # 主节点的地址
+  shared_secret: "${CLUSTER_SECRET}"          # ⚠️ 必须与主节点完全相同
   self_addr: "http://sp2.company.com:9000"    # 本节点自身的地址
   self_weight: 50
   report_interval: 30s
@@ -691,7 +692,9 @@ log:
   level: "info"
 ```
 
-> **重要**：所有节点必须使用**完全相同**的 `JWT_SECRET`，否则用户的登录状态在不同节点间不互认。
+> **重要**：
+> - 所有节点必须使用**完全相同**的 `JWT_SECRET`，否则用户的登录状态在不同节点间不互认。
+> - `CLUSTER_SECRET` 是 worker 向 primary 上报心跳和用量的 HMAC 认证密钥，**worker 模式必填**，且所有节点必须相同。可用 `openssl rand -hex 32` 生成。
 
 worker 节点启动后会自动向 primary 注册，cproxy 会在下一次请求后自动感知到新节点并开始分流。
 
@@ -1596,6 +1599,20 @@ LOG_LEVEL=debug sproxy start --config /etc/pairproxy/sproxy.yaml
 - 如果必须公网访问，强烈建议在 sproxy 前面加一层 Nginx/Caddy 并配置 HTTPS（参考 Nginx 官方文档设置反向代理和 SSL 证书）
 - `/metrics` 端点不需要认证，建议通过防火墙仅允许 Prometheus 服务器访问
 
+#### 反向代理与 IP 来源验证
+
+sproxy 的登录限流器通过客户端 IP 防御暴力破解。当 sproxy 前面有 Nginx/Caddy 等反向代理时，真实客户端 IP 由 `X-Forwarded-For` 头传递。**为防止攻击者伪造此头部绕过限流**，必须在配置中声明可信代理的 CIDR：
+
+```yaml
+auth:
+  trusted_proxies:
+    - "10.0.0.0/8"       # 内网代理（如内网 Nginx）
+    - "127.0.0.1/32"     # 本机代理
+```
+
+- **`trusted_proxies` 留空（默认）**：永远使用 TCP 连接的 `RemoteAddr` 作为客户端 IP，忽略 `X-Forwarded-For`。适用于 sproxy 直接暴露的场景。
+- **填写 CIDR**：只有当请求来自这些 IP 段时，才信任 `X-Forwarded-For` 中的值。配置错误（填了非可信代理）会让攻击者能伪造 IP 绕过限流。
+
 ### 13.3 定期维护
 
 - **员工离职**：立即执行 `sproxy admin user disable <用户名>` 和 `sproxy admin token revoke <用户名>`
@@ -1725,6 +1742,10 @@ auth:
   jwt_secret: "${JWT_SECRET}"      # JWT 签名密钥（必填）
   access_token_ttl: 24h            # 用户短期令牌有效期
   refresh_token_ttl: 168h          # 用户长期令牌有效期（7天）
+  trusted_proxies:                 # 可信反向代理 CIDR 列表（留空=永不信任 X-Forwarded-For）
+    - "10.0.0.0/8"                 # 示例：内网代理
+    # - "172.16.0.0/12"           # 示例：Docker 网络
+    # - "127.0.0.1/32"            # 示例：本机 nginx
 
 # admin 配置
 admin:
@@ -1736,6 +1757,7 @@ cluster:
   self_addr: ""                # 本节点的外部访问地址（集群模式必填，单机可留空）
   self_weight: 50              # 本节点权重（1~100，影响 cproxy 分配给本节点的流量比例）
   primary: ""                  # worker 专用：主节点地址
+  shared_secret: ""            # worker 专用：与主节点通信的 HMAC 密钥（worker 模式必填）
   peer_monitor_interval: 30s  # primary 专用：检查 worker 是否下线的间隔
   report_interval: 30s        # worker 专用：向 primary 心跳的间隔
   alert_webhook: ""           # 告警推送 URL（Slack/飞书等，留空不推送）
