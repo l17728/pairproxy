@@ -129,6 +129,7 @@ type SProxyAuth struct {
 	RefreshTokenTTL time.Duration `yaml:"refresh_token_ttl"` // 默认 168h (7d)
 	Provider        string        `yaml:"provider"`           // "local"（默认）| "ldap"
 	LDAP            LDAPConfig    `yaml:"ldap"`              // LDAP 配置（provider="ldap" 时生效）
+	TrustedProxies  []string      `yaml:"trusted_proxies"`   // CIDR 列表，仅来自这些代理的请求才信任 XFF；空=不信任任何代理
 }
 
 // AdminConfig s-proxy 管理员配置
@@ -214,6 +215,9 @@ func (c *SProxyFullConfig) Validate() error {
 	}
 	if c.Cluster.Role == "worker" && c.Cluster.Primary == "" {
 		errs = append(errs, "cluster.primary is required when cluster.role is \"worker\"")
+	}
+	if c.Cluster.Role == "worker" && c.Cluster.SharedSecret == "" {
+		errs = append(errs, "cluster.shared_secret is required when cluster.role is \"worker\"")
 	}
 	if c.Cluster.Role != "" && c.Cluster.Role != "primary" && c.Cluster.Role != "worker" {
 		errs = append(errs, fmt.Sprintf("cluster.role %q is invalid; must be \"primary\" or \"worker\"", c.Cluster.Role))

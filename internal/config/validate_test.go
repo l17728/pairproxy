@@ -82,6 +82,7 @@ func TestValidateSProxy_WorkerWithPrimary(t *testing.T) {
 	cfg := validSProxyCfg()
 	cfg.Cluster.Role = "worker"
 	cfg.Cluster.Primary = "http://sp-1:9000"
+	cfg.Cluster.SharedSecret = "cluster-secret"
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("worker with primary should pass validation, got: %v", err)
 	}
@@ -216,6 +217,40 @@ func TestValidateCProxy_MultipleErrors(t *testing.T) {
 		if !strings.Contains(err.Error(), keyword) {
 			t.Errorf("error should mention %q, got: %v", keyword, err)
 		}
+	}
+}
+
+func TestValidate_WorkerRequiresSharedSecret(t *testing.T) {
+	cfg := &SProxyFullConfig{}
+	cfg.Listen.Port = 9000
+	cfg.Auth.JWTSecret = "secret"
+	cfg.Database.Path = "/tmp/test.db"
+	cfg.LLM.Targets = []LLMTarget{{URL: "http://llm", APIKey: "key"}}
+	cfg.Cluster.Role = "worker"
+	cfg.Cluster.Primary = "http://primary:9000"
+	cfg.Cluster.SharedSecret = "" // intentionally empty
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for missing shared_secret")
+	}
+	if !strings.Contains(err.Error(), "shared_secret") {
+		t.Errorf("error should mention shared_secret, got: %v", err)
+	}
+}
+
+func TestValidate_WorkerWithSharedSecret_OK(t *testing.T) {
+	cfg := &SProxyFullConfig{}
+	cfg.Listen.Port = 9000
+	cfg.Auth.JWTSecret = "secret"
+	cfg.Database.Path = "/tmp/test.db"
+	cfg.LLM.Targets = []LLMTarget{{URL: "http://llm", APIKey: "key"}}
+	cfg.Cluster.Role = "worker"
+	cfg.Cluster.Primary = "http://primary:9000"
+	cfg.Cluster.SharedSecret = "my-secret"
+
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("unexpected error: %v", err)
 	}
 }
 
