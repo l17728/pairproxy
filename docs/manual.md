@@ -1710,7 +1710,7 @@ sproxy:
     - "http://proxy2.company.com:9000"
     # - "http://proxy3.company.com:9000"
 
-  request_timeout: 300s   # 单次请求超时，建议 ≥ 5 分钟
+  # request_timeout: 300s   # 预留字段（当前版本不控制流式请求时长）
 
 auth:
   refresh_threshold: 30m   # 令牌剩余有效期低于此值时自动续期
@@ -1744,7 +1744,7 @@ listen:
 # 上游 LLM 配置
 llm:
   lb_strategy: "round_robin"   # 多个 target 时的负载均衡策略：round_robin / random / weighted
-  request_timeout: 300s        # 向 LLM 发请求的超时时间
+  # request_timeout: 300s   # 预留字段（当前版本不控制流式请求时长）
   targets:
     - url: "https://api.anthropic.com"
       api_key: "${ANTHROPIC_API_KEY_1}"  # 从环境变量读取（不要写明文）
@@ -1854,7 +1854,7 @@ log:
 ```yaml
 llm:
   lb_strategy: weighted_random   # 目前仅支持 weighted_random
-  request_timeout: 120s
+  # request_timeout: 120s   # 预留字段（当前版本不控制流式请求时长）
   max_retries: 2                 # 首次尝试失败后的最大重试次数（默认 2）
   recovery_delay: 60s            # 熔断后自动恢复延迟（默认 60s，0=禁用自动恢复）
 

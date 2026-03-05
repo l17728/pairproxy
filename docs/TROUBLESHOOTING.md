@@ -15,6 +15,7 @@
 7. [性能问题](#7-性能问题)
 8. [调试命令速查](#8-调试命令速查)
 9. [日志文件位置](#9-日志文件位置)
+10. [LLM Extended Thinking / 长流连接断开](#10-llm-extended-thinking--长流连接断开)
 
 ---
 
@@ -519,3 +520,70 @@ journalctl -u sproxy | jq 'select(.msg | contains("JWT verification failed"))'
 # 查看 usage 写入情况
 journalctl -u sproxy | jq 'select(.logger == "usage_writer")'
 ```
+
+---
+
+## 10. LLM Extended Thinking / 长流连接断开
+
+### 10.1 症状
+
+使用 Claude extended thinking（深度思考）模式时，LLM 在返回任何内容前可能**静默持续 30 分钟以上**。此期间连接空闲但并未断开，如果中间层有超时限制则会提前切断。
+
+常见表现：
+- Claude Code 报错 `stream closed unexpectedly` 或 `EOF`
+- sproxy 日志出现 `write: broken pipe`
+- 请求在约 N 分钟后固定超时（说明某层有固定超时值）
+
+### 10.2 排查层级
+
+按从外到内的顺序逐层检查：
+
+| 层级 | 排查方法 | 建议值 |
+|------|---------|--------|
+| **nginx / Caddy 反向代理** | 检查 `proxy_read_timeout` / `proxy_send_timeout` | `0`（不限制）|
+| **sproxy HTTP Server** | 查看 `cmd/sproxy/main.go` 中 `WriteTimeout` | `0`（已禁用）|
+| **cproxy → sproxy transport** | `ResponseHeaderTimeout` 仅限首包，不影响流 | 30s（正常）|
+| **客户端（Claude Code）** | 客户端自身超时设置 | 依客户端配置 |
+
+### 10.3 sproxy 自检
+
+确认当前版本 `WriteTimeout` 已禁用：
+
+```bash
+# 在源码中确认（应看到 WriteTimeout: 0）
+grep -A5 'http.Server{' cmd/sproxy/main.go
+```
+
+预期输出：
+```go
+server := &http.Server{
+    ...
+    WriteTimeout: 0,
+    ...
+}
+```
+
+### 10.4 nginx 前置时的正确配置
+
+```nginx
+# SSE / Extended Thinking：必须禁用缓冲，超时设为 0
+proxy_buffering off;
+proxy_read_timeout 0;
+proxy_send_timeout 0;
+```
+
+> **注意**：`proxy_read_timeout 0` 表示不限制，依赖 sproxy 的客户端断开检测回收挂起连接。若担心空连接积压，可改为 `7200`（2 小时）作为保底。
+
+### 10.5 仍然断开的排查步骤
+
+1. 确认 nginx（或其他反代）超时已设为 0 或足够大
+2. 在 sproxy 日志中搜索断开原因：
+   ```bash
+   journalctl -u sproxy | jq 'select(.msg | contains("broken pipe") or contains("write error"))'
+   ```
+3. 若日志显示 `context canceled`，说明是客户端（Claude Code）主动断开，非 sproxy 问题
+4. 若无日志异常但仍断开，检查 TCP keepalive 配置（操作系统级别）：
+   ```bash
+   sysctl net.ipv4.tcp_keepalive_time    # 建议 ≤ 300
+   sysctl net.ipv4.tcp_keepalive_intvl   # 建议 60
+   ```

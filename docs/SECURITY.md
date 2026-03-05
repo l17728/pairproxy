@@ -284,8 +284,10 @@ server {
 
     # SSE requires disabled buffering
     proxy_buffering off;
-    proxy_read_timeout 600s;
-    proxy_send_timeout 600s;
+    # LLM extended thinking 可静默超过 30 分钟；设为 0 表示不限制，
+    # 依赖 sproxy 自身的客户端断开检测来回收挂起连接。
+    proxy_read_timeout 0;
+    proxy_send_timeout 0;
 
     location / {
         proxy_pass http://127.0.0.1:9000;
