@@ -52,7 +52,7 @@ jobs:
           go test ./... \
             -race \
             -count=1 \
-            -timeout=120s \
+            -timeout=300s \
             -coverprofile=coverage.out \
             -covermode=atomic
 

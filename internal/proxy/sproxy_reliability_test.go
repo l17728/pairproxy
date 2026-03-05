@@ -95,6 +95,13 @@ func TestSProxy_RetryOnUpstreamFailure(t *testing.T) {
 			makeTestResp(200, `{"id":"msg_1","content":[],"usage":{"input_tokens":10,"output_tokens":5}}`),
 		},
 	}
+	t.Cleanup(func() {
+		for _, r := range mt.responses {
+			if r != nil && r.Body != nil {
+				r.Body.Close()
+			}
+		}
+	})
 
 	targets := []LLMTarget{
 		{URL: "http://llm1.local", APIKey: "key1"},

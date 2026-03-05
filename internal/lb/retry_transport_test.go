@@ -54,6 +54,16 @@ func makeResp(status int, body string) *http.Response {
 	}
 }
 
+// closeResponses 关闭 mock 中所有未被上层消费的 response body（用于 t.Cleanup）。
+// NopCloser 多次 Close 是安全的。
+func closeResponses(resps []*http.Response) {
+	for _, r := range resps {
+		if r != nil && r.Body != nil {
+			r.Body.Close()
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // TestRetryTransport_SuccessFirstAttempt
 // ---------------------------------------------------------------------------
@@ -62,6 +72,7 @@ func TestRetryTransport_SuccessFirstAttempt(t *testing.T) {
 	inner := &mockRoundTripper{
 		responses: []*http.Response{makeResp(200, `{"ok":true}`)},
 	}
+	t.Cleanup(func() { closeResponses(inner.responses) })
 	successCalled := 0
 	rt := &RetryTransport{
 		Inner:      inner,
@@ -97,6 +108,7 @@ func TestRetryTransport_RetryOnConnectionError(t *testing.T) {
 		errors:    []error{connErr, nil},
 		responses: []*http.Response{nil, makeResp(200, `{"ok":true}`)},
 	}
+	t.Cleanup(func() { closeResponses(inner.responses) })
 
 	pickCalls := 0
 	rt := &RetryTransport{
@@ -136,6 +148,7 @@ func TestRetryTransport_RetryOn5xx(t *testing.T) {
 			makeResp(200, `{"ok":true}`),
 		},
 	}
+	t.Cleanup(func() { closeResponses(inner.responses) })
 
 	rt := &RetryTransport{
 		Inner:      inner,
@@ -172,6 +185,7 @@ func TestRetryTransport_NoRetryOn4xx(t *testing.T) {
 			makeResp(429, `{"error":"rate_limit"}`),
 		},
 	}
+	t.Cleanup(func() { closeResponses(inner.responses) })
 	pickCalls := 0
 	rt := &RetryTransport{
 		Inner:      inner,
@@ -215,7 +229,10 @@ func TestRetryTransport_NoRetryOnContextCanceled(t *testing.T) {
 	}
 
 	req, _ := http.NewRequest(http.MethodPost, "http://target1/v1/messages", nil)
-	_, err := rt.RoundTrip(req)
+	resp, err := rt.RoundTrip(req)
+	if resp != nil {
+		resp.Body.Close()
+	}
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("expected context.Canceled, got: %v", err)
 	}
@@ -254,7 +271,10 @@ func TestRetryTransport_MaxRetriesExhausted(t *testing.T) {
 	}
 
 	req, _ := http.NewRequest(http.MethodPost, "http://t1/v1/messages", nil)
-	_, err := rt.RoundTrip(req)
+	resp, err := rt.RoundTrip(req)
+	if resp != nil {
+		resp.Body.Close()
+	}
 	if err == nil {
 		t.Fatal("expected error when all targets exhausted")
 	}
@@ -275,6 +295,7 @@ func TestRetryTransport_BodyRestoredOnRetry(t *testing.T) {
 			makeResp(200, `{"ok":true}`),
 		},
 	}
+	t.Cleanup(func() { closeResponses(inner.responses) })
 
 	const requestBody = `{"model":"claude","messages":[]}`
 	rt := &RetryTransport{

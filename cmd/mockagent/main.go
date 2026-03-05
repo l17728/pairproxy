@@ -20,6 +20,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -78,7 +79,7 @@ func doRequest(content string) (received string, duration time.Duration, err err
 		"stream": *flagStream,
 	})
 
-	req, err := http.NewRequest(http.MethodPost, *flagURL+"/v1/messages", bytes.NewReader(bodyBytes))
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, *flagURL+"/v1/messages", bytes.NewReader(bodyBytes))
 	if err != nil {
 		return "", 0, fmt.Errorf("create request: %w", err)
 	}
