@@ -2037,3 +2037,207 @@ curl http://localhost:9000/health
 ```
 
 详细的滚动升级指南请参见 `docs/UPGRADE.md`。
+
+---
+
+## 16. 接入 OpenAI 格式客户端
+
+### 16.1 支持的客户端
+
+PairProxy sproxy 同时支持 Anthropic 和 OpenAI 两种 API 格式：
+
+- **Anthropic 格式**：Claude Code、cproxy（`POST /v1/messages`）
+- **OpenAI 格式**：Cursor、Continue.dev、任何兼容 OpenAI API 的工具（`POST /v1/chat/completions`）
+
+两种格式的客户端共享同一套配额、审计、统计系统。
+
+---
+
+### 16.2 配置步骤
+
+#### 1. 在 `sproxy.yaml` 中添加 OpenAI target
+
+```yaml
+llm:
+  targets:
+    # 现有 Anthropic target
+    - url: "https://api.anthropic.com"
+      api_key: "${ANTHROPIC_API_KEY}"
+      provider: "anthropic"
+      weight: 1
+
+    # 新增 OpenAI target
+    - url: "https://api.openai.com"
+      api_key: "${OPENAI_API_KEY}"
+      provider: "openai"
+      name: "OpenAI GPT"
+      weight: 1
+```
+
+#### 2. 设置环境变量
+
+```bash
+export OPENAI_API_KEY="sk-..."
+```
+
+#### 3. 重启 sproxy
+
+```bash
+systemctl restart sproxy
+```
+
+---
+
+### 16.3 客户端配置
+
+OpenAI 格式客户端需要配置两个参数：
+
+| 参数 | 值 |
+|---|---|
+| **Base URL** | `http://your-sproxy:9000` |
+| **API Key** | PairProxy JWT（通过 `/auth/login` 获取的 `access_token`）|
+
+**重要**：API Key 字段填写的是 **PairProxy JWT**，不是 OpenAI API Key。
+
+---
+
+### 16.4 认证方式
+
+OpenAI 格式客户端使用标准 `Authorization: Bearer <token>` 头，其中 `<token>` 是 PairProxy JWT。
+
+#### 示例（curl）
+
+```bash
+# 1. 登录获取 JWT
+TOKEN=$(curl -X POST http://localhost:9000/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"alice","password":"your-password"}' \
+  | jq -r '.access_token')
+
+# 2. 使用 JWT 调用 OpenAI 格式 API
+curl -X POST http://localhost:9000/v1/chat/completions \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-4",
+    "messages": [{"role": "user", "content": "Hello"}],
+    "stream": true
+  }'
+```
+
+---
+
+### 16.5 自动功能
+
+sproxy 对 OpenAI 格式客户端提供以下自动功能：
+
+#### 路由
+
+根据请求路径自动选择对应 provider 的 target：
+
+- `/v1/messages` → 路由到 `provider: anthropic` 的 target
+- `/v1/chat/completions` → 路由到 `provider: openai` 的 target
+
+#### Token 计数
+
+流式请求自动注入 `stream_options.include_usage: true`，确保配额统计准确。客户端无需手动设置。
+
+#### 配额与审计
+
+OpenAI 格式客户端与 Anthropic 客户端共享：
+
+- 用户/分组配额限制
+- 审计日志记录
+- 统计报表
+- Dashboard 展示
+
+---
+
+### 16.6 常见客户端配置示例
+
+#### Cursor
+
+1. 打开 Settings → Models
+2. 添加自定义 OpenAI 兼容 API：
+   - Base URL: `http://your-sproxy:9000`
+   - API Key: `<your-pairproxy-jwt>`
+
+#### Continue.dev
+
+编辑 `~/.continue/config.json`：
+
+```json
+{
+  "models": [
+    {
+      "title": "PairProxy GPT-4",
+      "provider": "openai",
+      "model": "gpt-4",
+      "apiBase": "http://your-sproxy:9000",
+      "apiKey": "<your-pairproxy-jwt>"
+    }
+  ]
+}
+```
+
+#### OpenAI Python SDK
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://your-sproxy:9000",
+    api_key="<your-pairproxy-jwt>"  # PairProxy JWT，非 OpenAI API Key
+)
+
+response = client.chat.completions.create(
+    model="gpt-4",
+    messages=[{"role": "user", "content": "Hello"}],
+    stream=True
+)
+
+for chunk in response:
+    print(chunk.choices[0].delta.content, end="")
+```
+
+---
+
+### 16.7 故障排查
+
+#### 问题：401 Unauthorized
+
+**原因**：JWT 过期或无效。
+
+**解决**：重新登录获取新 JWT：
+
+```bash
+curl -X POST http://localhost:9000/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"alice","password":"your-password"}'
+```
+
+#### 问题：502 Bad Gateway, "no_upstream"
+
+**原因**：未配置 `provider: openai` 的 target。
+
+**解决**：检查 `sproxy.yaml` 中是否有 `provider: openai` 的 target，并重启 sproxy。
+
+#### 问题：流式请求 token 计数为 0
+
+**原因**：sproxy 版本过旧，不支持自动注入 `stream_options`。
+
+**解决**：升级到 v2.0.0 或更高版本。
+
+---
+
+### 16.8 与 cproxy 的区别
+
+| 特性 | cproxy（Anthropic 格式）| OpenAI 格式客户端 |
+|---|---|---|
+| 认证头 | `X-PairProxy-Auth: <jwt>` | `Authorization: Bearer <jwt>` |
+| 请求路径 | `/v1/messages` | `/v1/chat/completions` |
+| 自动 token 刷新 | ✅ 支持 | ❌ 客户端自行处理 |
+| 路由缓存 | ✅ 支持 | ❌ 无缓存 |
+| 适用场景 | Claude Code 等 Anthropic 客户端 | Cursor、Continue.dev 等 OpenAI 客户端 |
+
+---

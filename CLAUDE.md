@@ -31,6 +31,8 @@
 - **Go binary**: `C:/Program Files/Go/bin/go.exe`（如未编译则先 build）
 - **数据库**: SQLite，路径在 sproxy.yaml 的 `database.path` 字段
 - **sproxy 命令**: 已编译时用 `./sproxy`，未编译时用 `go run ./cmd/sproxy`
+- **多 Provider 支持**: sproxy 同时支持 Anthropic (`/v1/messages`) 和 OpenAI (`/v1/chat/completions`) 格式
+- **认证方式**: 两种头均可 — `X-PairProxy-Auth: <jwt>` 或 `Authorization: Bearer <jwt>`
 
 ## 命令速查
 

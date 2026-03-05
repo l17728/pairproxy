@@ -719,14 +719,34 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 	var debugReqBody []byte
 
 	// F-3: 单次请求大小限制 + 并发请求限制
-	if sp.quotaChecker != nil {
-		// 1. 单次请求 max_tokens 检查：读取请求 body 中的 max_tokens 字段，还原 body
-		if r.Body != nil && r.ContentLength != 0 {
-			bodyBytes, readErr := io.ReadAll(r.Body)
-			r.Body.Close()
-			r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-			if readErr == nil {
-				debugReqBody = bodyBytes
+	// OpenAI 兼容：同时在此阶段注入 stream_options（无论是否有 quotaChecker）
+	var bodyBytes []byte
+	needBodyRead := sp.quotaChecker != nil || strings.HasPrefix(r.URL.Path, "/v1/chat/completions")
+
+	if needBodyRead && r.Body != nil && r.ContentLength != 0 {
+		var readErr error
+		bodyBytes, readErr = io.ReadAll(r.Body)
+		r.Body.Close()
+
+		if readErr == nil {
+			debugReqBody = bodyBytes
+
+			// OpenAI 流式请求：注入 stream_options.include_usage: true
+			if strings.HasPrefix(r.URL.Path, "/v1/chat/completions") {
+				originalSize := len(bodyBytes)
+				bodyBytes = injectOpenAIStreamOptions(r.URL.Path, bodyBytes, sp.logger, reqID)
+				if len(bodyBytes) != originalSize {
+					sp.logger.Debug("OpenAI streaming request detected, stream_options injected",
+						zap.String("request_id", reqID),
+						zap.String("path", r.URL.Path),
+						zap.Int("original_size", originalSize),
+						zap.Int("modified_size", len(bodyBytes)),
+					)
+				}
+			}
+
+			// Quota checker: max_tokens 检查
+			if sp.quotaChecker != nil {
 				var reqBody struct {
 					MaxTokens int64 `json:"max_tokens"`
 				}
@@ -742,8 +762,14 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			}
-		}
 
+			// 还原 body（可能已被 injectOpenAIStreamOptions 修改）
+			r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+			r.ContentLength = int64(len(bodyBytes))
+		}
+	}
+
+	if sp.quotaChecker != nil {
 		// 2. 并发请求限制：TryAcquire 槽，请求结束后自动 Release
 		release, concErr := sp.quotaChecker.TryAcquireConcurrent(claims.UserID)
 		if concErr != nil {
@@ -760,11 +786,14 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 	// 每次请求捕获一次 debug logger 快照，保证单请求内行为一致（SIGHUP 切换时不会半途改变）。
 	dl := sp.debugLogger.Load()
 
-	// debug 日志：← client request（body 未被 quotaChecker 读取时，在此补读）
+	// debug 日志：← client request（body 未被上面读取时，在此补读）
 	if dl != nil {
 		if debugReqBody == nil && r.Body != nil {
 			debugReqBody, _ = io.ReadAll(r.Body)
 			r.Body = io.NopCloser(bytes.NewReader(debugReqBody))
+		} else if len(bodyBytes) > 0 {
+			// 使用已读取的 bodyBytes（可能已被 injectOpenAIStreamOptions 修改）
+			debugReqBody = bodyBytes
 		}
 		dl.Debug("← client request",
 			zap.String("request_id", reqID),
@@ -809,10 +838,15 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
 
 	// 预填充 UsageRecord 模板（除 token 数/状态码/时长外的字段）
+	// model 优先从 X-PairProxy-Model 头取（cproxy 注入），其次从请求 body 取（OpenAI 格式客户端）
+	model := extractModel(r)
+	if model == "" && len(bodyBytes) > 0 {
+		model = extractModelFromBody(bodyBytes)
+	}
 	usageRecord := db.UsageRecord{
 		RequestID:   reqID,
 		UserID:      claims.UserID,
-		Model:       extractModel(r),
+		Model:       model,
 		UpstreamURL: firstInfo.URL,
 		SourceNode:  sp.sourceNode,
 		CreatedAt:   time.Now(),
@@ -843,9 +877,10 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 			req.URL.Host = targetURL.Host
 			req.Host = targetURL.Host
 
-			// 删除 c-proxy 注入的认证头，注入真实 API Key
+			// 删除客户端认证头（X-PairProxy-Auth 或 Authorization），注入真实 API Key
 			// F-5: 优先使用 DB 中的动态 API Key，未找到则回退到配置文件中的静态 Key
 			req.Header.Del("X-PairProxy-Auth")
+			req.Header.Del("Authorization") // 清理客户端的 Bearer JWT，避免泄漏给上游
 			apiKey := firstInfo.APIKey
 			if sp.apiKeyResolver != nil {
 				if k, ok := sp.apiKeyResolver(claims.UserID); ok {
