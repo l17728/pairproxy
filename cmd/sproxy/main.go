@@ -610,11 +610,13 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 	addr := cfg.Listen.Addr()
 	server := &http.Server{
-		Addr:         addr,
-		Handler:      mux,
-		ReadTimeout:  5 * time.Minute,  // SSE 流可能很长
-		WriteTimeout: 10 * time.Minute, // 同上
-		IdleTimeout:  5 * time.Minute,  // SSE 长连接：LLM 推理期间可能静默 >2min
+		Addr:        addr,
+		Handler:     mux,
+		ReadTimeout: 60 * time.Second, // 读取请求头+请求体（请求体为小 JSON，60s 足够）
+		// WriteTimeout 设为 0（禁用）：LLM extended thinking 可能静默超过 30 分钟，
+		// 任何固定值都会误杀长流；依赖客户端断开检测终止挂起连接。
+		WriteTimeout: 0,
+		IdleTimeout:  2 * time.Minute, // keep-alive 空闲超时（与活跃流无关）
 	}
 
 	// SIGHUP 热重载（Unix/Linux only；Windows 上为 no-op）
