@@ -54,16 +54,6 @@ func makeResp(status int, body string) *http.Response {
 	}
 }
 
-// closeResponses 关闭 mock 中所有未被上层消费的 response body（用于 t.Cleanup）。
-// NopCloser 多次 Close 是安全的。
-func closeResponses(resps []*http.Response) {
-	for _, r := range resps {
-		if r != nil && r.Body != nil {
-			r.Body.Close()
-		}
-	}
-}
-
 // ---------------------------------------------------------------------------
 // TestRetryTransport_SuccessFirstAttempt
 // ---------------------------------------------------------------------------
