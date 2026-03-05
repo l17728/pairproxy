@@ -2,17 +2,37 @@ package db
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
+
+	"github.com/l17728/pairproxy/internal/config"
 )
 
-// Open 打开 SQLite 数据库连接，配置 WAL 模式和连接参数
-// path 为 SQLite 文件路径，":memory:" 表示内存数据库（测试用）
+// Open 打开 SQLite 数据库连接（使用内置默认连接池，适合测试和简单场景）。
+// path 为 SQLite 文件路径，":memory:" 表示内存数据库（测试用）。
+// 生产环境请使用 OpenWithConfig 以传入完整连接池配置。
 func Open(logger *zap.Logger, path string) (*gorm.DB, error) {
+	return OpenWithConfig(logger, config.DatabaseConfig{Path: path})
+}
+
+// OpenWithConfig 打开 SQLite 数据库连接，支持完整的连接池配置。
+//
+// 连接池默认值（cfg 字段为零值时生效）：
+//   - MaxOpenConns:    25（":memory:" 时为 1）
+//   - MaxIdleConns:    10
+//   - ConnMaxLifetime: 1h
+//   - ConnMaxIdleTime: 10m
+//
+// SQLite WAL 模式允许多个并发读连接（但写操作仍需排他锁）。
+// 设置 MaxOpenConns > 1 可充分利用 WAL 并发读能力；
+// busy_timeout=5000 保证写锁争用时读操作等待而非立即报错。
+func OpenWithConfig(logger *zap.Logger, cfg config.DatabaseConfig) (*gorm.DB, error) {
 	logger = logger.Named("db")
+	path := cfg.Path
 	logger.Info("opening SQLite database", zap.String("path", path))
 
 	// 将 zap logger 适配为 gorm logger（仅输出 error 级别，减少噪音）
@@ -35,18 +55,49 @@ func Open(logger *zap.Logger, path string) (*gorm.DB, error) {
 		return nil, fmt.Errorf("get underlying sql.DB: %w", err)
 	}
 
-	// SQLite 写操作串行，多 writer 无意义；读可以并发
-	// 设置: 1 个写连接 + 最多 4 个读连接
-	sqlDB.SetMaxOpenConns(1) // WAL 模式下写串行，单连接足够
-	sqlDB.SetMaxIdleConns(4)
+	// ── 连接池参数 ──────────────────────────────────────────────────────────
+	// ":memory:" 每个连接拥有独立的内存库，必须用单连接保证同一个库实例。
+	// 文件库（WAL 模式）支持多个并发读连接，MaxOpenConns 应设 > 1。
+	maxOpen := cfg.MaxOpenConns
+	if maxOpen <= 0 {
+		if path == ":memory:" {
+			maxOpen = 1
+		} else {
+			maxOpen = 25 // 生产默认：允许最多 25 个并发连接
+		}
+	}
+
+	maxIdle := cfg.MaxIdleConns
+	if maxIdle <= 0 {
+		maxIdle = 10
+	}
+	if maxIdle > maxOpen {
+		maxIdle = maxOpen
+	}
+
+	connMaxLifetime := cfg.ConnMaxLifetime
+	if connMaxLifetime <= 0 {
+		connMaxLifetime = time.Hour
+	}
+
+	connMaxIdleTime := cfg.ConnMaxIdleTime
+	if connMaxIdleTime <= 0 {
+		connMaxIdleTime = 10 * time.Minute
+	}
+
+	sqlDB.SetMaxOpenConns(maxOpen)
+	sqlDB.SetMaxIdleConns(maxIdle)
+	sqlDB.SetConnMaxLifetime(connMaxLifetime)
+	sqlDB.SetConnMaxIdleTime(connMaxIdleTime)
+	// ────────────────────────────────────────────────────────────────────────
 
 	// 配置 SQLite PRAGMA
 	pragmas := []string{
-		"PRAGMA journal_mode=WAL",      // WAL 模式：读写并发
-		"PRAGMA busy_timeout=5000",     // 锁等待超时 5s
-		"PRAGMA synchronous=NORMAL",    // WAL 模式下 NORMAL 兼顾性能与安全
-		"PRAGMA cache_size=-64000",     // 64MB 页缓存
-		"PRAGMA foreign_keys=ON",       // 启用外键约束
+		"PRAGMA journal_mode=WAL",   // WAL 模式：读写并发
+		"PRAGMA busy_timeout=5000",  // 锁等待超时 5s（写锁争用时读操作等待而非报错）
+		"PRAGMA synchronous=NORMAL", // WAL 模式下 NORMAL 兼顾性能与安全
+		"PRAGMA cache_size=-64000",  // 64MB 页缓存
+		"PRAGMA foreign_keys=ON",    // 启用外键约束
 	}
 	for _, pragma := range pragmas {
 		if err := db.Exec(pragma).Error; err != nil {
@@ -60,6 +111,10 @@ func Open(logger *zap.Logger, path string) (*gorm.DB, error) {
 	logger.Info("SQLite database opened successfully",
 		zap.String("path", path),
 		zap.String("journal_mode", "WAL"),
+		zap.Int("max_open_conns", maxOpen),
+		zap.Int("max_idle_conns", maxIdle),
+		zap.Duration("conn_max_lifetime", connMaxLifetime),
+		zap.Duration("conn_max_idle_time", connMaxIdleTime),
 	)
 	return db, nil
 }

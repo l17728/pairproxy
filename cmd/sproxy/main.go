@@ -142,7 +142,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	}
 
 	// 打开数据库
-	database, err := db.Open(logger, cfg.Database.Path)
+	database, err := db.OpenWithConfig(logger, cfg.Database)
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
 	}
@@ -786,7 +786,7 @@ func openAdminDB() (*db.UserRepo, *db.GroupRepo, *db.UsageRepo, *db.RefreshToken
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, fmt.Errorf("load config from %q: %w", cfgPath, err)
 	}
-	database, err := db.Open(logger, cfg.Database.Path)
+	database, err := db.OpenWithConfig(logger, cfg.Database)
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, fmt.Errorf("open database: %w", err)
 	}
@@ -2242,7 +2242,7 @@ func openAdminConfig() (*config.SProxyFullConfig, *db.APIKeyRepo, *zap.Logger, *
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("load config from %q: %w", cfgPath, err)
 	}
-	database, err := db.Open(logger, cfg.Database.Path)
+	database, err := db.OpenWithConfig(logger, cfg.Database)
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("open database: %w", err)
 	}

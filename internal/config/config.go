@@ -108,8 +108,15 @@ type LLMTarget struct {
 // DatabaseConfig SQLite 数据库配置
 type DatabaseConfig struct {
 	Path            string        `yaml:"path"`              // SQLite 文件路径
-	WriteBufferSize int           `yaml:"write_buffer_size"` // 批量写入 buffer 大小，默认 200
+	WriteBufferSize int           `yaml:"write_buffer_size"` // 批量写入 buffer 大小，默认 1000
 	FlushInterval   time.Duration `yaml:"flush_interval"`    // 强制 flush 间隔，默认 5s
+
+	// 连接池（SQLite WAL 模式下多读单写）
+	// 0 = 使用内置默认值：非内存库 MaxOpenConns=25，内存库=1
+	MaxOpenConns    int           `yaml:"max_open_conns"`     // 最大打开连接数，默认 25
+	MaxIdleConns    int           `yaml:"max_idle_conns"`     // 最大空闲连接数，默认 10
+	ConnMaxLifetime time.Duration `yaml:"conn_max_lifetime"`  // 连接最大存活时间，默认 1h
+	ConnMaxIdleTime time.Duration `yaml:"conn_max_idle_time"` // 连接最大空闲时间，默认 10m
 }
 
 // LDAPConfig LDAP 连接配置

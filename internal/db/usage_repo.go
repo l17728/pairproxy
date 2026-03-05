@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -50,6 +51,8 @@ type UsageWriter struct {
 	interval   time.Duration
 	done       chan struct{} // closed when runLoop exits
 	costFn     CostFunc     // 可选：用于计算 cost_usd（nil 则不计算）
+
+	dropped atomic.Int64 // 因 channel 满而丢弃的记录数（累计）
 }
 
 // NewUsageWriter 创建 UsageWriter
@@ -57,7 +60,7 @@ type UsageWriter struct {
 // interval: 强制 flush 间隔
 func NewUsageWriter(db *gorm.DB, logger *zap.Logger, bufferSize int, interval time.Duration) *UsageWriter {
 	if bufferSize <= 0 {
-		bufferSize = 200
+		bufferSize = 1000 // 生产默认：200 并发 × 5s flush 间隔的 5 倍余量
 	}
 	if interval <= 0 {
 		interval = 5 * time.Second
@@ -101,6 +104,12 @@ func (w *UsageWriter) QueueDepth() int {
 	return len(w.ch)
 }
 
+// DroppedCount 返回因 channel 满而被丢弃的记录总数（累计，单调递增）。
+// 非零值表明写入速度跟不上请求速率，应增大 write_buffer_size 或加快 flush_interval。
+func (w *UsageWriter) DroppedCount() int64 {
+	return w.dropped.Load()
+}
+
 // Record 非阻塞写入一条用量记录到 channel
 // 如果 channel 已满，丢弃记录并记录警告（保证代理主路不阻塞）
 func (w *UsageWriter) Record(r UsageRecord) {
@@ -117,9 +126,13 @@ func (w *UsageWriter) Record(r UsageRecord) {
 			zap.Int("output_tokens", r.OutputTokens),
 		)
 	default:
+		total := w.dropped.Add(1)
 		w.logger.Warn("usage channel full, dropping record",
 			zap.String("request_id", r.RequestID),
 			zap.String("user_id", r.UserID),
+			zap.Int64("total_dropped", total),
+			zap.Int("queue_depth", len(w.ch)),
+			zap.Int("queue_capacity", cap(w.ch)),
 		)
 	}
 }
@@ -149,6 +162,11 @@ func (w *UsageWriter) runLoop(ctx context.Context) {
 	ticker := time.NewTicker(w.interval)
 	defer ticker.Stop()
 
+	// 每分钟检查一次丢弃计数，若有新增则打印一次 Error 日志（便于告警接入）
+	dropTicker := time.NewTicker(time.Minute)
+	defer dropTicker.Stop()
+	var lastDropped int64
+
 	var batch []UsageRecord
 
 	flush := func() {
@@ -169,6 +187,18 @@ func (w *UsageWriter) runLoop(ctx context.Context) {
 			}
 		case <-ticker.C:
 			flush()
+		case <-dropTicker.C:
+			// 每分钟统计新增丢弃量，方便 ops 团队设置告警
+			current := w.dropped.Load()
+			if newDrops := current - lastDropped; newDrops > 0 {
+				w.logger.Error("usage records dropped in last minute — increase write_buffer_size or reduce flush_interval",
+					zap.Int64("dropped_this_minute", newDrops),
+					zap.Int64("total_dropped", current),
+					zap.Int("queue_depth", len(w.ch)),
+					zap.Int("queue_capacity", cap(w.ch)),
+				)
+				lastDropped = current
+			}
 		case <-ctx.Done():
 			// 停止时排空剩余记录
 			w.logger.Info("usage writer stopping, draining channel")
@@ -182,6 +212,11 @@ func (w *UsageWriter) runLoop(ctx context.Context) {
 				}
 			}
 			flush()
+			if total := w.dropped.Load(); total > 0 {
+				w.logger.Error("usage writer stopped with dropped records",
+					zap.Int64("total_dropped", total),
+				)
+			}
 			w.logger.Info("usage writer stopped")
 			return
 		}
