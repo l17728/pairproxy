@@ -1,0 +1,167 @@
+{{define "content"}}
+<h2 class="text-xl font-bold text-gray-800 mb-6">我的用量</h2>
+
+<!-- 配额状态卡片 -->
+<div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+  <!-- 日配额 -->
+  <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+    <p class="text-xs text-gray-500 uppercase tracking-wide mb-2">今日配额</p>
+    <div class="flex items-end gap-2 mb-3">
+      <p class="text-3xl font-bold text-indigo-600" id="dailyUsed">-</p>
+      <p class="text-sm text-gray-400 mb-1">/ <span id="dailyLimit">-</span></p>
+    </div>
+    <div class="w-full bg-gray-200 rounded-full h-2">
+      <div id="dailyProgress" class="bg-indigo-600 h-2 rounded-full transition-all" style="width: 0%"></div>
+    </div>
+    <p class="text-xs text-gray-500 mt-2">剩余 <span id="dailyRemain">-</span> tokens</p>
+  </div>
+
+  <!-- 月配额 -->
+  <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+    <p class="text-xs text-gray-500 uppercase tracking-wide mb-2">本月配额</p>
+    <div class="flex items-end gap-2 mb-3">
+      <p class="text-3xl font-bold text-indigo-600" id="monthlyUsed">-</p>
+      <p class="text-sm text-gray-400 mb-1">/ <span id="monthlyLimit">-</span></p>
+    </div>
+    <div class="w-full bg-gray-200 rounded-full h-2">
+      <div id="monthlyProgress" class="bg-indigo-600 h-2 rounded-full transition-all" style="width: 0%"></div>
+    </div>
+    <p class="text-xs text-gray-500 mt-2">剩余 <span id="monthlyRemain">-</span> tokens</p>
+  </div>
+</div>
+
+<!-- 用量历史图表 -->
+<div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6 mb-8">
+  <div class="flex items-center justify-between mb-4">
+    <h3 class="text-sm font-semibold text-gray-700">用量历史</h3>
+    <select id="historyDaysSelect" class="text-xs border border-gray-300 rounded px-2 py-1">
+      <option value="7">最近 7 天</option>
+      <option value="30" selected>最近 30 天</option>
+      <option value="90">最近 90 天</option>
+    </select>
+  </div>
+  <canvas id="usageHistoryChart" height="200"></canvas>
+</div>
+
+<!-- 最近请求 -->
+<div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+  <div class="px-6 py-4 border-b border-gray-100">
+    <h3 class="text-sm font-semibold text-gray-700">最近请求</h3>
+  </div>
+  <div class="overflow-x-auto">
+    <table class="min-w-full divide-y divide-gray-100 text-sm">
+      <thead class="bg-gray-50 text-xs text-gray-500 uppercase">
+        <tr>
+          <th class="px-4 py-3 text-left">时间</th>
+          <th class="px-4 py-3 text-left">模型</th>
+          <th class="px-4 py-3 text-right">输入</th>
+          <th class="px-4 py-3 text-right">输出</th>
+          <th class="px-4 py-3 text-right">费用($)</th>
+          <th class="px-4 py-3 text-left">状态</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-50 text-gray-700" id="recentRequestsBody">
+        <tr><td colspan="6" class="px-4 py-6 text-center text-gray-400">加载中...</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+let usageChart;
+
+// 加载配额状态
+async function loadQuotaStatus() {
+  try {
+    const res = await fetch('/api/user/quota-status');
+    const data = await res.json();
+
+    // 更新日配额
+    document.getElementById('dailyUsed').textContent = data.daily_used.toLocaleString();
+    document.getElementById('dailyLimit').textContent = data.daily_limit === 0 ? '不限' : data.daily_limit.toLocaleString();
+    document.getElementById('dailyRemain').textContent = data.daily_remain === -1 ? '不限' : data.daily_remain.toLocaleString();
+
+    if (data.daily_limit > 0) {
+      const pct = Math.min(100, (data.daily_used / data.daily_limit) * 100);
+      document.getElementById('dailyProgress').style.width = pct + '%';
+      if (pct > 90) document.getElementById('dailyProgress').classList.add('bg-red-500');
+    } else {
+      document.getElementById('dailyProgress').style.width = '0%';
+    }
+
+    // 更新月配额
+    document.getElementById('monthlyUsed').textContent = data.monthly_used.toLocaleString();
+    document.getElementById('monthlyLimit').textContent = data.monthly_limit === 0 ? '不限' : data.monthly_limit.toLocaleString();
+    document.getElementById('monthlyRemain').textContent = data.monthly_remain === -1 ? '不限' : data.monthly_remain.toLocaleString();
+
+    if (data.monthly_limit > 0) {
+      const pct = Math.min(100, (data.monthly_used / data.monthly_limit) * 100);
+      document.getElementById('monthlyProgress').style.width = pct + '%';
+      if (pct > 90) document.getElementById('monthlyProgress').classList.add('bg-red-500');
+    } else {
+      document.getElementById('monthlyProgress').style.width = '0%';
+    }
+  } catch (err) {
+    console.error('Failed to load quota status:', err);
+  }
+}
+
+// 加载用量历史
+async function loadUsageHistory(days) {
+  try {
+    const res = await fetch(`/api/user/usage-history?days=${days}`);
+    const data = await res.json();
+
+    updateUsageChart(data.history);
+  } catch (err) {
+    console.error('Failed to load usage history:', err);
+  }
+}
+
+// 用量历史图表
+function updateUsageChart(data) {
+  const ctx = document.getElementById('usageHistoryChart');
+  if (usageChart) usageChart.destroy();
+
+  usageChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: data.map(d => d.date.substring(5)),
+      datasets: [{
+        label: '输入 Token',
+        data: data.map(d => d.input_tokens),
+        backgroundColor: 'rgba(99, 102, 241, 0.5)',
+        borderColor: 'rgb(99, 102, 241)',
+        borderWidth: 1
+      }, {
+        label: '输出 Token',
+        data: data.map(d => d.output_tokens),
+        backgroundColor: 'rgba(34, 197, 94, 0.5)',
+        borderColor: 'rgb(34, 197, 94)',
+        borderWidth: 1
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        x: { stacked: true },
+        y: { stacked: true, beginAtZero: true }
+      },
+      plugins: {
+        legend: { display: true, position: 'top' }
+      }
+    }
+  });
+}
+
+// 时间范围选择器
+document.getElementById('historyDaysSelect').addEventListener('change', (e) => {
+  loadUsageHistory(parseInt(e.target.value));
+});
+
+// 页面加载时初始化
+loadQuotaStatus();
+loadUsageHistory(30);
+</script>
+{{end}}

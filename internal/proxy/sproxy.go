@@ -21,6 +21,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.uber.org/zap"
 
+	"github.com/l17728/pairproxy/internal/alert"
 	"github.com/l17728/pairproxy/internal/auth"
 	"github.com/l17728/pairproxy/internal/cluster"
 	"github.com/l17728/pairproxy/internal/db"
@@ -78,6 +79,7 @@ type SProxy struct {
 	maxRetries      int                                               // RetryTransport 最大重试次数
 
 	debugLogger atomic.Pointer[zap.Logger] // 可选，非 nil 时将转发内容写入独立 debug 文件
+	notifier    *alert.Notifier             // 可选，非 nil 时发送 high_load/load_recovered 告警
 }
 
 // NewSProxy 创建 SProxy。
@@ -256,6 +258,87 @@ func (sp *SProxy) GetDrainStatus() DrainStatus {
 // ActiveRequests 返回当前活跃请求数。
 func (sp *SProxy) ActiveRequests() int64 {
 	return sp.activeRequests.Load()
+}
+
+// SetNotifier 设置告警通知器（可选）。
+// 设置后，StartActiveRequestsMonitor 会在活跃请求数越过/恢复阈值时触发 webhook 告警。
+func (sp *SProxy) SetNotifier(n *alert.Notifier) {
+	sp.notifier = n
+}
+
+// StartActiveRequestsMonitor 启动活跃请求数阈值监控。
+// threshold=0 或 notifier=nil 时为 no-op（不启动 goroutine）。
+// 内部每 10 秒采样一次；越过阈值时触发 EventHighLoad，恢复后触发 EventLoadRecovered。
+// 边沿触发：持续超载只触发一次告警，不产生告警风暴。
+func StartActiveRequestsMonitor(
+	ctx context.Context,
+	sp *SProxy,
+	threshold int64,
+	notifier *alert.Notifier,
+	sourceNode string,
+	logger *zap.Logger,
+) {
+	startActiveRequestsMonitor(ctx, sp, threshold, notifier, sourceNode, logger, 10*time.Second)
+}
+
+// startActiveRequestsMonitor 是可测试的内部实现，interval 可由测试注入短周期。
+func startActiveRequestsMonitor(
+	ctx context.Context,
+	sp *SProxy,
+	threshold int64,
+	notifier *alert.Notifier,
+	sourceNode string,
+	logger *zap.Logger,
+	interval time.Duration,
+) {
+	if threshold <= 0 || notifier == nil {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		var overThreshold bool
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				current := sp.activeRequests.Load()
+				if !overThreshold && current >= threshold {
+					overThreshold = true
+					logger.Warn("active_requests exceeded alert threshold",
+						zap.Int64("active_requests", current),
+						zap.Int64("threshold", threshold),
+					)
+					notifier.Notify(alert.Event{
+						Kind:    alert.EventHighLoad,
+						Message: fmt.Sprintf("active requests %d exceeded threshold %d", current, threshold),
+						Labels: map[string]string{
+							"node":      sourceNode,
+							"current":   strconv.FormatInt(current, 10),
+							"threshold": strconv.FormatInt(threshold, 10),
+						},
+					})
+				} else if overThreshold && current < threshold {
+					overThreshold = false
+					logger.Info("active_requests recovered below alert threshold",
+						zap.Int64("active_requests", current),
+						zap.Int64("threshold", threshold),
+					)
+					notifier.Notify(alert.Event{
+						Kind:    alert.EventLoadRecovered,
+						Message: fmt.Sprintf("active requests %d recovered below threshold %d", current, threshold),
+						Labels: map[string]string{
+							"node":      sourceNode,
+							"current":   strconv.FormatInt(current, 10),
+							"threshold": strconv.FormatInt(threshold, 10),
+						},
+					})
+				}
+			}
+		}
+	}()
+	logger.Info("active requests monitor started", zap.Int64("threshold", threshold))
 }
 
 // LLMTargetStatuses 返回当前所有 LLM 目标的运行时状态（含健康状态）。
@@ -636,14 +719,34 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 	var debugReqBody []byte
 
 	// F-3: 单次请求大小限制 + 并发请求限制
-	if sp.quotaChecker != nil {
-		// 1. 单次请求 max_tokens 检查：读取请求 body 中的 max_tokens 字段，还原 body
-		if r.Body != nil && r.ContentLength != 0 {
-			bodyBytes, readErr := io.ReadAll(r.Body)
-			r.Body.Close()
-			r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-			if readErr == nil {
-				debugReqBody = bodyBytes
+	// OpenAI 兼容：同时在此阶段注入 stream_options（无论是否有 quotaChecker）
+	var bodyBytes []byte
+	needBodyRead := sp.quotaChecker != nil || strings.HasPrefix(r.URL.Path, "/v1/chat/completions")
+
+	if needBodyRead && r.Body != nil && r.ContentLength != 0 {
+		var readErr error
+		bodyBytes, readErr = io.ReadAll(r.Body)
+		r.Body.Close()
+
+		if readErr == nil {
+			debugReqBody = bodyBytes
+
+			// OpenAI 流式请求：注入 stream_options.include_usage: true
+			if strings.HasPrefix(r.URL.Path, "/v1/chat/completions") {
+				originalSize := len(bodyBytes)
+				bodyBytes = injectOpenAIStreamOptions(r.URL.Path, bodyBytes, sp.logger, reqID)
+				if len(bodyBytes) != originalSize {
+					sp.logger.Debug("OpenAI streaming request detected, stream_options injected",
+						zap.String("request_id", reqID),
+						zap.String("path", r.URL.Path),
+						zap.Int("original_size", originalSize),
+						zap.Int("modified_size", len(bodyBytes)),
+					)
+				}
+			}
+
+			// Quota checker: max_tokens 检查
+			if sp.quotaChecker != nil {
 				var reqBody struct {
 					MaxTokens int64 `json:"max_tokens"`
 				}
@@ -659,8 +762,14 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			}
-		}
 
+			// 还原 body（可能已被 injectOpenAIStreamOptions 修改）
+			r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+			r.ContentLength = int64(len(bodyBytes))
+		}
+	}
+
+	if sp.quotaChecker != nil {
 		// 2. 并发请求限制：TryAcquire 槽，请求结束后自动 Release
 		release, concErr := sp.quotaChecker.TryAcquireConcurrent(claims.UserID)
 		if concErr != nil {
@@ -677,11 +786,14 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 	// 每次请求捕获一次 debug logger 快照，保证单请求内行为一致（SIGHUP 切换时不会半途改变）。
 	dl := sp.debugLogger.Load()
 
-	// debug 日志：← client request（body 未被 quotaChecker 读取时，在此补读）
+	// debug 日志：← client request（body 未被上面读取时，在此补读）
 	if dl != nil {
 		if debugReqBody == nil && r.Body != nil {
 			debugReqBody, _ = io.ReadAll(r.Body)
 			r.Body = io.NopCloser(bytes.NewReader(debugReqBody))
+		} else if len(bodyBytes) > 0 {
+			// 使用已读取的 bodyBytes（可能已被 injectOpenAIStreamOptions 修改）
+			debugReqBody = bodyBytes
 		}
 		dl.Debug("← client request",
 			zap.String("request_id", reqID),
@@ -726,10 +838,15 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
 
 	// 预填充 UsageRecord 模板（除 token 数/状态码/时长外的字段）
+	// model 优先从 X-PairProxy-Model 头取（cproxy 注入），其次从请求 body 取（OpenAI 格式客户端）
+	model := extractModel(r)
+	if model == "" && len(bodyBytes) > 0 {
+		model = extractModelFromBody(bodyBytes)
+	}
 	usageRecord := db.UsageRecord{
 		RequestID:   reqID,
 		UserID:      claims.UserID,
-		Model:       extractModel(r),
+		Model:       model,
 		UpstreamURL: firstInfo.URL,
 		SourceNode:  sp.sourceNode,
 		CreatedAt:   time.Now(),
@@ -760,9 +877,10 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 			req.URL.Host = targetURL.Host
 			req.Host = targetURL.Host
 
-			// 删除 c-proxy 注入的认证头，注入真实 API Key
+			// 删除客户端认证头（X-PairProxy-Auth 或 Authorization），注入真实 API Key
 			// F-5: 优先使用 DB 中的动态 API Key，未找到则回退到配置文件中的静态 Key
 			req.Header.Del("X-PairProxy-Auth")
+			req.Header.Del("Authorization") // 清理客户端的 Bearer JWT，避免泄漏给上游
 			apiKey := firstInfo.APIKey
 			if sp.apiKeyResolver != nil {
 				if k, ok := sp.apiKeyResolver(claims.UserID); ok {

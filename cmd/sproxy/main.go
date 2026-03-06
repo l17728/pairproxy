@@ -380,6 +380,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	}
 
 	// Phase 6: 告警通知器（支持多 webhook 目标 + 事件过滤 + 自定义模板）
+	var notifier *alert.Notifier
 	{
 		var targets []alert.WebhookTargetConfig
 		for _, wt := range cfg.Cluster.AlertWebhooks {
@@ -389,7 +390,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 				Template: wt.Template,
 			})
 		}
-		notifier := alert.NewNotifierMulti(logger, targets, cfg.Cluster.AlertWebhook)
+		notifier = alert.NewNotifierMulti(logger, targets, cfg.Cluster.AlertWebhook)
 		quotaChecker.SetNotifier(notifier)
 		totalTargets := len(targets)
 		if cfg.Cluster.AlertWebhook != "" {
@@ -401,6 +402,12 @@ func runStart(cmd *cobra.Command, args []string) error {
 				zap.String("legacy_webhook", cfg.Cluster.AlertWebhook),
 			)
 		}
+	}
+
+	// 活跃请求数阈值监控：alert_threshold > 0 时启用
+	sp.SetNotifier(notifier)
+	if cfg.Cluster.AlertThreshold > 0 {
+		proxy.StartActiveRequestsMonitor(ctx, sp, int64(cfg.Cluster.AlertThreshold), notifier, sourceNode, logger)
 	}
 
 	// Phase 6: 速率限制器定期清理（每分钟清理过期窗口）
@@ -557,6 +564,11 @@ func runStart(cmd *cobra.Command, args []string) error {
 	adminHandler.RegisterLLMRoutes(mux)
 	logger.Info("admin API registered at /api/admin/")
 
+	// 用户自助服务 API（F-10 WebUI 增强）
+	userHandler := api.NewUserHandler(logger, jwtMgr, userRepo, groupRepo, usageRepo)
+	userHandler.RegisterRoutes(mux)
+	logger.Info("user self-service API registered at /api/user/")
+
 	// 集群内部 API（仅 primary）
 	if peerRegistry != nil {
 		// P0-4: 使用 cluster.shared_secret 作为内部 API 认证密钥，而非节点地址
@@ -603,11 +615,13 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 	addr := cfg.Listen.Addr()
 	server := &http.Server{
-		Addr:         addr,
-		Handler:      mux,
-		ReadTimeout:  5 * time.Minute,  // SSE 流可能很长
-		WriteTimeout: 10 * time.Minute, // 同上
-		IdleTimeout:  5 * time.Minute,  // SSE 长连接：LLM 推理期间可能静默 >2min
+		Addr:        addr,
+		Handler:     mux,
+		ReadTimeout: 60 * time.Second, // 读取请求头+请求体（请求体为小 JSON，60s 足够）
+		// WriteTimeout 设为 0（禁用）：LLM extended thinking 可能静默超过 30 分钟，
+		// 任何固定值都会误杀长流；依赖客户端断开检测终止挂起连接。
+		WriteTimeout: 0,
+		IdleTimeout:  2 * time.Minute, // keep-alive 空闲超时（与活跃流无关）
 	}
 
 	// SIGHUP 热重载（Unix/Linux only；Windows 上为 no-op）

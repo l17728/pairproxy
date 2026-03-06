@@ -45,25 +45,31 @@ llm:
 
   # targets: 上游 LLM 节点列表
   # 支持多 API Key 轮询（同一 API Endpoint 配置多条，轮换使用不同 key）
-  # provider: 指定 LLM provider（影响 token 解析方式）
+  # provider: 指定 LLM provider（影响 token 解析方式和路由匹配）
   #   "anthropic"（默认）— Anthropic Claude API（/v1/messages）
   #   "openai"           — OpenAI Chat Completions API（/v1/chat/completions）
   #   "ollama"           — Ollama 本地推理服务（与 OpenAI 格式兼容）
+  #
+  # 多 Provider 支持：sproxy 根据请求路径自动路由到对应 provider 的 target
+  #   /v1/messages         → 路由到 provider: anthropic 的 target
+  #   /v1/chat/completions → 路由到 provider: openai 的 target
   targets:
     - url: "https://api.anthropic.com"
       api_key: "${ANTHROPIC_API_KEY_1}"   # 从环境变量读取，不要明文写 key
       weight: 1
-      # provider: "anthropic"             # 可省略，默认即为 anthropic
+      provider: "anthropic"               # 可省略，默认即为 anthropic
 
     - url: "https://api.anthropic.com"
       api_key: "${ANTHROPIC_API_KEY_2}"
       weight: 1
+      provider: "anthropic"
 
-    # 示例：接入 OpenAI API
+    # 示例：接入 OpenAI API（支持 Cursor、Continue.dev 等 OpenAI 格式客户端）
     # - url: "https://api.openai.com"
     #   api_key: "${OPENAI_API_KEY}"
     #   weight: 1
     #   provider: "openai"
+    #   name: "OpenAI GPT"                # 可选显示名（Dashboard 展示）
 
     # 示例：接入 Ollama 本地推理（与 OpenAI 格式兼容）
     # - url: "http://localhost:11434"
@@ -75,6 +81,7 @@ llm:
     # - url: "https://bedrock-proxy.company.com"
     #   api_key: "${BEDROCK_API_KEY}"
     #   weight: 2   # 权重更高，分配更多流量
+    #   provider: "anthropic"
 
 
 # ------------------------------------------------------------------------------

@@ -19,6 +19,8 @@ const (
 	EventRateLimited   = "rate_limited"   // 请求频率超限
 	EventNodeDown      = "node_down"      // 集群节点下线
 	EventNodeRecovered = "node_recovered" // 集群节点恢复
+	EventHighLoad      = "high_load"      // 活跃请求数上穿告警阈值
+	EventLoadRecovered = "load_recovered" // 活跃请求数恢复到阈值以下
 )
 
 // Event 告警事件

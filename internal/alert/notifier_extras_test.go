@@ -119,6 +119,8 @@ func TestNotifierAllEventTypes(t *testing.T) {
 		EventRateLimited,
 		EventNodeDown,
 		EventNodeRecovered,
+		EventHighLoad,
+		EventLoadRecovered,
 	}
 
 	for _, kind := range eventTypes {

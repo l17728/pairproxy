@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
@@ -63,18 +64,29 @@ func RequestIDMiddleware(logger *zap.Logger, next http.Handler) http.Handler {
 // AuthMiddleware（s-proxy 用）
 // ---------------------------------------------------------------------------
 
-// AuthMiddleware 验证请求头 X-PairProxy-Auth 中的 JWT，提取 claims 写入 context。
+// AuthMiddleware 验证请求头 X-PairProxy-Auth 或 Authorization: Bearer 中的 JWT，提取 claims 写入 context。
+// 优先级：X-PairProxy-Auth > Authorization: Bearer（向后兼容 cproxy）。
 // 验证失败返回 401，通过后继续处理。
 func AuthMiddleware(logger *zap.Logger, jwtMgr *auth.Manager, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reqID := RequestIDFromContext(r.Context())
 		token := r.Header.Get("X-PairProxy-Auth")
+		authSource := "X-PairProxy-Auth"
+
+		// 若 X-PairProxy-Auth 缺失，尝试从 Authorization: Bearer 提取
 		if token == "" {
-			logger.Warn("missing X-PairProxy-Auth header",
+			if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+				token = strings.TrimPrefix(auth, "Bearer ")
+				authSource = "Authorization Bearer"
+			}
+		}
+
+		if token == "" {
+			logger.Warn("missing authentication header",
 				zap.String("request_id", reqID),
 				zap.String("remote_addr", r.RemoteAddr),
 			)
-			writeJSONError(w, http.StatusUnauthorized, "missing_auth_header", "X-PairProxy-Auth header is required")
+			writeJSONError(w, http.StatusUnauthorized, "missing_auth_header", "X-PairProxy-Auth or Authorization: Bearer header is required")
 			return
 		}
 
@@ -82,6 +94,7 @@ func AuthMiddleware(logger *zap.Logger, jwtMgr *auth.Manager, next http.Handler)
 		if err != nil {
 			logger.Warn("invalid JWT",
 				zap.String("request_id", reqID),
+				zap.String("auth_source", authSource),
 				zap.Error(err),
 			)
 			writeJSONError(w, http.StatusUnauthorized, "invalid_token", err.Error())
@@ -92,6 +105,7 @@ func AuthMiddleware(logger *zap.Logger, jwtMgr *auth.Manager, next http.Handler)
 			zap.String("request_id", reqID),
 			zap.String("user_id", claims.UserID),
 			zap.String("username", claims.Username),
+			zap.String("auth_source", authSource),
 		)
 
 		ctx := context.WithValue(r.Context(), ctxKeyClaims, claims)
