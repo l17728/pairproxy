@@ -564,6 +564,11 @@ func runStart(cmd *cobra.Command, args []string) error {
 	adminHandler.RegisterLLMRoutes(mux)
 	logger.Info("admin API registered at /api/admin/")
 
+	// 用户自助服务 API（F-10 WebUI 增强）
+	userHandler := api.NewUserHandler(logger, jwtMgr, userRepo, groupRepo, usageRepo)
+	userHandler.RegisterRoutes(mux)
+	logger.Info("user self-service API registered at /api/user/")
+
 	// 集群内部 API（仅 primary）
 	if peerRegistry != nil {
 		// P0-4: 使用 cluster.shared_secret 作为内部 API 认证密钥，而非节点地址

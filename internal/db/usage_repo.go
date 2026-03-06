@@ -539,3 +539,84 @@ func (r *UsageRepo) MarkSynced(requestIDs []string) error {
 	)
 	return nil
 }
+
+// DailyTokenRow 按天聚合的 token 用量
+type DailyTokenRow struct {
+	Date         string `json:"date"`          // YYYY-MM-DD
+	InputTokens  int64  `json:"input_tokens"`
+	OutputTokens int64  `json:"output_tokens"`
+	TotalTokens  int64  `json:"total_tokens"`
+	RequestCount int64  `json:"request_count"`
+}
+
+// DailyTokens 返回指定时间段内按天聚合的 token 用量（全局或指定用户）
+// userID 为空时返回全局聚合，非空时返回该用户的聚合
+func (r *UsageRepo) DailyTokens(from, to time.Time, userID string) ([]DailyTokenRow, error) {
+	query := r.db.Model(&UsageLog{}).
+		Select(`DATE(created_at) as date,
+			COALESCE(SUM(input_tokens), 0) as input_tokens,
+			COALESCE(SUM(output_tokens), 0) as output_tokens,
+			COALESCE(SUM(input_tokens + output_tokens), 0) as total_tokens,
+			COUNT(*) as request_count`).
+		Where("created_at >= ? AND created_at <= ?", from, to)
+
+	if userID != "" {
+		query = query.Where("user_id = ?", userID)
+	}
+
+	var rows []DailyTokenRow
+	err := query.Group("DATE(created_at)").
+		Order("date ASC").
+		Scan(&rows).Error
+
+	if err != nil {
+		r.logger.Error("failed to get daily tokens",
+			zap.String("user_id", userID),
+			zap.Error(err),
+		)
+		return nil, fmt.Errorf("daily tokens: %w", err)
+	}
+
+	r.logger.Debug("daily tokens queried",
+		zap.String("user_id", userID),
+		zap.Int("days", len(rows)),
+	)
+	return rows, nil
+}
+
+// DailyCostRow 按天聚合的费用
+type DailyCostRow struct {
+	Date    string  `json:"date"`     // YYYY-MM-DD
+	CostUSD float64 `json:"cost_usd"`
+}
+
+// DailyCost 返回指定时间段内按天聚合的费用（全局或指定用户）
+func (r *UsageRepo) DailyCost(from, to time.Time, userID string) ([]DailyCostRow, error) {
+	query := r.db.Model(&UsageLog{}).
+		Select(`DATE(created_at) as date,
+			COALESCE(SUM(cost_usd), 0) as cost_usd`).
+		Where("created_at >= ? AND created_at <= ?", from, to)
+
+	if userID != "" {
+		query = query.Where("user_id = ?", userID)
+	}
+
+	var rows []DailyCostRow
+	err := query.Group("DATE(created_at)").
+		Order("date ASC").
+		Scan(&rows).Error
+
+	if err != nil {
+		r.logger.Error("failed to get daily cost",
+			zap.String("user_id", userID),
+			zap.Error(err),
+		)
+		return nil, fmt.Errorf("daily cost: %w", err)
+	}
+
+	r.logger.Debug("daily cost queried",
+		zap.String("user_id", userID),
+		zap.Int("days", len(rows)),
+	)
+	return rows, nil
+}

@@ -85,6 +85,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /dashboard/groups/{id}/delete", h.requireSession(http.HandlerFunc(h.handleDeleteGroup)))
 	mux.Handle("GET /dashboard/logs", h.requireSession(http.HandlerFunc(h.handleLogsPage)))
 	mux.Handle("GET /dashboard/audit", h.requireSession(http.HandlerFunc(h.handleAuditPage)))
+	mux.Handle("GET /dashboard/my-usage", h.requireSession(http.HandlerFunc(h.handleMyUsagePage)))
 
 	// LLM 管理（可选，需设置 llmBindingRepo）
 	mux.Handle("GET /dashboard/llm", h.requireSession(http.HandlerFunc(h.handleLLMPage)))
@@ -95,6 +96,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// 排水控制（可选，需设置 drainFn）
 	mux.Handle("POST /dashboard/drain/enter", h.requireSession(http.HandlerFunc(h.handleDrainEnter)))
 	mux.Handle("POST /dashboard/drain/exit", h.requireSession(http.HandlerFunc(h.handleDrainExit)))
+
+	// Trends API（F-10 WebUI 增强）
+	mux.Handle("GET /api/dashboard/trends", h.requireSession(http.HandlerFunc(h.handleTrendsAPI)))
 }
 
 // SetLLMDeps 设置 LLM 绑定相关依赖（可选；不设置则 LLM 页面显示空状态）。
@@ -636,5 +640,72 @@ func (h *Handler) handleAuditPage(w http.ResponseWriter, r *http.Request) {
 		},
 		Logs:  logs,
 		Limit: limit,
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Trends API（F-10 WebUI 增强）
+// ---------------------------------------------------------------------------
+
+type trendsResponse struct {
+	DailyTokens []db.DailyTokenRow `json:"daily_tokens"`
+	DailyCost   []db.DailyCostRow  `json:"daily_cost"`
+	TopUsers    []db.UserStatRow   `json:"top_users"`
+}
+
+func (h *Handler) handleTrendsAPI(w http.ResponseWriter, r *http.Request) {
+	// 解析 days 参数（默认 7 天）
+	daysStr := r.URL.Query().Get("days")
+	days := 7
+	if daysStr != "" {
+		if parsed, err := strconv.Atoi(daysStr); err == nil && parsed > 0 && parsed <= 365 {
+			days = parsed
+		}
+	}
+
+	now := time.Now()
+	from := now.AddDate(0, 0, -days).Truncate(24 * time.Hour)
+	to := now
+
+	// 查询按天聚合的 token 用量
+	dailyTokens, err := h.usageRepo.DailyTokens(from, to, "")
+	if err != nil {
+		h.logger.Error("failed to get daily tokens", zap.Error(err))
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	// 查询按天聚合的费用
+	dailyCost, err := h.usageRepo.DailyCost(from, to, "")
+	if err != nil {
+		h.logger.Error("failed to get daily cost", zap.Error(err))
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	// 查询 Top 5 用户
+	topUsers, err := h.usageRepo.UserStats(from, to, 5)
+	if err != nil {
+		h.logger.Error("failed to get top users", zap.Error(err))
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(trendsResponse{
+		DailyTokens: dailyTokens,
+		DailyCost:   dailyCost,
+		TopUsers:    topUsers,
+	})
+}
+
+// ---------------------------------------------------------------------------
+// 用户自助查询页面（F-10 WebUI 增强）
+// ---------------------------------------------------------------------------
+
+func (h *Handler) handleMyUsagePage(w http.ResponseWriter, r *http.Request) {
+	h.renderPage(w, "my-usage.html", baseData{
+		Flash: r.URL.Query().Get("flash"),
+		Error: r.URL.Query().Get("error"),
 	})
 }
