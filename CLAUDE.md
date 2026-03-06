@@ -229,6 +229,75 @@ dashboard:
 - **LLM 绑定优先级**: 用户绑定 > 分组绑定 > 负载均衡自动选择
 - **均分操作会覆盖现有用户级绑定**，分组绑定不受影响
 
+## 测试要求
+
+**每次开发新功能或修复 bug 时，必须完成以下测试：**
+
+### 1. 单元测试 (UT)
+```bash
+# 运行所有单元测试
+go test ./...
+
+# 运行特定包的测试
+go test ./internal/db/...
+go test ./internal/proxy/...
+
+# 查看测试覆盖率
+go test -cover ./...
+```
+
+### 2. E2E 测试（三种方式全覆盖）
+
+#### 方式1: httptest 自动化测试（必须）
+```bash
+# 快速自动化测试，适合 CI/CD
+go test ./test/e2e/...
+```
+**用途**: 日常开发、快速验证、CI/CD 集成
+
+#### 方式2: 真实进程集成测试（必须）
+```bash
+# 使用真实进程测试完整链路
+go test -tags=integration ./test/e2e/...
+```
+**用途**: 真实环境验证、进程间通信测试
+
+#### 方式3: 手动完整链路测试（推荐）
+```bash
+# 1. 启动 mockllm
+./mockllm.exe --addr :11434 &
+
+# 2. 启动 sproxy
+./sproxy.exe start --config test-sproxy.yaml &
+
+# 3. 启动 cproxy
+./cproxy.exe start --config test-cproxy.yaml &
+
+# 4. 登录
+echo -e "testuser\ntestpass123" | ./cproxy.exe login --server http://localhost:9000
+
+# 5. 运行测试
+./mockagent.exe --url http://localhost:8080 --count 100 --concurrency 10
+
+# 6. 清理
+pkill -f "mockllm|sproxy|cproxy"
+```
+**用途**: 手动调试、压力测试、长时间稳定性测试
+
+### 测试标准
+- ✅ 所有单元测试必须通过
+- ✅ 方式1 和方式2 的 E2E 测试必须通过
+- ✅ 方式3 用于手动验证和压力测试
+- ✅ 新功能必须添加对应的测试用例
+- ✅ 测试覆盖率不低于现有水平
+
+### 测试文档
+- E2E 测试指南: `test/e2e/README.md`
+- E2E 测试报告: `docs/E2E_TEST_REPORT.md`
+- 测试覆盖率报告: `docs/TEST_COVERAGE_REPORT.md`
+
+---
+
 ## 详细文档
 
 - **CLI 完整参考（AI 首选）**: `./sproxy admin help-all`
