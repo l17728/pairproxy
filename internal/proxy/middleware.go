@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
@@ -148,4 +149,17 @@ func writeJSONError(w http.ResponseWriter, status int, code, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(errorResponse{Error: code, Message: message})
+}
+
+// writeQuotaError 写入结构化配额错误响应（包含 kind/current/limit/reset_at 字段）。
+func writeQuotaError(w http.ResponseWriter, kind string, current, limit int64, resetAt time.Time) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusTooManyRequests)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"error":    "quota_exceeded",
+		"kind":     kind,
+		"current":  current,
+		"limit":    limit,
+		"reset_at": resetAt.UTC().Format(time.RFC3339),
+	})
 }

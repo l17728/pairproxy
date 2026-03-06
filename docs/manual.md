@@ -426,7 +426,9 @@ http://服务器IP地址:9000/dashboard/
 sproxy admin group add <分组名> \
   [--daily-limit <每日token上限>] \
   [--monthly-limit <每月token上限>] \
-  [--rpm <每分钟最多请求次数>]
+  [--rpm <每分钟最多请求次数>] \
+  [--max-tokens-per-request <单次请求最大token数>] \
+  [--concurrent-requests <最大并发请求数>]
 ```
 
 **实际示例**：
@@ -515,6 +517,12 @@ sproxy admin group set-quota trial --monthly 0
 
 # 调整每分钟请求次数限制
 sproxy admin group set-quota engineering --rpm 120
+
+# 限制单次请求最大 token 数（防止单个请求消耗过多资源）
+sproxy admin group set-quota trial --max-tokens-per-request 4096
+
+# 限制并发请求数（防止单用户占用过多连接）
+sproxy admin group set-quota trial --concurrent-requests 5
 ```
 
 ### 4.6 查看用量统计

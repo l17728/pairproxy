@@ -757,7 +757,11 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 							zap.String("user_id", claims.UserID),
 							zap.Int64("max_tokens", reqBody.MaxTokens),
 						)
-						writeJSONError(w, http.StatusTooManyRequests, "quota_exceeded", sizeErr.Error())
+						if qErr, ok := sizeErr.(*quota.ExceededError); ok {
+							writeQuotaError(w, qErr.Kind, qErr.Current, qErr.Limit, qErr.ResetAt)
+						} else {
+							writeJSONError(w, http.StatusTooManyRequests, "quota_exceeded", sizeErr.Error())
+						}
 						return
 					}
 				}
@@ -777,7 +781,11 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 				zap.String("request_id", reqID),
 				zap.String("user_id", claims.UserID),
 			)
-			writeJSONError(w, http.StatusTooManyRequests, "quota_exceeded", concErr.Error())
+			if qErr, ok := concErr.(*quota.ExceededError); ok {
+				writeQuotaError(w, qErr.Kind, qErr.Current, qErr.Limit, qErr.ResetAt)
+			} else {
+				writeJSONError(w, http.StatusTooManyRequests, "quota_exceeded", concErr.Error())
+			}
 			return
 		}
 		defer release()

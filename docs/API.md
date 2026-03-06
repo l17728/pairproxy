@@ -239,13 +239,23 @@ List all groups with their current quota settings.
       "daily_token_limit": 100000,
       "monthly_token_limit": 2000000,
       "requests_per_minute": 20,
+      "max_tokens_per_request": 4096,
+      "concurrent_requests": 5,
       "created_at": "2025-01-01T00:00:00Z"
     }
   ]
 }
 ```
 
-Fields `daily_token_limit`, `monthly_token_limit`, and `requests_per_minute` are `null` when unlimited.
+All limit fields are `null` when unlimited.
+
+| Field | Description |
+|-------|-------------|
+| `daily_token_limit` | Daily token cap (input + output combined). `null` = unlimited |
+| `monthly_token_limit` | Monthly token cap. `null` = unlimited |
+| `requests_per_minute` | Per-user RPM limit. `null` = unlimited |
+| `max_tokens_per_request` | Maximum `max_tokens` value allowed in a single request. `null` = unlimited |
+| `concurrent_requests` | Maximum number of simultaneous in-flight requests per user. `null` = unlimited |
 
 ---
 
@@ -259,7 +269,9 @@ Create a new group.
   "name": "trial",
   "daily_token_limit": 10000,
   "monthly_token_limit": 200000,
-  "requests_per_minute": 10
+  "requests_per_minute": 10,
+  "max_tokens_per_request": 4096,
+  "concurrent_requests": 2
 }
 ```
 
@@ -281,11 +293,51 @@ Update quota limits for an existing group.
 {
   "daily_token_limit": 50000,
   "monthly_token_limit": null,
-  "requests_per_minute": 30
+  "requests_per_minute": 30,
+  "max_tokens_per_request": 8192,
+  "concurrent_requests": 3
 }
 ```
 
 Set a field to `null` to remove that limit (unlimited). Omitting a field leaves it unchanged.
+
+**Response 204** — No Content
+
+---
+
+#### `DELETE /api/admin/groups/{id}`
+
+Delete a group. Users currently in the group are moved to no group (unlimited quota).
+
+**Response 204** — No Content
+
+**Error responses**
+
+| Status | `error` code | Reason |
+|--------|-------------|--------|
+| 404 | `not_found` | Group not found |
+| 409 | `conflict` | Cannot delete group with active users |
+
+---
+
+#### `PUT /api/admin/users/{id}/group`
+
+Assign a user to a group (or remove from group by setting `group_id` to `null`).
+
+**Request**
+```json
+{ "group_id": "group-uuid" }
+```
+
+Set `group_id` to `null` to remove the user from their current group.
+
+**Response 204** — No Content
+
+---
+
+#### `POST /api/admin/users/{id}/revoke-tokens`
+
+Immediately revoke all active tokens (access + refresh) for a user. Use this when disabling a user or responding to a security incident.
 
 **Response 204** — No Content
 
@@ -376,6 +428,314 @@ Paginated request log entries.
       "created_at": "2025-06-01T12:00:00Z"
     }
   ]
+}
+```
+
+---
+
+### Quota Management
+
+#### `GET /api/admin/quota/status`
+
+Query current quota usage for a user or group.
+
+**Query parameters**
+
+| Name | Required | Description |
+|------|----------|-------------|
+| `user` | no | Username to query |
+| `group` | no | Group name to query |
+
+Exactly one of `user` or `group` must be provided.
+
+**Response 200**
+```json
+{
+  "daily_used": 12345,
+  "daily_limit": 50000,
+  "monthly_used": 234567,
+  "monthly_limit": 1000000,
+  "rpm_limit": 10
+}
+```
+
+Limit fields are `null` when unlimited.
+
+---
+
+### Audit & Logs
+
+#### `GET /api/admin/audit`
+
+List recent admin operations (user/group changes, quota updates, etc.).
+
+**Query parameters**
+
+| Name | Default | Description |
+|------|---------|-------------|
+| `limit` | `100` | Max entries returned |
+
+**Response 200**
+```json
+{
+  "entries": [
+    {
+      "id": 1,
+      "admin_user": "admin",
+      "action": "create_user",
+      "target": "alice",
+      "details": "{\"group\":\"trial\"}",
+      "created_at": "2025-06-01T12:00:00Z"
+    }
+  ]
+}
+```
+
+---
+
+#### `DELETE /api/admin/logs`
+
+Purge old request logs.
+
+**Query parameters**
+
+| Name | Required | Description |
+|------|----------|-------------|
+| `before` | no | Delete logs before this date (ISO 8601) |
+| `days` | no | Delete logs older than N days |
+
+Exactly one of `before` or `days` must be provided.
+
+**Response 204** — No Content
+
+---
+
+#### `GET /api/admin/export`
+
+Export request logs in CSV or JSON format.
+
+**Query parameters**
+
+| Name | Default | Description |
+|------|---------|-------------|
+| `format` | `json` | Output format: `json` or `csv` |
+| `from` | start of today | Start timestamp (ISO 8601) |
+| `to` | now | End timestamp (ISO 8601) |
+| `user_id` | (all) | Filter by user ID |
+
+**Response 200** — Returns file download with appropriate Content-Type.
+
+---
+
+### Drain Mode
+
+#### `POST /api/admin/drain`
+
+Enter drain mode (reject new requests, allow in-flight to complete).
+
+**Response 204** — No Content
+
+---
+
+#### `POST /api/admin/undrain`
+
+Exit drain mode (resume accepting requests).
+
+**Response 204** — No Content
+
+---
+
+#### `GET /api/admin/drain/status`
+
+Check current drain mode status.
+
+**Response 200**
+```json
+{
+  "draining": false,
+  "active_requests": 3
+}
+```
+
+---
+
+### API Key Management
+
+#### `GET /api/admin/api-keys`
+
+List all configured API keys (values are masked).
+
+**Response 200**
+```json
+{
+  "keys": [
+    {
+      "id": "uuid",
+      "name": "anthropic-prod",
+      "provider": "anthropic",
+      "masked_value": "sk-ant-***xyz",
+      "is_active": true,
+      "assigned_to": "user-uuid",
+      "created_at": "2025-06-01T12:00:00Z"
+    }
+  ]
+}
+```
+
+---
+
+#### `POST /api/admin/api-keys`
+
+Create a new API key.
+
+**Request**
+```json
+{
+  "name": "anthropic-backup",
+  "provider": "anthropic",
+  "value": "sk-ant-api03-..."
+}
+```
+
+**Response 201**
+```json
+{
+  "id": "uuid",
+  "name": "anthropic-backup"
+}
+```
+
+---
+
+#### `POST /api/admin/api-keys/{id}/assign`
+
+Assign an API key to a specific user or group.
+
+**Request**
+```json
+{
+  "user_id": "uuid"
+}
+```
+
+Or:
+```json
+{
+  "group_id": "uuid"
+}
+```
+
+**Response 204** — No Content
+
+---
+
+#### `DELETE /api/admin/api-keys/{id}`
+
+Revoke an API key.
+
+**Response 204** — No Content
+
+---
+
+### LLM Target Management
+
+#### `GET /api/admin/llm/targets`
+
+List all configured LLM targets with health status.
+
+**Response 200**
+```json
+{
+  "targets": [
+    {
+      "id": "https://api.anthropic.com",
+      "name": "Primary",
+      "provider": "anthropic",
+      "healthy": true,
+      "weight": 100,
+      "bound_users": 5,
+      "bound_groups": 2
+    }
+  ]
+}
+```
+
+---
+
+#### `GET /api/admin/llm/bindings`
+
+List all user/group LLM bindings.
+
+**Response 200**
+```json
+{
+  "bindings": [
+    {
+      "id": "uuid",
+      "user_id": "uuid",
+      "username": "alice",
+      "target_url": "https://api.anthropic.com",
+      "created_at": "2025-06-01T12:00:00Z"
+    },
+    {
+      "id": "uuid",
+      "group_id": "uuid",
+      "group_name": "premium",
+      "target_url": "https://api.anthropic.com",
+      "created_at": "2025-06-01T12:00:00Z"
+    }
+  ]
+}
+```
+
+---
+
+#### `POST /api/admin/llm/bindings`
+
+Create a new LLM binding for a user or group.
+
+**Request**
+```json
+{
+  "user_id": "uuid",
+  "target_url": "https://api.anthropic.com"
+}
+```
+
+Or:
+```json
+{
+  "group_id": "uuid",
+  "target_url": "https://api.anthropic.com"
+}
+```
+
+**Response 201**
+```json
+{
+  "id": "uuid"
+}
+```
+
+---
+
+#### `DELETE /api/admin/llm/bindings/{id}`
+
+Delete an LLM binding.
+
+**Response 204** — No Content
+
+---
+
+#### `POST /api/admin/llm/distribute`
+
+Automatically distribute all active users evenly across all healthy LLM targets.
+
+**Response 200**
+```json
+{
+  "distributed": 42,
+  "targets": 3
 }
 ```
 

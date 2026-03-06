@@ -42,10 +42,18 @@ func NewManager(
 	if cacheDir != "" {
 		if cached, err := LoadFromDir(cacheDir); err == nil && cached != nil {
 			m.version.Store(cached.Version)
+			m.logger.Info("cluster manager restored routing version from cache",
+				zap.Int64("version", cached.Version),
+				zap.Int("cached_entries", len(cached.Entries)),
+			)
 		}
 	}
 
 	m.applyTargets(initialTargets)
+	m.logger.Info("cluster manager initialized",
+		zap.Int("initial_targets", len(initialTargets)),
+		zap.Int64("routing_version", m.version.Load()),
+	)
 	return m
 }
 
@@ -67,12 +75,14 @@ func (m *Manager) UpdateTargets(targets []lb.Target) {
 
 // MarkHealthy 将节点标记为健康并更新路由表版本。
 func (m *Manager) MarkHealthy(id string) {
+	m.logger.Info("routing: marking node healthy", zap.String("node_id", id))
 	m.balancer.MarkHealthy(id)
 	m.rebuildFromBalancer()
 }
 
 // MarkUnhealthy 将节点标记为不健康并更新路由表版本。
 func (m *Manager) MarkUnhealthy(id string) {
+	m.logger.Warn("routing: marking node unhealthy", zap.String("node_id", id))
 	m.balancer.MarkUnhealthy(id)
 	m.rebuildFromBalancer()
 }
@@ -115,6 +125,10 @@ func (m *Manager) applyTargets(targets []lb.Target) {
 	m.current = RoutingTable{Version: ver, Entries: entries}
 	m.mu.Unlock()
 
+	m.logger.Debug("routing table updated via applyTargets",
+		zap.Int64("version", ver),
+		zap.Int("entries", len(entries)),
+	)
 	m.persist()
 }
 
@@ -137,6 +151,10 @@ func (m *Manager) rebuildFromBalancer() {
 	m.current = RoutingTable{Version: ver, Entries: entries}
 	m.mu.Unlock()
 
+	m.logger.Debug("routing table rebuilt from balancer state",
+		zap.Int64("version", ver),
+		zap.Int("entries", len(entries)),
+	)
 	m.persist()
 }
 
@@ -170,5 +188,10 @@ func (m *Manager) InjectResponseHeaders(headers interface {
 			return
 		}
 		headers.Set("X-Routing-Update", encoded)
+		m.logger.Debug("routing update injected into response header",
+			zap.Int64("client_version", clientVersion),
+			zap.Int64("server_version", rt.Version),
+			zap.Int("entries", len(rt.Entries)),
+		)
 	}
 }

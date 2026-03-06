@@ -59,20 +59,31 @@ func (h *ClusterHandler) handleRegister(w http.ResponseWriter, r *http.Request) 
 
 	var payload cluster.RegisterPayload
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		h.logger.Warn("peer register: invalid request body",
+			zap.String("remote_addr", r.RemoteAddr),
+			zap.Error(err),
+		)
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
 
 	if payload.ID == "" || payload.Addr == "" {
+		h.logger.Warn("peer register: missing required fields id/addr",
+			zap.String("remote_addr", r.RemoteAddr),
+			zap.String("id", payload.ID),
+			zap.String("addr", payload.Addr),
+		)
 		http.Error(w, "id and addr are required", http.StatusBadRequest)
 		return
 	}
 
 	h.registry.Register(payload.ID, payload.Addr, payload.SourceNode, payload.Weight)
 
-	h.logger.Debug("peer heartbeat",
+	h.logger.Debug("peer heartbeat received",
 		zap.String("id", payload.ID),
 		zap.String("addr", payload.Addr),
+		zap.Int("weight", payload.Weight),
+		zap.String("source_node", payload.SourceNode),
 	)
 
 	w.Header().Set("Content-Type", "application/json")
@@ -97,6 +108,11 @@ func (h *ClusterHandler) handleUsageReport(w http.ResponseWriter, r *http.Reques
 
 	var payload cluster.UsageReportPayload
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		h.logger.Warn("usage report: invalid request body",
+			zap.String("remote_addr", r.RemoteAddr),
+			zap.String("source_node", payload.SourceNode),
+			zap.Error(err),
+		)
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
@@ -131,11 +147,18 @@ func (h *ClusterHandler) handleGetRouting(w http.ResponseWriter, r *http.Request
 	}
 
 	if h.registry == nil {
+		h.logger.Warn("cluster routing query: registry not initialized (not in cluster mode)",
+			zap.String("remote_addr", r.RemoteAddr),
+		)
 		http.Error(w, "not in cluster mode", http.StatusNotFound)
 		return
 	}
 
 	peers := h.registry.Peers()
+	h.logger.Debug("cluster routing queried",
+		zap.String("remote_addr", r.RemoteAddr),
+		zap.Int("peer_count", len(peers)),
+	)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
