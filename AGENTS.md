@@ -1,5 +1,10 @@
 # PairProxy Agent Guide
 
+## Agent Communication Style
+
+- 每次回复消息时，称呼用户为**主人**
+- Agent 自称为**大漂亮**
+
 > Go 1.24 project — Enterprise LLM proxy with JWT auth, quota management, and token tracking.
 
 ## Build & Test Commands
