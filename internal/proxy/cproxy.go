@@ -392,3 +392,13 @@ func (cp *CProxy) applyRoutingTable(rt *cluster.RoutingTable) {
 		}()
 	}
 }
+
+// Balancer returns the load balancer for testing purposes
+func (cp *CProxy) Balancer() lb.Balancer {
+	return cp.balancer
+}
+
+// ApplyRoutingTable applies a routing table for testing purposes
+func (cp *CProxy) ApplyRoutingTable(rt *cluster.RoutingTable) {
+	cp.applyRoutingTable(rt)
+}
