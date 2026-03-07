@@ -844,6 +844,10 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	targetProvider := sp.providerForURL(firstInfo.URL)
+	// 当 target 未配置 provider 时，从请求路径推断（OpenAI 兼容路径兜底）
+	if targetProvider == "" && strings.HasPrefix(r.URL.Path, "/v1/chat/completions") {
+		targetProvider = "openai"
+	}
 
 	// 补充 span attributes（target 确定后）
 	span.SetAttributes(
