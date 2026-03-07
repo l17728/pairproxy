@@ -124,10 +124,18 @@ func TestTrendsAPIE2E(t *testing.T) {
 			t.Errorf("Content-Type = %q, want application/json", ct)
 		}
 
+		// topUserEntry 与 dashboard.topUserEntry 对齐（含 username 字段）
+		type topUserEntry struct {
+			UserID       string `json:"user_id"`
+			Username     string `json:"username"`
+			TotalInput   int64  `json:"total_input"`
+			TotalOutput  int64  `json:"total_output"`
+			RequestCount int64  `json:"request_count"`
+		}
 		var result struct {
 			DailyTokens []db.DailyTokenRow `json:"daily_tokens"`
 			DailyCost   []db.DailyCostRow  `json:"daily_cost"`
-			TopUsers    []db.UserStatRow   `json:"top_users"`
+			TopUsers    []topUserEntry     `json:"top_users"`
 		}
 
 		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -149,13 +157,20 @@ func TestTrendsAPIE2E(t *testing.T) {
 			t.Errorf("expected 2 top users, got %d", len(result.TopUsers))
 		}
 
-		// Verify user stats
+		// Verify user stats and username resolution
 		var totalInput, totalOutput int64
 		for _, user := range result.TopUsers {
 			totalInput += user.TotalInput
 			totalOutput += user.TotalOutput
 			if user.TotalInput == 0 && user.TotalOutput == 0 {
 				t.Errorf("user %s has zero tokens", user.UserID)
+			}
+			// username 应被解析为真实用户名（alice 或 bob），而非 UUID
+			if user.Username == "" {
+				t.Errorf("user %s has empty username", user.UserID)
+			}
+			if user.Username == user.UserID {
+				t.Errorf("username %q was not resolved (still equals user_id)", user.Username)
 			}
 		}
 
@@ -178,10 +193,17 @@ func TestTrendsAPIE2E(t *testing.T) {
 			t.Errorf("status = %d, want 200", resp.StatusCode)
 		}
 
+		type topUserEntry struct {
+			UserID       string `json:"user_id"`
+			Username     string `json:"username"`
+			TotalInput   int64  `json:"total_input"`
+			TotalOutput  int64  `json:"total_output"`
+			RequestCount int64  `json:"request_count"`
+		}
 		var result struct {
 			DailyTokens []db.DailyTokenRow `json:"daily_tokens"`
 			DailyCost   []db.DailyCostRow  `json:"daily_cost"`
-			TopUsers    []db.UserStatRow   `json:"top_users"`
+			TopUsers    []topUserEntry     `json:"top_users"`
 		}
 
 		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {

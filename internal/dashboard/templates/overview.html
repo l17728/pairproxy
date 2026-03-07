@@ -51,7 +51,7 @@
         {{range .RecentLogs}}
         <tr class="hover:bg-gray-50">
           <td class="px-4 py-3 text-gray-400">{{.CreatedAt.Format "01-02 15:04"}}</td>
-          <td class="px-4 py-3">{{.UserID}}</td>
+          <td class="px-4 py-3">{{username .UserID $.UserMap}}</td>
           <td class="px-4 py-3 text-gray-500">{{if .Model}}{{.Model}}{{else}}—{{end}}</td>
           <td class="px-4 py-3 text-right">{{.InputTokens}}</td>
           <td class="px-4 py-3 text-right">{{.OutputTokens}}</td>
@@ -204,7 +204,7 @@ function updateTopUsersChart(data) {
   topUsersChart = new Chart(ctx, {
     type: 'bar',
     data: {
-      labels: data.map(d => d.user_id.substring(0, 12) + '...'),
+      labels: data.map(d => d.username),
       datasets: [{
         label: 'Total Tokens',
         data: data.map(d => d.total_input + d.total_output),

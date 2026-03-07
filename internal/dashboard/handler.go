@@ -136,6 +136,30 @@ var templateFuncs = template.FuncMap{
 		}
 		return *p
 	},
+	// username 从 id→username 映射中查找用户名；找不到时回退显示原始 id。
+	"username": func(id string, m map[string]string) string {
+		if m != nil {
+			if name, ok := m[id]; ok && name != "" {
+				return name
+			}
+		}
+		return id
+	},
+}
+
+// buildUserMap 查询全量用户列表并返回 id→username 映射。
+// 失败时返回空 map（不阻断页面渲染，页面会回退显示 id）。
+func (h *Handler) buildUserMap() map[string]string {
+	users, err := h.userRepo.ListByGroup("")
+	m := make(map[string]string, len(users))
+	if err != nil {
+		h.logger.Warn("buildUserMap: failed to list users", zap.Error(err))
+		return m
+	}
+	for _, u := range users {
+		m[u.ID] = u.Username
+	}
+	return m
 }
 
 // renderPage 渲染 layout + 指定 page 模板（page 文件名如 "overview.html"）
@@ -262,6 +286,7 @@ type overviewPageData struct {
 	ActiveUsers    int
 	CostToday      float64
 	RecentLogs     []db.UsageLog
+	UserMap        map[string]string // id → username，用于模板显示用户名
 }
 
 func (h *Handler) handleOverview(w http.ResponseWriter, r *http.Request) {
@@ -299,6 +324,7 @@ func (h *Handler) handleOverview(w http.ResponseWriter, r *http.Request) {
 		ActiveUsers:    activeUsers,
 		CostToday:      costToday,
 		RecentLogs:     recentLogs,
+		UserMap:        h.buildUserMap(),
 	})
 }
 
@@ -571,24 +597,50 @@ func (h *Handler) handleDeleteGroup(w http.ResponseWriter, r *http.Request) {
 
 type logsPageData struct {
 	baseData
-	Logs         []db.UsageLog
-	FilterUserID string
-	Limit        int
+	Logs            []db.UsageLog
+	FilterUserID    string
+	FilterUsername  string // 对应 FilterUserID 的用户名，用于筛选框回显
+	Limit           int
+	UserMap         map[string]string // id → username，用于模板显示用户名
 }
 
 func (h *Handler) handleLogsPage(w http.ResponseWriter, r *http.Request) {
+	// 支持按用户名筛选（兼容旧的 user_id 参数）
+	username := r.URL.Query().Get("username")
 	userID := r.URL.Query().Get("user_id")
-	limit := 100
 
+	// 优先使用 username 参数，将其解析为 user_id 用于数据库查询
+	displayUsername := username
+	if username != "" && userID == "" {
+		if u, err := h.userRepo.GetByUsername(username); err == nil && u != nil {
+			userID = u.ID
+		} else {
+			// 用户名不存在，返回空结果（不报错）
+			userID = "__not_found__"
+		}
+	}
+
+	limit := 100
 	logs, _ := h.usageRepo.Query(db.UsageFilter{UserID: userID, Limit: limit})
+
+	userMap := h.buildUserMap()
+	// 若用 user_id 参数筛选，回填对应用户名用于表单显示
+	if displayUsername == "" && userID != "" {
+		if name, ok := userMap[userID]; ok {
+			displayUsername = name
+		}
+	}
+
 	h.renderPage(w, "logs.html", logsPageData{
 		baseData: baseData{
 			Flash: r.URL.Query().Get("flash"),
 			Error: r.URL.Query().Get("error"),
 		},
-		Logs:         logs,
-		FilterUserID: userID,
-		Limit:        limit,
+		Logs:           logs,
+		FilterUserID:   userID,
+		FilterUsername: displayUsername,
+		Limit:          limit,
+		UserMap:        userMap,
 	})
 }
 
@@ -647,10 +699,19 @@ func (h *Handler) handleAuditPage(w http.ResponseWriter, r *http.Request) {
 // Trends API（F-10 WebUI 增强）
 // ---------------------------------------------------------------------------
 
+// topUserEntry 在 UserStatRow 基础上附加了解析后的用户名，供前端图表使用。
+type topUserEntry struct {
+	UserID       string `json:"user_id"`
+	Username     string `json:"username"`
+	TotalInput   int64  `json:"total_input"`
+	TotalOutput  int64  `json:"total_output"`
+	RequestCount int64  `json:"request_count"`
+}
+
 type trendsResponse struct {
 	DailyTokens []db.DailyTokenRow `json:"daily_tokens"`
 	DailyCost   []db.DailyCostRow  `json:"daily_cost"`
-	TopUsers    []db.UserStatRow   `json:"top_users"`
+	TopUsers    []topUserEntry     `json:"top_users"`
 }
 
 func (h *Handler) handleTrendsAPI(w http.ResponseWriter, r *http.Request) {
@@ -683,12 +744,27 @@ func (h *Handler) handleTrendsAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 查询 Top 5 用户
-	topUsers, err := h.usageRepo.UserStats(from, to, 5)
+	// 查询 Top 5 用户，附加用户名
+	rawTopUsers, err := h.usageRepo.UserStats(from, to, 5)
 	if err != nil {
 		h.logger.Error("failed to get top users", zap.Error(err))
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
+	}
+	userMap := h.buildUserMap()
+	topUsers := make([]topUserEntry, len(rawTopUsers))
+	for i, u := range rawTopUsers {
+		name := u.UserID
+		if n, ok := userMap[u.UserID]; ok && n != "" {
+			name = n
+		}
+		topUsers[i] = topUserEntry{
+			UserID:       u.UserID,
+			Username:     name,
+			TotalInput:   u.TotalInput,
+			TotalOutput:  u.TotalOutput,
+			RequestCount: u.RequestCount,
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")

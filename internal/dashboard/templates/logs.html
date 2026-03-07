@@ -3,11 +3,11 @@
   <h2 class="text-xl font-bold text-gray-800">请求日志</h2>
   <div class="flex gap-2 items-center flex-wrap">
     <form method="GET" action="/dashboard/logs" class="flex gap-2 items-center">
-      <input type="text" name="user_id" value="{{.FilterUserID}}" placeholder="按用户 ID 过滤"
+      <input type="text" name="username" value="{{.FilterUsername}}" placeholder="按用户名过滤"
         class="border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 w-48">
       <button type="submit"
         class="bg-indigo-600 hover:bg-indigo-700 text-white text-sm px-3 py-1.5 rounded transition-colors">筛选</button>
-      {{if .FilterUserID}}
+      {{if .FilterUsername}}
       <a href="/dashboard/logs" class="text-sm text-gray-400 hover:underline">清除</a>
       {{end}}
     </form>
@@ -43,7 +43,7 @@
         {{range .Logs}}
         <tr class="hover:bg-gray-50">
           <td class="px-4 py-3 text-gray-400 text-xs whitespace-nowrap">{{.CreatedAt.Format "01-02 15:04:05"}}</td>
-          <td class="px-4 py-3">{{.UserID}}</td>
+          <td class="px-4 py-3">{{username .UserID $.UserMap}}</td>
           <td class="px-4 py-3 text-gray-500 text-xs">{{if .Model}}{{.Model}}{{else}}—{{end}}</td>
           <td class="px-4 py-3 text-right">{{.InputTokens}}</td>
           <td class="px-4 py-3 text-right">{{.OutputTokens}}</td>
