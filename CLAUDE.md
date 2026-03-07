@@ -144,6 +144,15 @@ curl -H "Authorization: Bearer <user-jwt>" \
 ./sproxy admin apikey revoke <name>
 ```
 
+### 对话内容跟踪
+```bash
+./sproxy admin track enable <username>                     # 启用对指定用户的对话内容跟踪
+./sproxy admin track disable <username>                    # 停用跟踪（历史记录保留）
+./sproxy admin track list                                  # 列出所有已启用跟踪的用户
+./sproxy admin track show <username>                       # 列出该用户的对话记录文件
+./sproxy admin track clear <username>                      # 删除该用户的所有对话记录文件
+```
+
 ## 常见场景处理
 
 ### 新用户入职

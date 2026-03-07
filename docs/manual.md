@@ -2302,3 +2302,124 @@ curl -X POST http://localhost:9000/auth/login \
 | 适用场景 | Claude Code 等 Anthropic 客户端 | Cursor、Continue.dev 等 OpenAI 客户端 |
 
 ---
+
+## 17. 用户对话内容跟踪
+
+### 17.1 功能概述
+
+对话内容跟踪允许管理员针对**特定用户**记录其与 LLM 之间的完整对话内容（输入消息和助手回复），以用于审计、问题排查或合规记录。
+
+与 `log.debug_file`（记录所有用户的 HTTP 传输内容）不同，对话跟踪：
+- **按用户粒度控制**：只跟踪指定用户，不影响其他用户
+- **记录对话语义内容**：提取 messages 数组和助手回复文本，而非原始 HTTP 字节
+- **通过 shell 命令管理**：无需修改配置文件，无需重启服务，变更立即生效
+- **支持 Anthropic 和 OpenAI 格式**：流式和非流式响应均可捕获
+
+> **安全说明**：HTTPS 加密不影响此功能。sproxy 作为 TLS 终端节点，在应用层同时持有请求和响应的明文内容。
+
+### 17.2 存储位置
+
+对话记录存储在数据库文件同级目录的 `track/` 子目录下：
+
+```
+<db_dir>/track/
+  users/
+    alice          ← 标记文件（空文件，存在即表示 alice 已启用跟踪）
+  conversations/
+    alice/
+      2026-03-07T12-34-56Z-req-abc123.json
+      2026-03-07T15-22-01Z-req-def456.json
+```
+
+每个 JSON 文件包含：
+
+```json
+{
+  "request_id": "req-abc123",
+  "username": "alice",
+  "timestamp": "2026-03-07T12:34:56Z",
+  "provider": "anthropic",
+  "model": "claude-3-opus-20240229",
+  "messages": [
+    {"role": "user", "content": "请帮我审查这段代码"}
+  ],
+  "response": "这段代码有以下几个问题...",
+  "input_tokens": 150,
+  "output_tokens": 320
+}
+```
+
+### 17.3 管理命令
+
+所有命令均在 sproxy 运行时生效，**无需重启**：
+
+```bash
+# 启用对 alice 的跟踪（此后 alice 的所有对话均被记录）
+sproxy admin track enable alice
+
+# 停用跟踪（现有记录文件保留，不会被删除）
+sproxy admin track disable alice
+
+# 列出所有当前已启用跟踪的用户
+sproxy admin track list
+
+# 列出 alice 的对话记录文件（最新在前，含文件大小）
+sproxy admin track show alice
+
+# 删除 alice 的所有对话记录文件（跟踪状态不受影响）
+sproxy admin track clear alice
+```
+
+**`show` 输出示例：**
+```
+Conversations for alice [tracking: ENABLED] — 3 record(s):
+    1. 2026-03-07T15-22-01Z-req-def456.json  (2847 bytes)
+    2. 2026-03-07T12-34-56Z-req-abc123.json  (1923 bytes)
+    3. 2026-03-06T09-11-30Z-req-xyz789.json  (4102 bytes)
+
+Location: /var/lib/pairproxy/track/conversations/alice
+```
+
+### 17.4 典型场景
+
+#### 排查特定用户问题
+
+```bash
+# 1. 启用跟踪
+sproxy admin track enable problemuser
+
+# 2. 等待用户复现问题...
+
+# 3. 查看记录
+sproxy admin track show problemuser
+
+# 4. 读取具体记录（直接 cat JSON 文件）
+cat /var/lib/pairproxy/track/conversations/problemuser/2026-03-07T12-34-56Z-req-xxx.json
+
+# 5. 排查完毕后停用并清理
+sproxy admin track disable problemuser
+sproxy admin track clear problemuser
+```
+
+#### 合规审计
+
+```bash
+# 启用对需审计用户的持续跟踪
+sproxy admin track enable contractor1
+sproxy admin track enable contractor2
+
+# 定期查看跟踪状态
+sproxy admin track list
+
+# 月度导出（JSON 文件可直接归档或导入日志系统）
+ls /var/lib/pairproxy/track/conversations/contractor1/
+```
+
+### 17.5 注意事项
+
+- **磁盘空间**：长时间跟踪活跃用户会产生大量文件，建议定期使用 `track clear` 清理历史记录
+- **隐私合规**：对话内容含用户数据，请确保符合所在地区的数据保护法规，并告知被跟踪用户
+- **文件权限**：跟踪目录权限由 sproxy 进程的运行用户决定（默认 0755/0644）
+- **无加密**：记录文件以明文 JSON 存储，如需加密请在文件系统层面处理
+
+---

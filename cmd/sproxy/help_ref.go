@@ -543,7 +543,86 @@ Natural language: "wait for drain", "wait until no requests", "block until drain
 
 ---
 
-## 13. Other Top-level Commands
+## 13. Conversation Tracking
+
+Track individual users' LLM conversation content server-side.
+Tracking is enabled/disabled per user via marker files. No UI or API is
+required. Changes take effect immediately — no restart needed.
+
+Tracked conversations are saved as JSON files:
+  ` + bq + `<db_dir>/track/conversations/<username>/<timestamp>-<reqID>.json` + bq + `
+
+Each JSON file contains: request_id, username, timestamp, provider, model,
+messages (input), response (assistant text), input_tokens, output_tokens.
+
+### 13.1 Enable tracking for a user
+
+` + bq + `sproxy admin track enable <username>` + bq + `
+
+Starts recording all subsequent LLM conversations for this user.
+Takes effect for new requests immediately (no restart).
+
+Examples:
+  sproxy admin track enable alice
+  sproxy admin track enable bob
+
+Natural language: "track user alice", "start recording alice", "enable conversation tracking for bob"
+
+---
+
+### 13.2 Disable tracking for a user
+
+` + bq + `sproxy admin track disable <username>` + bq + `
+
+Stops recording conversations. Existing records are preserved.
+
+Examples:
+  sproxy admin track disable alice
+
+Natural language: "stop tracking alice", "disable tracking for bob", "stop recording"
+
+---
+
+### 13.3 List tracked users
+
+` + bq + `sproxy admin track list` + bq + `
+
+Shows all users currently with tracking enabled.
+
+Natural language: "who is being tracked", "list tracked users", "show tracked users"
+
+---
+
+### 13.4 Show conversation records for a user
+
+` + bq + `sproxy admin track show <username>` + bq + `
+
+Lists all conversation record files for the user (newest first),
+with file names (containing timestamp and request ID) and file sizes.
+Also shows whether tracking is currently enabled or disabled.
+
+Examples:
+  sproxy admin track show alice
+
+Natural language: "show alice's conversations", "list conversations for alice", "view tracked records"
+
+---
+
+### 13.5 Clear conversation records for a user
+
+` + bq + `sproxy admin track clear <username>` + bq + `
+
+Deletes all conversation JSON files for the user. The marker file
+(tracking enable/disable state) is not affected.
+
+Examples:
+  sproxy admin track clear alice
+
+Natural language: "clear alice's conversations", "delete tracked records", "wipe conversation history"
+
+---
+
+## 14. Other Top-level Commands
 
 ### hash-password
 
@@ -612,5 +691,10 @@ Natural language: "start server", "start sproxy", "run the proxy"
 | Exit drain mode | sproxy admin drain exit |
 | Check drain status | sproxy admin drain status |
 | Wait for drain completion | sproxy admin drain wait --timeout 60s |
+| Enable conversation tracking for alice | sproxy admin track enable alice |
+| Disable conversation tracking for alice | sproxy admin track disable alice |
+| List all tracked users | sproxy admin track list |
+| Show alice's conversation records | sproxy admin track show alice |
+| Clear alice's conversation records | sproxy admin track clear alice |
 | Hash a new admin password | sproxy hash-password |
 `
