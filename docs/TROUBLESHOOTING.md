@@ -16,6 +16,7 @@
 8. [调试命令速查](#8-调试命令速查)
 9. [日志文件位置](#9-日志文件位置)
 10. [LLM Extended Thinking / 长流连接断开](#10-llm-extended-thinking--长流连接断开)
+11. [对话内容追踪问题](#11-对话内容追踪问题)
 
 ---
 
@@ -587,3 +588,103 @@ proxy_send_timeout 0;
    sysctl net.ipv4.tcp_keepalive_time    # 建议 ≤ 300
    sysctl net.ipv4.tcp_keepalive_intvl   # 建议 60
    ```
+
+---
+
+## 11. 对话内容追踪问题
+
+> v2.4.0+，涉及 `sproxy admin track` 功能。
+
+### 11.1 启用追踪后未产生任何记录文件
+
+**可能原因 1**: 追踪在请求之后才启用。
+
+只有 `track enable` **之后**发送的请求才被记录，存量请求不会补录。
+
+**可能原因 2**: 磁盘权限问题。
+
+sproxy 进程无法写入 `track/` 目录时会静默跳过（不影响主流程），查看日志：
+
+```bash
+journalctl -u sproxy | grep -i "track\|conversation"
+```
+
+若出现权限错误，修复目录权限：
+
+```bash
+chown -R sproxy:sproxy <db_dir>/track/
+chmod -R 755 <db_dir>/track/
+```
+
+**可能原因 3**: 用户名大小写不匹配。
+
+JWT 中的 username 与 `track enable` 参数必须完全一致（大小写敏感）。
+
+```bash
+# 确认当前被追踪的用户名
+sproxy admin track list
+```
+
+---
+
+### 11.2 对话记录的 response 字段为空
+
+**非流式请求**：response 从响应 JSON body 提取，若 LLM 返回非标准格式（如 Anthropic `content` 数组为空，或 OpenAI `choices` 为空），则 response 为空字符串。
+
+**流式请求**：response 从 SSE chunks 累积。若请求在 `message_stop`（Anthropic）或 `[DONE]`（OpenAI）之前被客户端中断，可能无法完整捕获。
+
+调试方法：
+```bash
+# 查看原始对话记录
+sproxy admin track show <username>
+cat <track_dir>/conversations/<username>/<filename>.json | jq .
+```
+
+---
+
+### 11.3 token 计数为 0
+
+**非流式**：token 从响应 `usage` 字段提取。若 LLM 响应不包含 `usage` 字段，则计数为 0（记录仍然写入）。
+
+**流式**：token 计数当前不从 SSE 流中提取（流式 token 统计由 `tap` 模块负责，单独记录到数据库）。
+
+---
+
+### 11.4 磁盘空间占用过大
+
+每条对话记录通常为 1 KB ~ 10 KB，高频用户长期追踪会积累大量文件。
+
+定期清理：
+```bash
+# 清除 alice 的所有历史记录（保留追踪状态）
+sproxy admin track clear alice
+
+# 或手动按日期删除（保留最近 7 天）
+find <track_dir>/conversations/alice/ -name "*.json" \
+  -mtime +7 -delete
+```
+
+若需批量清理所有用户：
+```bash
+for user in $(sproxy admin track list | grep -v "^No\|^Tracked"); do
+  sproxy admin track clear "$user"
+done
+```
+
+---
+
+### 11.5 `track enable` 报错 "invalid username"
+
+用户名含有路径遍历字符时被拒绝：`..`、`/`、`\`，或为空字符串。
+
+合法用户名示例：`alice`、`bob123`、`user.name`、`user-name`。
+
+---
+
+### 11.6 旧版本（v2.3.0 及以下）报 "unknown command: track"
+
+`sproxy admin track` 命令在 **v2.4.0** 引入。请升级二进制：
+
+```bash
+./sproxy --version   # 确认版本
+```

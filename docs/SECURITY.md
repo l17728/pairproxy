@@ -212,6 +212,43 @@ Set `log.level: debug` during security testing to enable per-request verbose log
 
 ---
 
+## Conversation Tracking Data Privacy
+
+> v2.4.0+
+
+The `sproxy admin track` feature records full conversation content (user messages and assistant replies) to disk. This data is **sensitive** and requires explicit operational controls.
+
+### Data Stored
+
+Each conversation record (`track/conversations/<username>/*.json`) contains:
+
+- Full message content sent by the user to the LLM
+- Full assistant reply text
+- Request metadata (timestamp, model, token counts)
+
+This data is **not encrypted at rest**. The file permissions are `0644` by default.
+
+### Recommended Controls
+
+| Control | Action |
+|---------|--------|
+| **File permissions** | `chmod 600 <track_dir>/conversations/<username>/*.json` or set umask |
+| **Directory ownership** | Ensure only the sproxy service user can read the directory |
+| **Encryption at rest** | Use filesystem-level encryption (LUKS, eCryptfs) for the data volume |
+| **Retention policy** | Run `sproxy admin track clear <username>` periodically, or use `find … -mtime +N -delete` |
+| **Minimal scope** | Enable tracking only for specific users and only for the duration needed |
+| **Access audit** | Log admin CLI access; `sproxy admin track show` reads files locally |
+
+### User Notification
+
+Enabling conversation tracking without the user's knowledge may violate privacy regulations (GDPR, PIPL, etc.) in your jurisdiction. Ensure appropriate legal basis and disclosure before enabling tracking on production users.
+
+### Disable Debug Logging in Production
+
+`log.debug_file` (if configured) logs raw HTTP bytes for **all** users. Ensure it is unset or pointed to a secured path in production. The `track` feature is more targeted but has the same confidentiality requirements.
+
+---
+
 ## Reporting Vulnerabilities
 
 Please report security vulnerabilities by opening a **private** GitHub Security

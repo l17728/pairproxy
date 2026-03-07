@@ -50,6 +50,36 @@
 
 ## 版本变更记录
 
+### v2.4.0 — 用户对话内容追踪
+
+**无数据库 Schema 变更**，直接替换二进制即可，零停机升级。
+
+**新增文件系统目录**（启动时自动创建，无需手动操作）
+
+```
+<db_dir>/track/
+├── users/          # 追踪状态标记文件
+└── conversations/  # 按用户分目录存储的 JSON 对话记录
+```
+
+目录位置：数据库文件（`database.path`）同级目录下的 `track/` 子目录。例如数据库在 `./pairproxy.db`，则追踪目录为 `./track/`。
+
+**新增 CLI 命令**（无需配置文件变更）
+
+```bash
+sproxy admin track enable <username>
+sproxy admin track disable <username>
+sproxy admin track list
+sproxy admin track show <username>
+sproxy admin track clear <username>
+```
+
+**回滚说明**
+
+降级到 v2.3.0 时，`track/` 目录会被保留但不再使用，可手动删除。无数据库兼容性问题。
+
+---
+
 ### P3 升级（F-1 ~ F-7）
 
 **新增数据库表**

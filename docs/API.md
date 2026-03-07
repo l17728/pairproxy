@@ -741,6 +741,135 @@ Automatically distribute all active users evenly across all healthy LLM targets.
 
 ---
 
+## Conversation Tracking CLI (`sproxy admin track`)
+
+> **v2.4.0+** — 按用户粒度记录 LLM 对话内容（messages + 助手回复）到磁盘 JSON 文件。
+> 仅 CLI 操作，无 REST API。对话文件存储在数据库文件同级的 `track/` 目录下。
+
+### Enable Tracking
+
+```bash
+sproxy admin track enable <username>
+```
+
+为指定用户启用对话跟踪。启用后该用户的所有后续请求均被记录，存量请求不受影响。幂等（多次调用无副作用）。
+
+**Exit codes**: `0` 成功，`1` 用户名非法（含路径遍历字符）
+
+---
+
+### Disable Tracking
+
+```bash
+sproxy admin track disable <username>
+```
+
+禁用指定用户的对话跟踪。已写入的历史记录不会被删除。幂等（用户不存在时也返回成功）。
+
+---
+
+### List Tracked Users
+
+```bash
+sproxy admin track list
+```
+
+列出当前所有处于跟踪状态的用户名。
+
+**Output example**:
+```
+Tracked users (2):
+  alice
+  bob
+```
+
+若无跟踪用户，输出：
+```
+No users are currently being tracked.
+```
+
+---
+
+### Show Conversation Records
+
+```bash
+sproxy admin track show <username>
+```
+
+列出指定用户的所有对话记录文件（按时间倒序，含文件大小）。
+
+**Output example**:
+```
+Conversations for alice [tracking: ENABLED] — 3 record(s):
+  2026-03-07T13-05-22Z-req-abc123.json   (2.1 KB)
+  2026-03-07T12-31-09Z-req-def456.json   (1.8 KB)
+  2026-03-07T11-47-53Z-req-ghi789.json   (3.4 KB)
+```
+
+**Record JSON format** (单条文件内容):
+```json
+{
+  "request_id": "ca0e1b3b-bc75-4a7d-9925-2cda8cf2b318",
+  "username": "alice",
+  "timestamp": "2026-03-07T13:05:22Z",
+  "provider": "anthropic",
+  "model": "claude-3-opus",
+  "messages": [
+    { "role": "user",      "content": "Hello Claude" },
+    { "role": "assistant", "content": "Sure" },
+    { "role": "user",      "content": "Thanks" }
+  ],
+  "response": "You're welcome!",
+  "input_tokens": 15,
+  "output_tokens": 7
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `request_id` | 请求唯一 ID（UUID） |
+| `username` | 用户名 |
+| `timestamp` | 请求时间（UTC） |
+| `provider` | `"anthropic"` / `"openai"` / `"ollama"` |
+| `model` | 请求中指定的模型名（可能为空） |
+| `messages` | 请求中的 messages 列表（已展开 content block） |
+| `response` | 助手回复全文（流式自动累积，非流式从响应体提取） |
+| `input_tokens` | 输入 token 数（来自响应 usage 字段） |
+| `output_tokens` | 输出 token 数 |
+
+---
+
+### Clear Conversation Records
+
+```bash
+sproxy admin track clear <username>
+```
+
+删除指定用户的**所有**对话记录文件。跟踪状态不受影响（已启用的继续记录新对话）。
+
+> ⚠️ 此操作不可逆，删除前请确认或先备份。
+
+---
+
+### File Storage Layout
+
+```
+<db_dir>/track/
+├── users/
+│   ├── alice          # 空标记文件，存在即表示追踪已启用
+│   └── bob
+└── conversations/
+    ├── alice/
+    │   ├── 2026-03-07T13-05-22Z-<reqID>.json
+    │   └── 2026-03-07T12-31-09Z-<reqID>.json
+    └── bob/
+        └── 2026-03-07T11-00-00Z-<reqID>.json
+```
+
+文件命名格式：`<UTC时间戳>-<requestID>.json`，字典序即时间序，便于 `ls`/`sort` 排序。
+
+---
+
 ## Dashboard API (`/api/dashboard/*`)
 
 Dashboard 数据接口，用于概览页面的趋势图表。需要 admin 认证。
