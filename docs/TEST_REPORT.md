@@ -1,7 +1,7 @@
 # PairProxy 测试报告
 
 **生成时间**: 2026-03-07
-**测试版本**: v2.3.0+
+**测试版本**: v2.4.0
 **测试环境**: Windows 11, Go 1.23
 
 ---
@@ -12,13 +12,13 @@
 
 | 测试类型 | 状态 | 测试数 | 通过 | 失败 | 说明 |
 |---------|------|--------|------|------|------|
-| 单元测试 (UT) | ✅ PASS | 884+ | 884+ | 0 | 所有包的单元测试 |
+| 单元测试 (UT) | ✅ PASS | 1,007+ | 1,007+ | 0 | 22个包全量单元测试 |
 | 集成测试 | ✅ PASS | 8 | 8 | 0 | integration_by_GLM5_test.go |
-| E2E测试 | ✅ PASS | 4 | 4 | 0 | cluster + quota enforcement |
+| E2E测试 | ✅ PASS | 66+ | 66+ | 0 | 含对话追踪7个新E2E |
 | 真实进程测试 | ✅ PASS | 4 | 4 | 0 | TestFullChainWithMockProcesses |
-| 完整链路手动测试 | ✅ PASS | 100 | 100 | 0 | mockagent → cproxy → sproxy → mockllm |
+| 完整链路手动测试 | ✅ PASS | 50 | 50 | 0 | mockagent → cproxy → sproxy → mockllm |
 
-**总计**: 1000+ 测试用例，全部通过
+**总计**: 1,100+ 测试用例，全部通过
 
 ---
 
@@ -29,7 +29,7 @@
 go test ./...
 ```
 
-### 测试覆盖的包 (20个)
+### 测试覆盖的包 (22个)
 - ✅ github.com/l17728/pairproxy/internal/alert
 - ✅ github.com/l17728/pairproxy/internal/api
 - ✅ github.com/l17728/pairproxy/internal/auth
@@ -38,11 +38,18 @@ go test ./...
 - ✅ github.com/l17728/pairproxy/internal/db
 - ✅ github.com/l17728/pairproxy/internal/lb
 - ✅ github.com/l17728/pairproxy/internal/metrics
+- ✅ github.com/l17728/pairproxy/internal/otel
+- ✅ github.com/l17728/pairproxy/internal/preflight
 - ✅ github.com/l17728/pairproxy/internal/proxy
 - ✅ github.com/l17728/pairproxy/internal/quota
 - ✅ github.com/l17728/pairproxy/internal/tap
+- ✅ github.com/l17728/pairproxy/internal/track     （v2.4.0 新增）
+- ✅ github.com/l17728/pairproxy/internal/version
+- ✅ github.com/l17728/pairproxy/cmd/cproxy
+- ✅ github.com/l17728/pairproxy/cmd/sproxy
+- ✅ github.com/l17728/pairproxy/cmd/mockllm
+- ✅ github.com/l17728/pairproxy/test/e2e
 - ✅ github.com/l17728/pairproxy/test/integration
-- ✅ 其他辅助包
 
 ### 关键测试模块
 
@@ -67,7 +74,19 @@ go test ./...
 - SProxy请求处理
 - 中间件链（认证、RequestID、Recovery）
 - OpenAI API兼容层
+- OpenAI provider 路径推断修复（v2.4.0）
 - 流式响应处理
+
+#### 对话追踪模块 (internal/track)（v2.4.0新增）
+- Tracker Enable/Disable/IsTracked 生命周期
+- 多次 Enable/Disable 幂等性
+- ListTracked 枚举
+- validateUsername 路径遍历防护
+- 消息提取（字符串/content block 数组格式）
+- 非流式响应提取（Anthropic + OpenAI）
+- 流式 SSE 文本累积（Anthropic + OpenAI）
+- Flush 幂等性（多次 Flush 只写一次文件）
+- 文件名格式（含 RFC3339 时间戳和 reqID）
 
 #### 负载均衡模块 (internal/lb)
 - 加权随机算法
@@ -117,16 +136,26 @@ go test -tags=integration ./test/integration/...
 go test ./test/e2e/...
 ```
 
-### 测试用例 (4个)
+### 测试用例 (66+个)
 - ✅ TestClusterMultiNode_BasicFlow - 多节点基本流程
 - ✅ TestClusterMultiNode_TokenRefresh - Token自动刷新
-- ✅ TestQuotaEnforcement_DailyLimit - 日配额限制
-- ✅ TestQuotaEnforcement_RPMLimit - RPM限流
-
-### 修复的问题
-1. **认证问题**: 移除doRequest()中的Authorization header，CProxy自动从token store加载
-2. **UsageWriter刷新**: 将flush interval从30s改为100ms，避免测试中的竞态条件
-3. **Token刷新阈值**: 为createCProxy()添加refreshThreshold参数，确保测试使用正确的阈值
+- ✅ TestClusterMultiNode_QuotaIsolation - 配额隔离
+- ✅ TestClusterMultiNode_NodeFailure - 节点故障
+- ✅ TestClusterMultiNode_StreamingFlow - 集群流式
+- ✅ TestClusterMultiNode_RoutingTablePropagation - 路由表同步
+- ✅ TestTrackE2E_NonStreaming_Anthropic - 对话追踪非流式（v2.4.0）
+- ✅ TestTrackE2E_Streaming_Anthropic - 对话追踪流式SSE（v2.4.0）
+- ✅ TestTrackE2E_UntrackedUser_NoFile - 未追踪用户无文件（v2.4.0）
+- ✅ TestTrackE2E_EnableThenDisable - 追踪启停生命周期（v2.4.0）
+- ✅ TestTrackE2E_NonStreaming_OpenAI - OpenAI格式追踪（v2.4.0）
+- ✅ TestTrackE2E_MultiUserIsolation - 多用户隔离（v2.4.0）
+- ✅ TestTrackE2E_RecordFieldCompleteness - JSON字段完整性（v2.4.0）
+- ✅ TestOpenAIAuthE2E - OpenAI Bearer认证（3子用例）
+- ✅ TestOpenAIStreamOptionsInjectionE2E - stream_options注入（3子用例）
+- ✅ TestE2ECircuitBreakerAutoRecovery - 熔断恢复
+- ✅ TestE2ELLMLoadBalancing - LLM负载均衡
+- ✅ TestE2EStreamingTokenEndToEnd - 流式Token端到端
+- ✅ ... (共66+个E2E测试用例)
 
 ---
 
@@ -177,9 +206,9 @@ printf "testuser\ntestpass123\n" | ./cproxy.exe login --server http://localhost:
 
 ### 测试结果
 ```
-mockagent: streaming × 100 (concurrency=10) → http://localhost:8080
+mockagent: streaming × 50 (concurrency=5) → http://localhost:8080
 ────────────────────────────────────────────────────────────────
-Total: 100  Pass: 100  Fail: 0  Error: 0  Time: 148ms
+Total: 50  Pass: 50  Fail: 0  Error: 0  Time: 60ms
 ✓ All checks passed — proxy chain is working correctly.
 ```
 
@@ -246,11 +275,15 @@ mockagent → cproxy(:8080) → sproxy(:9000) → mockllm(:11434)
 
 ✅ **所有测试用例已全部执行并通过**
 
-- 单元测试: 884+ 测试，全部通过
+- 单元测试: 1,007+ 测试，全部通过（22个包）
 - 集成测试: 8 测试，全部通过
-- E2E测试: 4 测试，全部通过（已修复）
+- E2E测试: 66+ 测试，全部通过（含7个对话追踪新用例）
 - 真实进程测试: 4 子测试，全部通过
-- 完整链路测试: 100 请求，全部通过
+- 完整链路测试: 50 请求，全部通过
+
+**v2.4.0 新增测试**:
+- `internal/track` 包：15个单元测试（Tracker + CaptureSession）
+- `test/e2e/track_e2e_test.go`：7个E2E测试（覆盖 Anthropic/OpenAI 双格式、流式/非流式、用户隔离、生命周期）
 
 **测试质量**: 优秀
 **代码稳定性**: 高
