@@ -340,8 +340,8 @@ func TestOpenAIStreamOptionsInjectionE2E(t *testing.T) {
 		scanner := bufio.NewScanner(resp.Body)
 		for scanner.Scan() {
 			line := scanner.Text()
-			if strings.HasPrefix(line, "data: ") && !strings.Contains(line, "[DONE]") {
-				// Just verify we can read the stream
+			if strings.HasPrefix(line, "data: ") && !strings.Contains(line, "[DONE]") { //nolint:staticcheck
+				_ = line // just verify we can read the stream
 			}
 		}
 

@@ -45,10 +45,10 @@ type mockLLMServer struct {
 	requests    atomic.Int64
 	mu          sync.RWMutex
 	responses   map[string]mockResponse
-	delay       time.Duration
-	failRate    float64 // 0-1之间的失败率
-	failPattern string  // "none", "alternate", "first-n"
-	failCount   atomic.Int64
+	delay       time.Duration //nolint:unused
+	failRate    float64       // 0-1之间的失败率
+	failPattern string        //nolint:unused // "none", "alternate", "first-n"
+	failCount   atomic.Int64 //nolint:unused
 }
 
 type mockResponse struct {
@@ -159,11 +159,11 @@ func (m *mockLLMServer) getResponse(model string) mockResponse {
 	}
 }
 
-func (m *mockLLMServer) setDelay(d time.Duration) {
+func (m *mockLLMServer) setDelay(d time.Duration) { //nolint:unused
 	m.delay = d
 }
 
-func (m *mockLLMServer) setFailRate(rate float64) {
+func (m *mockLLMServer) setFailRate(rate float64) { //nolint:unused
 	m.failRate = rate
 }
 

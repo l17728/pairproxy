@@ -543,7 +543,7 @@ func TestProcessRoutingHeaders_EmptyVersion(t *testing.T) {
 	cp, _ := newTestCProxy(t, "http://dummy", validToken())
 	before := cp.routingVersion.Load()
 
-	resp := makeMinimalResponse(map[string]string{}) // 无 X-Routing-Version
+	resp := makeMinimalResponse(map[string]string{}) //nolint:bodyclose // no body in response
 	cp.processRoutingHeaders(resp, "req-test")
 
 	if cp.routingVersion.Load() != before {
@@ -556,7 +556,7 @@ func TestProcessRoutingHeaders_InvalidVersion(t *testing.T) {
 	cp, _ := newTestCProxy(t, "http://dummy", validToken())
 	before := cp.routingVersion.Load()
 
-	resp := makeMinimalResponse(map[string]string{
+	resp := makeMinimalResponse(map[string]string{ //nolint:bodyclose
 		"X-Routing-Version": "not-a-number",
 	})
 	cp.processRoutingHeaders(resp, "req-test")
@@ -573,7 +573,7 @@ func TestProcessRoutingHeaders_ServerVersionLELocalVersion(t *testing.T) {
 	cp.routingVersion.Store(10)
 
 	// server version = 10 <= local version 10，应跳过
-	resp := makeMinimalResponse(map[string]string{
+	resp := makeMinimalResponse(map[string]string{ //nolint:bodyclose
 		"X-Routing-Version": "10",
 		"X-Routing-Update":  "some-data",
 	})
@@ -590,7 +590,7 @@ func TestProcessRoutingHeaders_ServerVersionGreaterButNoUpdate(t *testing.T) {
 	cp.routingVersion.Store(5)
 
 	// server version 15 > local 5，但无 X-Routing-Update
-	resp := makeMinimalResponse(map[string]string{
+	resp := makeMinimalResponse(map[string]string{ //nolint:bodyclose
 		"X-Routing-Version": "15",
 		// 无 X-Routing-Update
 	})
@@ -607,7 +607,7 @@ func TestProcessRoutingHeaders_InvalidRoutingUpdate(t *testing.T) {
 	cp.routingVersion.Store(5)
 
 	// server version 20 > local 5，但 X-Routing-Update 解码失败
-	resp := makeMinimalResponse(map[string]string{
+	resp := makeMinimalResponse(map[string]string{ //nolint:bodyclose
 		"X-Routing-Version": "20",
 		"X-Routing-Update":  "!!!invalid-base64!!!",
 	})

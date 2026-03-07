@@ -308,7 +308,7 @@ func TestE2EConcurrentRequestsQuotaEnforcement(t *testing.T) {
 	// 请求 #1：在后台发送，Mock LLM 会阻塞它直到我们放行
 	resp1Ch := make(chan *http.Response, 1)
 	go func() {
-		resp1Ch <- doReq()
+		resp1Ch <- doReq() //nolint:bodyclose // body closed by receiver at resp1.Body.Close()
 	}()
 
 	// 等待 #1 到达 Mock LLM

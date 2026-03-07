@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -296,9 +297,14 @@ func TestNotifier_Notify_EventFiltering_by_kimi2_5(t *testing.T) {
 
 // TestNotifier_Notify_DefaultTimestamp tests default timestamp setting
 func TestNotifier_Notify_DefaultTimestamp_by_kimi2_5(t *testing.T) {
+	var mu sync.Mutex
 	var receivedEvent Event
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewDecoder(r.Body).Decode(&receivedEvent)
+		var ev Event
+		json.NewDecoder(r.Body).Decode(&ev)
+		mu.Lock()
+		receivedEvent = ev
+		mu.Unlock()
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -314,16 +320,24 @@ func TestNotifier_Notify_DefaultTimestamp_by_kimi2_5(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	if receivedEvent.At.IsZero() {
+	mu.Lock()
+	at := receivedEvent.At
+	mu.Unlock()
+	if at.IsZero() {
 		t.Error("expected timestamp to be set")
 	}
 }
 
 // TestNotifier_Notify_WithLabels tests notification with labels
 func TestNotifier_Notify_WithLabels_by_kimi2_5(t *testing.T) {
+	var mu sync.Mutex
 	var receivedEvent Event
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewDecoder(r.Body).Decode(&receivedEvent)
+		var ev Event
+		json.NewDecoder(r.Body).Decode(&ev)
+		mu.Lock()
+		receivedEvent = ev
+		mu.Unlock()
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -344,8 +358,11 @@ func TestNotifier_Notify_WithLabels_by_kimi2_5(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	if len(receivedEvent.Labels) != 2 {
-		t.Errorf("expected 2 labels, got %d", len(receivedEvent.Labels))
+	mu.Lock()
+	labelsLen := len(receivedEvent.Labels)
+	mu.Unlock()
+	if labelsLen != 2 {
+		t.Errorf("expected 2 labels, got %d", labelsLen)
 	}
 }
 

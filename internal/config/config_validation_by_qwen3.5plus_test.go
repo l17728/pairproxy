@@ -1,3 +1,4 @@
+//nolint:govet // test file: struct composite literals with partially-read fields are intentional
 package config
 
 import (

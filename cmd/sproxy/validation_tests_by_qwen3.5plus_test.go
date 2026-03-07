@@ -125,9 +125,7 @@ log:
 		// Restore with primary set but without self_addr
 		workerConfig.Cluster.Primary = "http://primary:9000"
 		workerConfig.Cluster.SelfAddr = ""
-		if err := workerConfig.Validate(); err == nil && !strings.Contains(err.Error(), "required") {
-			// This is expected, but we mainly check for primary requirement in above
-		}
+		_ = workerConfig.Validate() // nil SelfAddr: validation result not checked here
 	})
 }
 

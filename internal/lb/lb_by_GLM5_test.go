@@ -1,10 +1,8 @@
 package lb
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"io"
 	"net/http"
 	"testing"
 	"time"
@@ -317,7 +315,7 @@ func TestRetryTransport_NoPickNext(t *testing.T) {
 func TestRetryTransport_OnFailureCalled(t *testing.T) {
 	inner := &mockRoundTripper{
 		errors:    []error{errors.New("connection refused"), nil},
-		responses: []*http.Response{nil, makeResp(200, "ok")},
+		responses: []*http.Response{nil, makeResp(200, "ok")}, //nolint:bodyclose
 	}
 
 	failureCalled := false
@@ -470,10 +468,3 @@ func TestLLMTargetInfo_Fields(t *testing.T) {
 	}
 }
 
-// makeResp creates an http.Response with the given status and body
-func makeRespExt(status int, body string) *http.Response {
-	return &http.Response{
-		StatusCode: status,
-		Body:       io.NopCloser(bytes.NewBufferString(body)),
-	}
-}
