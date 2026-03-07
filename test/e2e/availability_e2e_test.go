@@ -706,7 +706,14 @@ func TestE2ERollingUpgradeTwoNodes(t *testing.T) {
 	})
 	cpSrv, _, accessToken := buildCProxy(t, balancer)
 
-	for i := range 10 {
+	// 使用确定性循环代替固定次数：持续发请求直到两个节点都被命中至少一次。
+	// 上限 200 次；在 50/50 权重下期望命中轮次约为 4，统计上几乎不会超过 50 次。
+	// 这彻底消除了"N 次全落在同一节点"的概率性失败（原来 10 次有 1/512 概率失败）。
+	const phase1Limit = 200
+	for i := range phase1Limit {
+		if nodeAHits.Load() > 0 && nodeBHits.Load() > 0 {
+			break
+		}
 		resp := doClaudeRequest(t, cpSrv, accessToken)
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
@@ -716,7 +723,8 @@ func TestE2ERollingUpgradeTwoNodes(t *testing.T) {
 	}
 	t.Logf("phase1 (both healthy): nodeA=%d nodeB=%d", nodeAHits.Load(), nodeBHits.Load())
 	if nodeAHits.Load() == 0 || nodeBHits.Load() == 0 {
-		t.Error("phase1: both nodes should receive traffic with equal weight")
+		t.Errorf("phase1: both nodes should receive traffic within %d requests (nodeA=%d nodeB=%d)",
+			phase1Limit, nodeAHits.Load(), nodeBHits.Load())
 	}
 
 	// ---- Phase 2: drain nodeA (rolling upgrade starts) ----
@@ -797,9 +805,16 @@ func TestE2ERollingUpgradeTwoNodes(t *testing.T) {
 		resp.Body.Close()
 	}
 
-	// Phase 3 traffic: both nodes should again receive requests.
+	// Phase 3 traffic: 使用确定性循环代替固定次数。
+	// 持续发请求直到 nodeA 被命中至少一次（证明 undrain 路由已生效），
+	// 上限 200 次。在 50/50 权重下期望 2 次即可，统计上几乎不会超过 30 次。
+	// 这消除了"15 次请求全落在 nodeB"的 1/32768 概率性失败。
 	nodeAPhase3Start := nodeAHits.Load()
-	for i := range 15 {
+	const phase3Limit = 200
+	for i := range phase3Limit {
+		if nodeAHits.Load() > nodeAPhase3Start {
+			break
+		}
 		resp := doClaudeRequest(t, cpSrv, accessToken)
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
@@ -810,7 +825,7 @@ func TestE2ERollingUpgradeTwoNodes(t *testing.T) {
 	nodeAPhase3 := nodeAHits.Load() - nodeAPhase3Start
 	t.Logf("phase3 (both undrained): nodeA new hits=%d (want >0 after undrain)", nodeAPhase3)
 	if nodeAPhase3 == 0 {
-		t.Error("after undrain, nodeA received no traffic in 15 requests — undrain may not have been applied")
+		t.Errorf("after undrain, nodeA received no traffic in %d requests — undrain may not have been applied", phase3Limit)
 	}
 }
 
