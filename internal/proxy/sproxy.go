@@ -732,6 +732,7 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 	needBodyRead := sp.quotaChecker != nil || strings.HasPrefix(r.URL.Path, "/v1/chat/completions")
 
 	if needBodyRead && r.Body != nil && r.ContentLength != 0 {
+		r.Body = http.MaxBytesReader(w, r.Body, 10<<20) // 10MB limit
 		var readErr error
 		bodyBytes, readErr = io.ReadAll(r.Body)
 		r.Body.Close()
