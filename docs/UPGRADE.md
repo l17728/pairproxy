@@ -52,7 +52,34 @@
 
 ### v2.5.0 — 可靠性增强（用量可靠性 + 健康检查 + 路由发现 + 请求重试）
 
-**无数据库 Schema 变更**，直接替换二进制即可，零停机升级。
+**无数据库 Schema 变更**，滚动升级，最小化停机时间。
+
+**集群升级顺序**（推荐）
+
+1. 先升级 worker 节点（sp-2, sp-3）
+2. 再升级 primary 节点（sp-1）
+3. 最后分批升级 cproxy 客户端
+
+这样可以最小化停机时间，primary 停机期间由 worker 承载流量。
+
+**升级时是否中断请求？**
+
+取决于升级方式：
+
+- **快速升级**（直接 `systemctl stop sproxy`）：**会中断正在处理的请求**
+  - 流式请求（SSE）会断开
+  - 等待 LLM 响应的请求会失败
+  - 停机时间：通常 < 5s
+
+- **优雅升级**（使用排水模式）：**零请求中断**
+  ```bash
+  ./sproxy admin drain enter          # 停止接受新请求
+  ./sproxy admin drain wait --timeout 60s  # 等待活跃请求完成
+  systemctl stop sproxy               # 安全停止
+  ```
+  - 详细步骤见本文档"滚动升级（零停机）"章节
+
+**推荐**：生产环境使用排水模式，开发/测试环境可直接停止。
 
 **新增配置字段**（均有合理默认值，不填写也能正常运行）
 
@@ -78,6 +105,70 @@ cluster:
     enabled: true
     max_records_per_batch: 1000
 ```
+
+**Worker 节点数据库配置**（v2.5.0 新增要求）
+
+如果 worker 节点之前没有配置数据库，需要在 sproxy.yaml 中添加：
+```yaml
+database:
+  path: "/var/lib/pairproxy/worker.db"
+```
+
+这是因为 v2.5.0 的 usage_buffer 功能需要 worker 本地数据库来缓存用量记录。
+
+**启用路由表主动发现**
+
+需要在 cproxy.yaml 和 sproxy.yaml 中都配置相同的 shared_secret：
+
+cproxy.yaml:
+```yaml
+sproxy:
+  shared_secret: "your-cluster-secret"
+  routing_poll_interval: 60s
+```
+
+sproxy.yaml (primary):
+```yaml
+cluster:
+  shared_secret: "your-cluster-secret"
+```
+
+⚠️ 两边必须配置相同的密钥，否则鉴权失败。如果只配置一边：
+- 只配置 cproxy：轮询请求会因鉴权失败返回 401
+- 只配置 sproxy：cproxy 不会启动轮询（shared_secret 为空时禁用）
+
+**cproxy 升级**
+
+- v2.4.0 cproxy 可以继续使用，完全兼容 v2.5.0 sproxy
+- 但建议升级以享受新功能：
+  - 请求级重试（提升可用性）
+  - 路由表主动发现（更快感知节点变化）
+  - 健康检查优化（更精准的熔断控制）
+- 升级顺序建议：先升级 sproxy，再升级 cproxy（避免 cproxy 轮询不存在的端点）
+
+**升级验证**
+
+1. 验证基本功能：
+   ```bash
+   curl http://localhost:9000/health
+   ```
+
+2. 验证路由表主动发现（查看 cproxy 日志）：
+   ```bash
+   # 应该看到类似日志：
+   # INFO routing poll: sending routing update
+   ```
+
+3. 验证请求级重试（模拟节点故障）：
+   ```bash
+   # 停止一个 worker 节点，发送请求，应该自动重试到其他节点
+   ```
+
+4. 验证 worker 用量上报（查看 primary 日志）：
+   ```bash
+   # 应该看到类似日志：
+   # INFO usage records received from peer
+   ```
 
 **回滚说明**
 
