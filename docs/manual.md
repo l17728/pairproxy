@@ -775,6 +775,107 @@ sproxy admin user disable alice
 
 ---
 
+### 5.4 反向代理与全局限流（推荐）
+
+生产环境建议在 sproxy 前部署反向代理（nginx 或 Caddy），提供以下功能：
+- **全局限流**：防止 DDoS 攻击耗尽系统资源
+- **TLS 终止**：统一处理 HTTPS 证书
+- **负载均衡**：多 sproxy 实例分流（可选）
+
+#### nginx 配置示例
+
+```nginx
+# /etc/nginx/conf.d/pairproxy.conf
+upstream sproxy_backend {
+    server 127.0.0.1:9000;
+    # 多实例时添加更多 server 行
+}
+
+# 全局限流配置
+limit_req_zone $binary_remote_addr zone=global:10m rate=100r/s;
+limit_req_zone $binary_remote_addr zone=login:10m rate=5r/m;
+
+server {
+    listen 443 ssl http2;
+    server_name proxy.company.com;
+
+    ssl_certificate /etc/ssl/certs/proxy.crt;
+    ssl_certificate_key /etc/ssl/private/proxy.key;
+
+    # 全局限流（100 req/s，允许突发 200）
+    limit_req zone=global burst=200 nodelay;
+
+    # 登录接口单独限流（5 req/min）
+    location /api/auth/login {
+        limit_req zone=login burst=10 nodelay;
+        proxy_pass http://sproxy_backend;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    # 其他接口
+    location / {
+        proxy_pass http://sproxy_backend;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+        # 流式响应支持
+        proxy_buffering off;
+        proxy_read_timeout 300s;
+    }
+}
+```
+
+#### Caddy 配置示例
+
+```caddy
+# /etc/caddy/Caddyfile
+proxy.company.com {
+    # 全局限流（100 req/s）
+    rate_limit {
+        zone global {
+            key {remote_host}
+            events 100
+            window 1s
+        }
+    }
+
+    # 登录接口限流（5 req/min）
+    @login path /api/auth/login
+    rate_limit @login {
+        zone login {
+            key {remote_host}
+            events 5
+            window 1m
+        }
+    }
+
+    reverse_proxy localhost:9000 {
+        # 流式响应支持
+        flush_interval -1
+    }
+}
+```
+
+#### 限流参数建议
+
+| 场景 | 建议值 | 说明 |
+|------|--------|------|
+| 全局限流 | 100 req/s | 根据服务器性能调整 |
+| 登录接口 | 5 req/min | 防止暴力破解 |
+| burst 缓冲 | 2x rate | 允许短时突发 |
+
+**验证限流生效**：
+```bash
+# 快速发送请求测试
+for i in {1..150}; do curl -s http://proxy.company.com/health & done
+# 应该看到部分请求返回 429 Too Many Requests
+```
+
+---
+
 ## 6. 安装与启动 cproxy（开发者）
 
 > **从这里开始是开发者的内容**。您需要管理员提供以下信息：
@@ -1472,6 +1573,82 @@ telemetry:
 | `pairproxy.db.write` | 用量日志批量写入 | `batch_size` |
 
 重启 sproxy 后，在 Jaeger Web UI（`http://jaeger-host:16686`）中搜索 service: "pairproxy" 即可查看追踪。
+
+---
+
+### 10.5 数据库自动备份（推荐）
+
+生产环境建议配置自动备份任务，防止数据库文件损坏时数据丢失。
+
+#### 使用 cron 自动备份
+
+**Linux/macOS 配置**：
+
+```bash
+# 编辑 crontab
+crontab -e
+
+# 添加以下行（每天凌晨 2 点备份，保留最近 7 天）
+0 2 * * * /usr/local/bin/sproxy admin backup --output /backup/pairproxy_$(date +\%Y\%m\%d).db && find /backup -name "pairproxy_*.db" -mtime +7 -delete
+```
+
+**Windows 配置（任务计划程序）**：
+
+```powershell
+# 创建备份脚本 backup.ps1
+$date = Get-Date -Format "yyyyMMdd"
+$backupPath = "C:\backup\pairproxy_$date.db"
+& "C:\Program Files\pairproxy\sproxy.exe" admin backup --output $backupPath
+
+# 删除 7 天前的备份
+Get-ChildItem "C:\backup\pairproxy_*.db" | Where-Object {$_.LastWriteTime -lt (Get-Date).AddDays(-7)} | Remove-Item
+
+# 创建计划任务（管理员权限运行）
+$action = New-ScheduledTaskAction -Execute "PowerShell.exe" -Argument "-File C:\backup\backup.ps1"
+$trigger = New-ScheduledTaskTrigger -Daily -At 2am
+Register-ScheduledTask -TaskName "PairProxy Backup" -Action $action -Trigger $trigger -User "SYSTEM"
+```
+
+#### 备份验证
+
+定期验证备份文件完整性：
+
+```bash
+# 检查备份文件大小（应与原数据库接近）
+ls -lh /backup/pairproxy_*.db
+
+# 尝试打开备份文件（验证未损坏）
+sqlite3 /backup/pairproxy_20260308.db "SELECT COUNT(*) FROM users;"
+```
+
+#### 恢复备份
+
+```bash
+# 1. 停止 sproxy
+systemctl stop sproxy
+
+# 2. 恢复备份文件
+sproxy admin restore /backup/pairproxy_20260308.db
+
+# 3. 启动 sproxy
+systemctl start sproxy
+```
+
+#### 备份策略建议
+
+| 场景 | 备份频率 | 保留时长 |
+|------|---------|---------|
+| 小团队（< 50 人） | 每天 1 次 | 7 天 |
+| 中型团队（50-200 人） | 每天 2 次 | 14 天 |
+| 大型团队（> 200 人） | 每 6 小时 | 30 天 |
+
+**监控备份状态**：
+```bash
+# 检查最近备份时间
+ls -lt /backup/pairproxy_*.db | head -1
+
+# 如果超过 25 小时未备份，发送告警
+```
 
 ---
 
