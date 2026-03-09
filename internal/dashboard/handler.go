@@ -127,6 +127,13 @@ func (h *Handler) SetDrainFunctions(
 	h.drainStatusFn = drainStatusFn
 }
 
+// RegisterAdminLLMTargetRoutes 注册 LLM target 管理 API 路由（委托给 AdminLLMTargetHandler）
+func (h *Handler) RegisterAdminLLMTargetRoutes(mux *http.ServeMux, llmTargetHandler interface {
+	RegisterRoutes(mux *http.ServeMux, requireAdmin func(http.Handler) http.Handler)
+}) {
+	llmTargetHandler.RegisterRoutes(mux, h.requireSession)
+}
+
 // ---------------------------------------------------------------------------
 // 模板渲染
 // ---------------------------------------------------------------------------

@@ -555,6 +555,10 @@ func runStart(cmd *cobra.Command, args []string) error {
 	adminHandler.SetTokenRepo(tokenRepo)
 	logger.Info("LLM binding repo configured")
 
+	// LLM Target 管理仓库
+	llmTargetRepo := db.NewLLMTargetRepo(database, logger)
+	logger.Info("LLM target repo configured")
+
 	// 排水控制函数
 	adminHandler.SetDrainFunctions(sp.Drain, sp.Undrain, sp.GetDrainStatus)
 	logger.Info("drain control functions configured")
@@ -604,6 +608,14 @@ func runStart(cmd *cobra.Command, args []string) error {
 	adminHandler.RegisterLLMRoutes(mux)
 	logger.Info("admin API registered at /api/admin/")
 
+	// LLM Target 管理 REST API
+	llmTargetHandler := api.NewAdminLLMTargetHandler(
+		logger, jwtMgr, llmTargetRepo, auditRepo,
+		cfg.Admin.PasswordHash, adminTokenTTL,
+	)
+	llmTargetHandler.RegisterRoutes(mux, adminHandler.RequireAdmin)
+	logger.Info("LLM target API registered at /api/admin/llm/targets")
+
 	// 用户自助服务 API（F-10 WebUI 增强）
 	userHandler := api.NewUserHandler(logger, jwtMgr, userRepo, groupRepo, usageRepo)
 	userHandler.RegisterRoutes(mux)
@@ -636,6 +648,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 		dashHandler.SetTokenRepo(tokenRepo)
 		dashHandler.SetDrainFunctions(sp.Drain, sp.Undrain, sp.GetDrainStatus)
 		dashHandler.RegisterRoutes(mux)
+		dashHandler.RegisterAdminLLMTargetRoutes(mux, llmTargetHandler)
 		logger.Info("dashboard registered at /dashboard/")
 	}
 
