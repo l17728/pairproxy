@@ -308,6 +308,32 @@ func (r *GroupRepo) Delete(id string, force bool) error {
 	return nil
 }
 
+// GetActiveUsers 获取最近 N 天有活动的用户列表（按最后活动时间倒序）
+func (r *UserRepo) GetActiveUsers(days int) ([]User, error) {
+	cutoff := time.Now().AddDate(0, 0, -days)
+	var users []User
+
+	// 从 usage_logs 表查询有活动的用户，按最后活动时间倒序
+	err := r.db.Preload("Group").
+		Joins("INNER JOIN (SELECT DISTINCT user_id, MAX(created_at) as last_active FROM usage_logs WHERE created_at >= ? GROUP BY user_id) ul ON users.id = ul.user_id", cutoff).
+		Order("ul.last_active DESC").
+		Find(&users).Error
+
+	if err != nil {
+		r.logger.Error("failed to get active users",
+			zap.Int("days", days),
+			zap.Error(err),
+		)
+		return nil, fmt.Errorf("get active users (days=%d): %w", days, err)
+	}
+
+	r.logger.Debug("active users retrieved",
+		zap.Int("days", days),
+		zap.Int("count", len(users)),
+	)
+	return users, nil
+}
+
 // List 列出所有分组
 func (r *GroupRepo) List() ([]Group, error) {
 	var groups []Group

@@ -132,6 +132,9 @@ func (h *AdminHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /api/admin/api-keys", h.RequireAdmin(http.HandlerFunc(h.handleCreateAPIKey)))
 	mux.Handle("POST /api/admin/api-keys/{id}/assign", h.RequireAdmin(http.HandlerFunc(h.handleAssignAPIKey)))
 	mux.Handle("DELETE /api/admin/api-keys/{id}", h.RequireAdmin(http.HandlerFunc(h.handleRevokeAPIKey)))
+
+	// 用户用量查询（需求 B）
+	mux.Handle("GET /api/admin/active-users", h.RequireAdmin(http.HandlerFunc(h.handleGetActiveUsers)))
 }
 
 // RequireAdmin 中间件：验证 Bearer token 或 cookie 中携带有效的管理员 JWT
@@ -1263,4 +1266,60 @@ func (h *AdminHandler) handleDrainStatus(w http.ResponseWriter, r *http.Request)
 	}
 	status := h.drainStatusFn()
 	writeJSON(w, http.StatusOK, status)
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/admin/active-users - 获取活跃用户列表
+// ---------------------------------------------------------------------------
+
+type activeUserResponse struct {
+	ID           string  `json:"id"`
+	Username     string  `json:"username"`
+	GroupID      *string `json:"group_id,omitempty"`
+	GroupName    *string `json:"group_name,omitempty"`
+	LastLoginAt  *string `json:"last_login_at,omitempty"`
+}
+
+// handleGetActiveUsers 获取最近 N 天有活动的用户列表
+func (h *AdminHandler) handleGetActiveUsers(w http.ResponseWriter, r *http.Request) {
+	daysStr := r.URL.Query().Get("days")
+	days := 30 // 默认 30 天
+	if daysStr != "" {
+		if d, err := strconv.Atoi(daysStr); err == nil && d > 0 {
+			days = d
+		}
+	}
+
+	users, err := h.userRepo.GetActiveUsers(days)
+	if err != nil {
+		h.logger.Error("failed to get active users",
+			zap.Int("days", days),
+			zap.Error(err),
+		)
+		writeJSONError(w, http.StatusInternalServerError, "internal_error", "failed to get active users")
+		return
+	}
+
+	resp := make([]activeUserResponse, 0, len(users))
+	for _, u := range users {
+		ar := activeUserResponse{
+			ID:       u.ID,
+			Username: u.Username,
+			GroupID:  u.GroupID,
+		}
+		if u.GroupID != nil && u.Group.Name != "" {
+			ar.GroupName = &u.Group.Name
+		}
+		if u.LastLoginAt != nil {
+			t := u.LastLoginAt.Format(time.RFC3339)
+			ar.LastLoginAt = &t
+		}
+		resp = append(resp, ar)
+	}
+
+	h.logger.Info("active users retrieved",
+		zap.Int("days", days),
+		zap.Int("count", len(resp)),
+	)
+	writeJSON(w, http.StatusOK, resp)
 }

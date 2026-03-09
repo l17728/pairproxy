@@ -102,9 +102,33 @@ func (h *UserHandler) handleQuotaStatus(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	user, err := h.userRepo.GetByID(claims.UserID)
+	// 管理员可通过 ?username=xxx 查询指定用户
+	targetUserID := claims.UserID
+	queryUsername := r.URL.Query().Get("username")
+	if queryUsername != "" && claims.Role == "admin" {
+		targetUser, err := h.userRepo.GetByUsername(queryUsername)
+		if err != nil {
+			h.logger.Error("failed to get target user by username",
+				zap.String("username", queryUsername),
+				zap.Error(err),
+			)
+			writeJSONError(w, http.StatusNotFound, "not_found", "user not found")
+			return
+		}
+		if targetUser == nil {
+			writeJSONError(w, http.StatusNotFound, "not_found", "user not found")
+			return
+		}
+		targetUserID = targetUser.ID
+		h.logger.Info("admin querying user quota status",
+			zap.String("admin", claims.Username),
+			zap.String("target_user", queryUsername),
+		)
+	}
+
+	user, err := h.userRepo.GetByID(targetUserID)
 	if err != nil {
-		h.logger.Error("failed to get user", zap.String("user_id", claims.UserID), zap.Error(err))
+		h.logger.Error("failed to get user", zap.String("user_id", targetUserID), zap.Error(err))
 		writeJSONError(w, http.StatusNotFound, "not_found", "user not found")
 		return
 	}
@@ -115,13 +139,13 @@ func (h *UserHandler) handleQuotaStatus(w http.ResponseWriter, r *http.Request) 
 	now := time.Now()
 	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	todayEnd := todayStart.Add(24 * time.Hour)
-	dailyInput, dailyOutput, _ := h.usageRepo.SumTokens(claims.UserID, todayStart, todayEnd)
+	dailyInput, dailyOutput, _ := h.usageRepo.SumTokens(targetUserID, todayStart, todayEnd)
 	resp.DailyUsed = dailyInput + dailyOutput
 
 	// 查询本月用量
 	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
 	monthEnd := monthStart.AddDate(0, 1, 0)
-	monthlyInput, monthlyOutput, _ := h.usageRepo.SumTokens(claims.UserID, monthStart, monthEnd)
+	monthlyInput, monthlyOutput, _ := h.usageRepo.SumTokens(targetUserID, monthStart, monthEnd)
 	resp.MonthlyUsed = monthlyInput + monthlyOutput
 
 	// 查询配额限制（从 group）
@@ -160,6 +184,30 @@ func (h *UserHandler) handleUsageHistory(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// 管理员可通过 ?username=xxx 查询指定用户
+	targetUserID := claims.UserID
+	queryUsername := r.URL.Query().Get("username")
+	if queryUsername != "" && claims.Role == "admin" {
+		targetUser, err := h.userRepo.GetByUsername(queryUsername)
+		if err != nil {
+			h.logger.Error("failed to get target user by username",
+				zap.String("username", queryUsername),
+				zap.Error(err),
+			)
+			writeJSONError(w, http.StatusNotFound, "not_found", "user not found")
+			return
+		}
+		if targetUser == nil {
+			writeJSONError(w, http.StatusNotFound, "not_found", "user not found")
+			return
+		}
+		targetUserID = targetUser.ID
+		h.logger.Info("admin querying user usage history",
+			zap.String("admin", claims.Username),
+			zap.String("target_user", queryUsername),
+		)
+	}
+
 	// 解析 days 参数（默认 30 天）
 	days := 30
 	if daysStr := r.URL.Query().Get("days"); daysStr != "" {
@@ -171,10 +219,10 @@ func (h *UserHandler) handleUsageHistory(w http.ResponseWriter, r *http.Request)
 	now := time.Now()
 	from := now.AddDate(0, 0, -days).Truncate(24 * time.Hour)
 
-	history, err := h.usageRepo.DailyTokens(from, now, claims.UserID)
+	history, err := h.usageRepo.DailyTokens(from, now, targetUserID)
 	if err != nil {
 		h.logger.Error("failed to get user usage history",
-			zap.String("user_id", claims.UserID),
+			zap.String("user_id", targetUserID),
 			zap.Error(err),
 		)
 		writeJSONError(w, http.StatusInternalServerError, "internal_error", "failed to query usage")

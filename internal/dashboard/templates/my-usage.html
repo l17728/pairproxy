@@ -1,5 +1,16 @@
 {{define "content"}}
-<h2 class="text-xl font-bold text-gray-800 mb-6">我的用量</h2>
+<h2 class="text-xl font-bold text-gray-800 mb-6">用户流量查看</h2>
+
+<!-- 用户选择器（仅管理员可见） -->
+<div class="bg-white p-4 rounded-xl shadow-sm border border-gray-100 mb-6">
+  <div class="flex items-center gap-4">
+    <label class="text-sm font-medium text-gray-700">选择用户：</label>
+    <select id="userSelect" class="flex-1 max-w-md border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
+      <option value="">加载中...</option>
+    </select>
+    <span id="selectedUserInfo" class="text-xs text-gray-500"></span>
+  </div>
+</div>
 
 <!-- 配额状态卡片 -->
 <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
@@ -69,11 +80,40 @@
 
 <script>
 let usageChart;
+let currentUsername = ''; // 当前选中的用户名
+
+// 加载活跃用户列表（管理员）
+async function loadActiveUsers() {
+  try {
+    const res = await fetch('/api/admin/active-users?days=30');
+    if (!res.ok) {
+      console.error('Failed to load active users');
+      return;
+    }
+    const users = await res.json();
+
+    const select = document.getElementById('userSelect');
+    select.innerHTML = '<option value="">-- 选择用户 --</option>';
+    users.forEach(u => {
+      const opt = document.createElement('option');
+      opt.value = u.username;
+      opt.textContent = `${u.username}${u.group_name ? ' (' + u.group_name + ')' : ''}`;
+      select.appendChild(opt);
+    });
+
+    console.log(`Loaded ${users.length} active users`);
+  } catch (err) {
+    console.error('Failed to load active users:', err);
+  }
+}
 
 // 加载配额状态
 async function loadQuotaStatus() {
   try {
-    const res = await fetch('/api/user/quota-status');
+    const url = currentUsername
+      ? `/api/user/quota-status?username=${encodeURIComponent(currentUsername)}`
+      : '/api/user/quota-status';
+    const res = await fetch(url);
     const data = await res.json();
 
     // 更新日配额
@@ -109,7 +149,10 @@ async function loadQuotaStatus() {
 // 加载用量历史
 async function loadUsageHistory(days) {
   try {
-    const res = await fetch(`/api/user/usage-history?days=${days}`);
+    const url = currentUsername
+      ? `/api/user/usage-history?days=${days}&username=${encodeURIComponent(currentUsername)}`
+      : `/api/user/usage-history?days=${days}`;
+    const res = await fetch(url);
     const data = await res.json();
 
     updateUsageChart(data.history);
@@ -160,7 +203,20 @@ document.getElementById('historyDaysSelect').addEventListener('change', (e) => {
   loadUsageHistory(parseInt(e.target.value));
 });
 
+// 用户选择器
+document.getElementById('userSelect').addEventListener('change', (e) => {
+  currentUsername = e.target.value;
+  if (currentUsername) {
+    document.getElementById('selectedUserInfo').textContent = `正在查看: ${currentUsername}`;
+    loadQuotaStatus();
+    loadUsageHistory(parseInt(document.getElementById('historyDaysSelect').value));
+  } else {
+    document.getElementById('selectedUserInfo').textContent = '';
+  }
+});
+
 // 页面加载时初始化
+loadActiveUsers();
 loadQuotaStatus();
 loadUsageHistory(30);
 </script>
