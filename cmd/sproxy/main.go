@@ -317,14 +317,26 @@ func runStart(cmd *cobra.Command, args []string) error {
 	}
 
 	// ---------------------------------------------------------------------------
+	// 从数据库加载所有活跃的 LLM targets
+	// ---------------------------------------------------------------------------
+
+	loadedTargets, err := sp.LoadAllTargets()
+	if err != nil {
+		logger.Fatal("failed to load LLM targets from database", zap.Error(err))
+	}
+	if len(loadedTargets) == 0 {
+		logger.Fatal("no active LLM targets found in database")
+	}
+
+	// ---------------------------------------------------------------------------
 	// LLM 负载均衡 + 健康检查 + 绑定解析（可靠性特性）
 	// ---------------------------------------------------------------------------
 
 	{
-		// 构建 LLM lb.Target 列表（ID = URL，Weight 来自配置）
-		lbLLMTargets := make([]lb.Target, 0, len(cfg.LLM.Targets))
-		healthPaths := make(map[string]string, len(cfg.LLM.Targets))
-		for _, t := range cfg.LLM.Targets {
+		// 构建 LLM lb.Target 列表（ID = URL，Weight 来自数据库）
+		lbLLMTargets := make([]lb.Target, 0, len(loadedTargets))
+		healthPaths := make(map[string]string, len(loadedTargets))
+		for _, t := range loadedTargets {
 			w := t.Weight
 			if w <= 0 {
 				w = 1

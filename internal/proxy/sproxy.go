@@ -324,6 +324,96 @@ func (sp *SProxy) SyncConfigTargets() error {
 	return sp.syncConfigTargetsToDatabase(repo)
 }
 
+// loadAllTargets 从数据库加载所有活跃的 LLM targets
+func (sp *SProxy) loadAllTargets(repo *db.LLMTargetRepo) ([]config.LLMTarget, error) {
+	// 从数据库加载所有 targets（包括 config 和 database 来源的）
+	dbTargets, err := repo.ListAll()
+	if err != nil {
+		return nil, fmt.Errorf("list targets: %w", err)
+	}
+
+	targets := make([]config.LLMTarget, 0, len(dbTargets))
+	for _, dt := range dbTargets {
+		if !dt.IsActive {
+			sp.logger.Debug("skipping inactive target", zap.String("url", dt.URL))
+			continue // 跳过禁用的 targets
+		}
+
+		// 解密 API Key
+		apiKey, err := sp.resolveAPIKey(dt.APIKeyID)
+		if err != nil {
+			sp.logger.Warn("failed to resolve api key for target",
+				zap.String("url", dt.URL),
+				zap.String("api_key_id", ptrToString(dt.APIKeyID)),
+				zap.Error(err))
+			continue
+		}
+
+		targets = append(targets, config.LLMTarget{
+			URL:             dt.URL,
+			APIKey:          apiKey,
+			Provider:        dt.Provider,
+			Name:            dt.Name,
+			Weight:          dt.Weight,
+			HealthCheckPath: dt.HealthCheckPath,
+		})
+	}
+
+	// 统计
+	configCount := 0
+	databaseCount := 0
+	for _, dt := range dbTargets {
+		if !dt.IsActive {
+			continue
+		}
+		if dt.Source == "config" {
+			configCount++
+		} else {
+			databaseCount++
+		}
+	}
+
+	sp.logger.Info("loaded LLM targets",
+		zap.Int("total", len(targets)),
+		zap.Int("config", configCount),
+		zap.Int("database", databaseCount))
+
+	return targets, nil
+}
+
+// resolveAPIKey 根据 API Key ID 查询 API Key 值
+func (sp *SProxy) resolveAPIKey(apiKeyID *string) (string, error) {
+	if apiKeyID == nil || *apiKeyID == "" {
+		return "", nil // API Key 可选
+	}
+
+	var apiKey db.APIKey
+	if err := sp.db.Where("id = ?", *apiKeyID).First(&apiKey).Error; err != nil {
+		return "", fmt.Errorf("query api key: %w", err)
+	}
+
+	// TODO: 解密 EncryptedValue（当前暂时直接返回）
+	return apiKey.EncryptedValue, nil
+}
+
+// ptrToString 辅助函数：将 *string 转为 string（用于日志）
+func ptrToString(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+// LoadAllTargets 从数据库加载所有活跃的 LLM targets（公开方法）
+func (sp *SProxy) LoadAllTargets() ([]config.LLMTarget, error) {
+	if sp.db == nil {
+		return nil, fmt.Errorf("database must be set before loading targets")
+	}
+
+	repo := db.NewLLMTargetRepo(sp.db, sp.logger)
+	return sp.loadAllTargets(repo)
+}
+
 // Drain 进入排水模式。
 // 排水模式下，节点仍可处理现有请求，但不再接受新流量（通过集群路由表通知其他节点）。
 func (sp *SProxy) Drain() error {
