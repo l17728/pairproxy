@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -292,4 +293,133 @@ func TestHandleMyUsagePage(t *testing.T) {
 			t.Errorf("status = %d, want 200", rr.Code)
 		}
 	})
+}
+
+// ---------------------------------------------------------------------------
+// TestOverviewChartContainerFix verifies that the overview page HTML uses the
+// correct Chart.js-safe canvas pattern after the "infinite scroll" bug fix.
+//
+// Background: Chart.js with responsive:true + maintainAspectRatio:false reads
+// the CSS height of the *parent* element to size the canvas.  When a bare
+// <canvas height="N"> has no parent with an explicit CSS height, the browser
+// lets the canvas expand the parent, which in turn triggers Chart.js to resize
+// the canvas again – an infinite growth loop.
+//
+// The fix wraps every <canvas> in a <div style="position:relative; height:Npx">
+// so the parent always has a concrete, non-growing CSS height.
+//
+// These tests check the rendered HTML to ensure:
+//  1. No bare <canvas> with only a height attribute remains.
+//  2. Each chart canvas is preceded by the correct wrapper div.
+//  3. The wrapper heights match the intended values (200px / 120px).
+func TestOverviewChartContainerFix(t *testing.T) {
+	env := newDashEnv(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/overview", nil)
+	req.AddCookie(env.adminCookie(t))
+	rr := httptest.NewRecorder()
+	env.mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("overview page returned status %d, want 200", rr.Code)
+	}
+	body := rr.Body.String()
+
+	// --- 1. Bare <canvas height="..."> must not exist ----------------------
+	// The old buggy pattern was <canvas id="..." height="200">.
+	// After the fix the height attribute is removed from the canvas element.
+	barePatterns := []string{
+		`<canvas id="tokenTrendChart" height=`,
+		`<canvas id="costTrendChart" height=`,
+		`<canvas id="topUsersChart" height=`,
+	}
+	for _, pat := range barePatterns {
+		if strings.Contains(body, pat) {
+			t.Errorf("found bare canvas pattern %q – Chart.js infinite-height bug not fixed", pat)
+		}
+	}
+
+	// --- 2. Wrapper div with position:relative must surround each canvas ---
+	// Chart.js requires position:relative on the parent so that the canvas,
+	// which is set to position:absolute internally, is anchored correctly.
+	if !strings.Contains(body, "position: relative") && !strings.Contains(body, "position:relative") {
+		t.Error("no 'position: relative' wrapper div found – canvas containers must have position:relative")
+	}
+
+	// --- 3. Token and cost trend canvases must be inside a 200px wrapper ---
+	// We verify that the 200px height string appears in the page and that the
+	// canvas ids immediately follow it (within a reasonable HTML distance).
+	trendChartIDs := []string{"tokenTrendChart", "costTrendChart"}
+	for _, id := range trendChartIDs {
+		wrapperDiv := `height: 200px`
+		canvasTag := `id="` + id + `"`
+		// Find the wrapper that precedes this specific canvas
+		canvasIdx := strings.Index(body, canvasTag)
+		if canvasIdx == -1 {
+			t.Errorf("canvas %q not found in overview HTML", id)
+			continue
+		}
+		// Look backwards from canvas position for the wrapper div
+		preceding := body[:canvasIdx]
+		wrapperIdx := strings.LastIndex(preceding, wrapperDiv)
+		if wrapperIdx == -1 {
+			t.Errorf("no 'height: 200px' wrapper div found before canvas %q", id)
+			continue
+		}
+		// The wrapper should be within 300 characters before the canvas tag
+		if canvasIdx-wrapperIdx > 300 {
+			t.Errorf("canvas %q is not immediately inside a 'height: 200px' wrapper div (distance=%d chars)",
+				id, canvasIdx-wrapperIdx)
+		}
+	}
+
+	// --- 4. Top-users canvas must be inside a 120px wrapper ---------------
+	topUsersWrapper := `height: 120px`
+	topUsersCanvas := `id="topUsersChart"`
+	canvasIdx := strings.Index(body, topUsersCanvas)
+	if canvasIdx == -1 {
+		t.Error("canvas id=\"topUsersChart\" not found in overview HTML")
+	} else {
+		preceding := body[:canvasIdx]
+		wrapperIdx := strings.LastIndex(preceding, topUsersWrapper)
+		if wrapperIdx == -1 {
+			t.Errorf("no 'height: 120px' wrapper div found before topUsersChart canvas")
+		} else if canvasIdx-wrapperIdx > 300 {
+			t.Errorf("topUsersChart canvas is not immediately inside a 'height: 120px' wrapper div (distance=%d chars)",
+				canvasIdx-wrapperIdx)
+		}
+	}
+}
+
+// TestOverviewChartContainerCount verifies that exactly three chart canvas
+// elements exist in the overview page and each one is wrapped correctly.
+func TestOverviewChartContainerCount(t *testing.T) {
+	env := newDashEnv(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/overview", nil)
+	req.AddCookie(env.adminCookie(t))
+	rr := httptest.NewRecorder()
+	env.mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("overview page status %d, want 200", rr.Code)
+	}
+	body := rr.Body.String()
+
+	expectedCanvases := []string{
+		`id="tokenTrendChart"`,
+		`id="costTrendChart"`,
+		`id="topUsersChart"`,
+	}
+	for _, id := range expectedCanvases {
+		if !strings.Contains(body, id) {
+			t.Errorf("expected canvas %s not found in overview page", id)
+		}
+	}
+
+	// Count occurrences of position:relative – should be at least 3 (one per chart).
+	count := strings.Count(body, "position: relative")
+	if count < 3 {
+		t.Errorf("expected at least 3 'position: relative' wrapper divs, found %d", count)
+	}
 }

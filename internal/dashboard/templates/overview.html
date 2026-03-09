@@ -81,7 +81,9 @@
         <option value="90">最近 90 天</option>
       </select>
     </div>
-    <canvas id="tokenTrendChart" height="200"></canvas>
+    <div style="position: relative; height: 200px;">
+      <canvas id="tokenTrendChart"></canvas>
+    </div>
   </div>
 
   <!-- 费用趋势 -->
@@ -94,14 +96,18 @@
         <option value="90">最近 90 天</option>
       </select>
     </div>
-    <canvas id="costTrendChart" height="200"></canvas>
+    <div style="position: relative; height: 200px;">
+      <canvas id="costTrendChart"></canvas>
+    </div>
   </div>
 </div>
 
 <!-- Top 用户 -->
 <div class="mt-6 bg-white rounded-xl shadow-sm border border-gray-100 p-6">
   <h3 class="text-sm font-semibold text-gray-700 mb-4">Top 5 用户（最近 7 天）</h3>
-  <canvas id="topUsersChart" height="120"></canvas>
+  <div style="position: relative; height: 120px;">
+    <canvas id="topUsersChart"></canvas>
+  </div>
 </div>
 
 <script>
