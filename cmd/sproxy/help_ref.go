@@ -314,26 +314,123 @@ Natural language: "audit log", "admin history", "recent actions", "who did what"
 
 ---
 
-## 8. LLM Target Binding
+## 8. LLM Target Management
 
 ### 8.1 List LLM targets
 
 ` + bq + `sproxy admin llm targets` + bq + `
 
-Lists all LLM targets defined in sproxy.yaml (URL, provider, weight).
-No live health info in CLI mode.
+Lists all LLM targets defined in sproxy.yaml (URL, provider, weight, health status).
+Shows target configuration and current health state.
+
+Natural language: "list LLM targets", "show LLM backends", "what LLMs are configured", "show all targets"
 
 ---
 
-### 8.2 List bindings
+### 8.2 Add LLM target
+
+` + bq + `sproxy admin llm target add <url> --provider <provider> [--name <name>] [--weight <n>] [--api-key <key>]` + bq + `
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| ` + bq + `--provider` + bq + ` | (required) | Provider type: anthropic, openai, or ollama |
+| ` + bq + `--name` + bq + ` | auto-generated | Human-readable name for the target |
+| ` + bq + `--weight` + bq + ` | 1 | Load balancing weight (higher = more traffic) |
+| ` + bq + `--api-key` + bq + ` | prompted | API key for the target (if required) |
+
+Adds a new LLM target to the configuration. Changes require restart to take effect.
+
+Examples:
+  sproxy admin llm target add https://api.anthropic.com --provider anthropic --name "Anthropic Main" --weight 2
+  sproxy admin llm target add http://localhost:11434 --provider ollama --name "Local Ollama"
+  sproxy admin llm target add https://api.openai.com --provider openai --api-key sk-xxx
+
+Natural language: "add LLM target", "register new LLM", "add backend", "configure new LLM endpoint"
+
+---
+
+### 8.3 Update LLM target
+
+` + bq + `sproxy admin llm target update <url> [--name <name>] [--weight <n>] [--api-key <key>]` + bq + `
+
+| Flag | Description |
+|------|-------------|
+| ` + bq + `--name` + bq + ` | Update the display name |
+| ` + bq + `--weight` + bq + ` | Update load balancing weight |
+| ` + bq + `--api-key` + bq + ` | Update API key |
+
+Updates configuration for an existing LLM target. Changes require restart to take effect.
+
+Examples:
+  sproxy admin llm target update https://api.anthropic.com --weight 5
+  sproxy admin llm target update http://localhost:11434 --name "Ollama Production"
+  sproxy admin llm target update https://api.openai.com --api-key sk-new-key
+
+Natural language: "update LLM target", "change target weight", "update backend config", "modify LLM settings"
+
+---
+
+### 8.4 Delete LLM target
+
+` + bq + `sproxy admin llm target delete <url> [--force]` + bq + `
+
+| Flag | Description |
+|------|-------------|
+| ` + bq + `--force` + bq + ` | Remove target even if users/groups are bound to it |
+
+Removes an LLM target from the configuration. Without --force, deletion fails if
+any users or groups are bound to this target. Changes require restart to take effect.
+
+Examples:
+  sproxy admin llm target delete https://old-api.example.com
+  sproxy admin llm target delete http://localhost:11434 --force
+
+Natural language: "delete LLM target", "remove backend", "unregister LLM", "drop target"
+
+---
+
+### 8.5 Enable LLM target
+
+` + bq + `sproxy admin llm target enable <url>` + bq + `
+
+Re-enables a previously disabled LLM target. The target will start receiving
+traffic according to its weight. Takes effect immediately (no restart required).
+
+Examples:
+  sproxy admin llm target enable https://api.anthropic.com
+  sproxy admin llm target enable http://localhost:11434
+
+Natural language: "enable LLM target", "activate backend", "turn on target", "resume target"
+
+---
+
+### 8.6 Disable LLM target
+
+` + bq + `sproxy admin llm target disable <url>` + bq + `
+
+Temporarily disables an LLM target without removing it from configuration.
+Disabled targets do not receive new requests. Existing requests are allowed
+to complete. Takes effect immediately (no restart required).
+
+Examples:
+  sproxy admin llm target disable https://api.anthropic.com
+  sproxy admin llm target disable http://localhost:11434
+
+Natural language: "disable LLM target", "deactivate backend", "turn off target", "pause target"
+
+---
+
+### 8.7 List user/group bindings
 
 ` + bq + `sproxy admin llm list` + bq + `
 
 Shows all user-to-LLM and group-to-LLM bindings stored in the database.
 
+Natural language: "list LLM bindings", "show user assignments", "who is bound to what"
+
 ---
 
-### 8.3 Bind user or group to an LLM target
+### 8.8 Bind user or group to an LLM target
 
 ` + bq + `sproxy admin llm bind <username> --target <url>` + bq + `
 ` + bq + `sproxy admin llm bind --group <group-name> --target <url>` + bq + `
@@ -353,7 +450,7 @@ Natural language: "bind user to LLM", "assign LLM", "route user to LLM", "pin us
 
 ---
 
-### 8.4 Remove user LLM binding
+### 8.9 Remove user LLM binding
 
 ` + bq + `sproxy admin llm unbind <username>` + bq + `
 
@@ -366,7 +463,7 @@ Natural language: "unbind LLM", "remove LLM binding", "unpin user"
 
 ---
 
-### 8.5 Distribute users evenly across LLM targets
+### 8.10 Distribute users evenly across LLM targets
 
 ` + bq + `sproxy admin llm distribute` + bq + `
 
@@ -675,6 +772,11 @@ Natural language: "start server", "start sproxy", "run the proxy"
 | Purge logs before 2025-01-01 | sproxy admin logs purge --before 2025-01-01 |
 | Show last 50 audit entries | sproxy admin audit --limit 50 |
 | List configured LLM targets | sproxy admin llm targets |
+| Add new LLM target | sproxy admin llm target add <url> --provider anthropic --name "Main" |
+| Update LLM target weight | sproxy admin llm target update <url> --weight 5 |
+| Delete LLM target | sproxy admin llm target delete <url> |
+| Enable LLM target | sproxy admin llm target enable <url> |
+| Disable LLM target | sproxy admin llm target disable <url> |
 | List LLM bindings | sproxy admin llm list |
 | Bind alice to LLM URL | sproxy admin llm bind alice --target <url> |
 | Bind group enterprise to LLM | sproxy admin llm bind --group enterprise --target <url> |
