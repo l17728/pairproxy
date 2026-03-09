@@ -852,11 +852,57 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 		targetProvider = "openai"
 	}
 
+	// 协议转换：Anthropic → OpenAI（当请求为 Anthropic 格式但目标为 OpenAI/Ollama 时）
+	needsConversion := shouldConvertProtocol(r.URL.Path, targetProvider)
+	var convertedPath string
+	if needsConversion {
+		sp.logger.Info("protocol conversion required",
+			zap.String("request_id", reqID),
+			zap.String("from", "anthropic"),
+			zap.String("to", "openai"),
+			zap.String("target_provider", targetProvider),
+			zap.String("target_url", firstInfo.URL),
+			zap.String("original_path", r.URL.Path),
+		)
+
+		// 转换请求 body
+		if len(bodyBytes) > 0 {
+			converted, newPath, convErr := convertAnthropicToOpenAIRequest(bodyBytes, sp.logger, reqID)
+			if convErr == nil {
+				bodyBytes = converted
+				convertedPath = newPath
+				// 更新 body
+				r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+				r.ContentLength = int64(len(bodyBytes))
+
+				sp.logger.Info("request converted successfully",
+					zap.String("request_id", reqID),
+					zap.String("new_path", newPath),
+					zap.Int("converted_size", len(converted)),
+				)
+			} else {
+				sp.logger.Warn("protocol conversion failed, forwarding original request",
+					zap.String("request_id", reqID),
+					zap.Error(convErr),
+				)
+				needsConversion = false // 降级：不转换响应
+			}
+		} else {
+			sp.logger.Warn("protocol conversion skipped: empty request body",
+				zap.String("request_id", reqID),
+			)
+			needsConversion = false
+		}
+	}
+
 	// 补充 span attributes（target 确定后）
 	span.SetAttributes(
 		attribute.String("provider", targetProvider),
 		attribute.String("upstream_url", firstInfo.URL),
 	)
+	if needsConversion {
+		span.SetAttributes(attribute.Bool("protocol_converted", true))
+	}
 
 	startTime := time.Now()
 
@@ -917,7 +963,19 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 	} else if captureSession != nil {
 		onChunk = captureSession.FeedChunk
 	}
-	tw := tap.NewTeeResponseWriter(w, sp.logger, sp.writer, usageRecord, targetProvider, startTime, onChunk)
+
+	// 创建 TeeResponseWriter
+	var finalWriter http.ResponseWriter = w
+	if needsConversion {
+		// 协议转换：在 TeeResponseWriter 之前插入流转换器
+		streamConverter := NewOpenAIToAnthropicStreamConverter(w, sp.logger, reqID)
+		finalWriter = streamConverter
+		sp.logger.Debug("stream converter inserted for protocol conversion",
+			zap.String("request_id", reqID),
+		)
+	}
+
+	tw := tap.NewTeeResponseWriter(finalWriter, sp.logger, sp.writer, usageRecord, targetProvider, startTime, onChunk)
 
 	// 构建 transport（配置均衡器时使用 RetryTransport；否则使用基础 transport）
 	transport := sp.buildRetryTransport(claims.UserID, claims.GroupID)
@@ -927,6 +985,18 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 			req.URL.Scheme = targetURL.Scheme
 			req.URL.Host = targetURL.Host
 			req.Host = targetURL.Host
+
+			// 协议转换：修改请求路径
+			if needsConversion && convertedPath != "" {
+				originalPath := req.URL.Path
+				req.URL.Path = convertedPath
+				sp.logger.Debug("request path converted for protocol conversion",
+					zap.String("request_id", reqID),
+					zap.String("original_path", originalPath),
+					zap.String("converted_path", convertedPath),
+					zap.String("target", firstInfo.URL),
+				)
+			}
 
 			// 删除客户端认证头（X-PairProxy-Auth 或 Authorization），注入真实 API Key
 			// F-5: 优先使用 DB 中的动态 API Key，未找到则回退到配置文件中的静态 Key
@@ -992,7 +1062,6 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 				// 非 streaming：读取完整 body，解析 token，然后重新放回（ReverseProxy 需要）
 				body, readErr := io.ReadAll(resp.Body)
 				resp.Body.Close()
-				resp.Body = io.NopCloser(bytes.NewReader(body))
 
 				if readErr != nil {
 					sp.logger.Warn("failed to read non-streaming body",
@@ -1000,6 +1069,29 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 						zap.Error(readErr),
 					)
 				}
+
+				// 协议转换：OpenAI → Anthropic（非流式响应）
+				if needsConversion && readErr == nil && len(body) > 0 {
+					sp.logger.Debug("converting non-streaming response",
+						zap.String("request_id", reqID),
+						zap.Int("original_size", len(body)),
+					)
+					converted, convErr := convertOpenAIToAnthropicResponse(body, sp.logger, reqID)
+					if convErr == nil {
+						body = converted
+						sp.logger.Info("non-streaming response converted successfully",
+							zap.String("request_id", reqID),
+							zap.Int("converted_size", len(converted)),
+						)
+					} else {
+						sp.logger.Warn("response conversion failed, forwarding original",
+							zap.String("request_id", reqID),
+							zap.Error(convErr),
+						)
+					}
+				}
+
+				resp.Body = io.NopCloser(bytes.NewReader(body))
 
 				if dl != nil {
 					dl.Debug("← LLM response body",
@@ -1032,6 +1124,13 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 					captureSession.SetNonStreamingResponse(body)
 					captureSession.Flush()
 				}
+			} else if needsConversion {
+				// 协议转换：OpenAI SSE → Anthropic SSE（流式响应）
+				// 需要在 resp.Body 和 tw 之间插入转换器
+				sp.logger.Debug("streaming response will be converted",
+					zap.String("request_id", reqID),
+				)
+				// 注意：流式转换在 TeeResponseWriter.Write() 中处理
 			}
 			// streaming 情况：TeeResponseWriter.Write() 会自动 Feed SSE 解析器，
 			// 在 message_stop 事件时异步记录；onChunk 回调已记录每条 chunk

@@ -32,6 +32,7 @@
 - **数据库**: SQLite，路径在 sproxy.yaml 的 `database.path` 字段
 - **sproxy 命令**: 已编译时用 `./sproxy`，未编译时用 `go run ./cmd/sproxy`
 - **多 Provider 支持**: sproxy 同时支持 Anthropic (`/v1/messages`) 和 OpenAI (`/v1/chat/completions`) 格式
+- **协议转换**: 自动支持 Anthropic → OpenAI 协议转换（用于 Claude CLI → Ollama 场景）
 - **认证方式**: 两种头均可 — `X-PairProxy-Auth: <jwt>` 或 `Authorization: Bearer <jwt>`
 
 ## 命令速查
@@ -203,6 +204,60 @@ curl -H "Authorization: Bearer <user-jwt>" \
 1. `./sproxy admin llm list` → 找对应用户行
 2. 若无用户绑定，检查其分组绑定: `./sproxy admin llm list`（看 GROUP 行）
 3. 若无绑定，由负载均衡自动分配
+
+## 协议转换（Claude CLI → Ollama）
+
+**使用场景**: 企业部署 Ollama 本地模型，使用 Claude CLI 作为通用客户端
+
+### 自动转换
+
+当满足以下条件时，sproxy 自动进行协议转换：
+- 请求路径为 `/v1/messages`（Anthropic 格式）
+- 目标 LLM 的 `provider` 为 `"ollama"` 或 `"openai"`
+
+### 配置示例
+
+```yaml
+llm:
+  targets:
+    # Ollama 本地部署（自动协议转换）
+    - url: "http://localhost:11434"
+      api_key: "ollama"
+      provider: "ollama"
+      name: "Ollama Local"
+      weight: 1
+
+    # Anthropic 官方（无需转换）
+    - url: "https://api.anthropic.com"
+      api_key: "${ANTHROPIC_API_KEY}"
+      provider: "anthropic"
+      name: "Anthropic Claude"
+      weight: 1
+```
+
+### 使用 Claude CLI
+
+```bash
+# 配置环境变量
+export ANTHROPIC_API_KEY="<your-pairproxy-jwt>"
+export ANTHROPIC_BASE_URL="http://localhost:9000"
+
+# 直接使用（自动转换）
+claude "What is 2+2?"
+```
+
+### 验证转换
+
+```bash
+# 查看日志确认协议转换
+tail -f sproxy.log | grep "protocol conversion"
+
+# 应看到类似日志：
+# INFO  sproxy  protocol conversion required  from=anthropic to=openai target_provider=ollama
+# INFO  sproxy  request converted successfully  new_path=/v1/chat/completions
+```
+
+**详细文档**: `docs/PROTOCOL_CONVERSION.md`
 
 ## 配置文件结构速查 (sproxy.yaml)
 
