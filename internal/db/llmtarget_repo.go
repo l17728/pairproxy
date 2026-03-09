@@ -38,11 +38,56 @@ func (r *LLMTargetRepo) Create(target *LLMTarget) error {
 	return nil
 }
 
-// GetByURL 根据 URL 查询 LLM target（临时实现，Task 1.4 将完善）
+// GetByURL 根据 URL 查询 LLM target
 func (r *LLMTargetRepo) GetByURL(url string) (*LLMTarget, error) {
 	var target LLMTarget
 	if err := r.db.Where("url = ?", url).First(&target).Error; err != nil {
-		return nil, err
+		if err == gorm.ErrRecordNotFound {
+			return nil, err
+		}
+		r.logger.Error("failed to get llm target by url",
+			zap.String("url", url),
+			zap.Error(err))
+		return nil, fmt.Errorf("get llm target by url: %w", err)
 	}
 	return &target, nil
+}
+
+// GetByID 根据 ID 查询 LLM target
+func (r *LLMTargetRepo) GetByID(id string) (*LLMTarget, error) {
+	var target LLMTarget
+	if err := r.db.Where("id = ?", id).First(&target).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, err
+		}
+		r.logger.Error("failed to get llm target by id",
+			zap.String("id", id),
+			zap.Error(err))
+		return nil, fmt.Errorf("get llm target by id: %w", err)
+	}
+	return &target, nil
+}
+
+// ListAll 列出所有 LLM targets
+func (r *LLMTargetRepo) ListAll() ([]*LLMTarget, error) {
+	var targets []*LLMTarget
+	if err := r.db.Order("created_at DESC").Find(&targets).Error; err != nil {
+		r.logger.Error("failed to list llm targets", zap.Error(err))
+		return nil, fmt.Errorf("list llm targets: %w", err)
+	}
+
+	r.logger.Debug("listed llm targets", zap.Int("count", len(targets)))
+	return targets, nil
+}
+
+// URLExists 检查 URL 是否已存在
+func (r *LLMTargetRepo) URLExists(url string) (bool, error) {
+	var count int64
+	if err := r.db.Model(&LLMTarget{}).Where("url = ?", url).Count(&count).Error; err != nil {
+		r.logger.Error("failed to check url exists",
+			zap.String("url", url),
+			zap.Error(err))
+		return false, fmt.Errorf("check url exists: %w", err)
+	}
+	return count > 0, nil
 }
