@@ -50,10 +50,10 @@ PairProxy 是一个**企业级 LLM API 透明代理网关**，专为多人共用
 | 指标 | 数值 |
 |------|------|
 | Go 源文件 | 160+ (internal 目录) |
-| 总代码行数 | 62,500+ 行 |
+| 总代码行数 | 64,440+ 行 |
 | 内部包数量 | 22 个 |
-| 测试用例 | 1,299+ 个 |
-| 文档数量 | 11 个主要文档 |
+| 测试用例 | 1,400+ 个 |
+| 文档数量 | 14 个主要文档 |
 | 文档总量 | 200KB+ |
 
 ---
@@ -146,20 +146,43 @@ sproxy 转发给 LLM:
 | **Worker 用量水印追踪** | 防止 primary 宕机时数据丢失 | v2.5+ |
 | **请求级重试** | 非流式请求自动故障转移 | v2.5+ |
 | **路由表主动发现** | CProxy 定期轮询获取路由更新 | v2.5+ |
+| **健康检查配置化** | 超时/阈值/恢复延迟可配置 | v2.5+ |
+| **请求体大小限制** | 10MB 限制防止 OOM | v2.5+ |
 | **LLM Target 动态管理** | 配置文件 + 数据库双来源管理 LLM targets | v2.7+ |
+| **CLI Target 管理** | targets list, target add/update/delete/enable/disable | v2.7+ |
+| **REST API Target 管理** | 7 个端点支持完整 CRUD 操作 | v2.7+ |
+| **WebUI Target 管理** | Dashboard 提供 LLM Target 管理界面 | v2.7+ |
+| **配置文件同步** | 启动时自动同步配置文件 targets 到数据库 | v2.7+ |
+| **URL 唯一性约束** | 数据库层面强制 URL 唯一性 | v2.7+ |
+| **配置来源只读** | 配置文件来源的 targets 在 WebUI/API 中只读 | v2.7+ |
 
 ### 3.2 v2.7.0 新增特性
 
 | 功能 | 说明 |
 |------|------|
-| **LLM Target 动态管理** | 配置文件 + 数据库双来源管理 LLM targets |
-| **配置文件同步** | 启动时自动同步配置文件中的 targets 到数据库 |
-| **CLI 命令** | targets list, target add/update/delete/enable/disable |
-| **WebUI 管理** | Dashboard 提供 LLM Target 管理界面 |
-| **数据库表** | llm_targets 表，17 个字段（URL、Provider、Weight 等） |
-| **URL 唯一性** | 数据库层面强制 URL 唯一性约束 |
-| **配置来源只读** | 配置文件来源的 targets 在 WebUI/API 中只读 |
+| **LLM Target 动态管理** | 配置文件 + 数据库双来源管理 LLM targets，支持运行时增删改查 |
+| **数据库表** | llm_targets 表，17 个字段（URL、Provider、APIKeyID、Weight、IsActive 等） |
+| **配置文件同步** | 启动时自动同步配置文件中的 targets 到数据库，幂等操作 |
+| **CLI 命令** | `sproxy admin llm targets` - 列出所有 targets 及健康状态 |
+| | `sproxy admin llm target add` - 添加新 target |
+| | `sproxy admin llm target update` - 更新 target 配置 |
+| | `sproxy admin llm target delete` - 删除 target |
+| | `sproxy admin llm target enable/disable` - 启用/禁用 target |
+| **REST API** | 7 个端点支持完整 CRUD 操作 |
+| | `GET /api/admin/llm/targets` - 列出所有 targets |
+| | `POST /api/admin/llm/targets` - 创建 target |
+| | `GET /api/admin/llm/targets/{id}` - 获取单个 target |
+| | `PUT /api/admin/llm/targets/{id}` - 更新 target |
+| | `DELETE /api/admin/llm/targets/{id}` - 删除 target |
+| | `POST /api/admin/llm/targets/{id}/enable` - 启用 target |
+| | `POST /api/admin/llm/targets/{id}/disable` - 禁用 target |
+| **WebUI 管理** | Dashboard 提供 LLM Target 管理界面，支持可视化操作 |
+| **URL 唯一性** | 数据库层面强制 URL 唯一性约束，防止重复配置 |
+| **配置来源标识** | Source 字段区分 config/database 来源 |
+| **配置来源只读** | 配置文件来源的 targets 在 WebUI/API 中只读，防止误操作 |
+| **健康状态集成** | 与现有健康检查机制集成，实时显示 target 状态 |
 | **完整测试** | 50+ 测试用例，覆盖数据库层、配置同步、CLI、REST API、E2E |
+| **文档完善** | 更新手册、API 文档、测试报告、验收报告 |
 
 ### 3.3 v2.6.0 新增特性
 
@@ -348,12 +371,13 @@ pairproxy/
 
 | 测试类型 | 测试数量 | 通过率 | 说明 |
 |---------|---------|--------|------|
-| 单元测试 (UT) | 1,122+ | 100% | 21 个包全量单元测试 |
+| 单元测试 (UT) | 1,122+ | 100% | 21 个包全量单元测试（含 LLM Target 管理） |
 | 集成测试 | 8 | 100% | 真实数据库操作 |
-| E2E 测试 (httptest) | 74 | 100% | httptest 自动化测试 |
-| E2E 测试 (integration) | 68 | 100% | 真实进程集成测试 |
+| E2E 测试 (httptest) | 81 | 100% | httptest 自动化测试（含 LLM Target 7个新E2E） |
+| E2E 测试 (integration) | 84 | 100% | 真实进程集成测试 |
 | 协议转换测试 | 27 | 100% | 协议转换专项测试 |
-| **总计** | **1,299+** | **100%** | - |
+| LLM Target 管理测试 | 50+ | 100% | v2.7.0 新增测试 |
+| **总计** | **1,400+** | **100%** | - |
 
 ### 6.2 测试覆盖率
 
@@ -392,7 +416,7 @@ go test -tags=integration ./test/e2e/...
 | 文档 | 大小 | 说明 |
 |------|------|------|
 | `README.md` | - | 项目概述、快速开始 |
-| `docs/manual.md` | 86KB | 完整用户手册 |
+| `docs/manual.md` | 86KB | 完整用户手册（v2.7.0） |
 | `docs/API.md` | 22KB | REST API 参考 |
 | `docs/SECURITY.md` | 16KB | 安全模型说明 |
 | `docs/TROUBLESHOOTING.md` | 17KB | 故障排查手册 |
@@ -400,10 +424,15 @@ go test -tags=integration ./test/e2e/...
 | `docs/PERFORMANCE.md` | 6.3KB | 性能优化指南 |
 | `docs/CLUSTER_DESIGN.md` | 14KB | 集群架构设计 |
 | `docs/FAULT_TOLERANCE_ANALYSIS.md` | 24KB | 故障容错分析 (v2.5.0) |
-| `docs/TEST_REPORT.md` | - | 测试报告 |
-| `docs/ACCEPTANCE_REPORT.md` | 20KB | 验收报告 |
+| `docs/PROTOCOL_CONVERSION.md` | - | 协议转换文档 (v2.6.0) |
+| `docs/TEST_REPORT.md` | - | 测试报告（v2.7.0） |
+| `docs/ACCEPTANCE_REPORT.md` | 20KB | 验收报告（v2.7.0） |
+| `docs/WEBUI_CAPABILITY_ASSESSMENT.md` | - | WebUI 能力评估（v2.7.0） |
+| `docs/API_KEY_MANAGEMENT_GUIDE.md` | - | API Key 管理指南（v2.7.0） |
+| `docs/REVIEW_RECOMMENDATIONS_IMPLEMENTATION_PLAN.md` | - | 代码审查建议实施计划（v2.7.0） |
 | `docs/OPENCLAW_OPS_GUIDE.md` | 733 行 | 自动化运维手册 |
 | `docs/SUMMARY.md` | - | 版本特性总结 |
+| `PROJECT_SUMMARY.md` | - | 项目总结（本文档） |
 
 ### 7.2 文档覆盖场景
 
@@ -614,9 +643,9 @@ CREATE TABLE audit_logs (
 | v1.0.0 | - | 初始版本，核心代理功能 |
 | v2.0.0 | - | 趋势图表、用户自助页面 |
 | v2.4.0 | - | 对话内容追踪 |
-| v2.5.0 | 2026-03-08 | 可靠性增强：水印追踪、请求重试、路由发现 |
-| v2.6.0 | 2026-03-09 | 协议自动转换：Claude CLI ↔ Ollama/OpenAI |
-| v2.7.0 | 2026-03-09 | LLM Target 动态管理：配置文件 + 数据库双来源 |
+| v2.5.0 | 2026-03-08 | 可靠性增强：水印追踪、请求重试、路由发现、健康检查配置化、请求体大小限制 |
+| v2.6.0 | 2026-03-09 | 协议自动转换：Claude CLI ↔ Ollama/OpenAI，智能检测，流式支持，优雅降级 |
+| v2.7.0 | 2026-03-09 | LLM Target 动态管理：配置文件 + 数据库双来源，CLI/API/WebUI 全方位管理，50+ 新测试 |
 
 ### 11.2 v2.6.0 版本亮点
 
@@ -628,7 +657,20 @@ CREATE TABLE audit_logs (
 | 优雅降级 | 转换失败影响服务 | 自动回退到原始请求 |
 | 完整测试 | 协议转换质量保证 | 27 个测试用例，80.1% 覆盖率 |
 
-### 11.3 v2.5.0 版本亮点
+### 11.3 v2.7.0 版本亮点
+
+| 特性 | 问题解决 | 技术方案 |
+|------|----------|----------|
+| LLM Target 动态管理 | 配置文件修改需重启服务 | 配置文件 + 数据库双来源，支持运行时增删改查 |
+| 配置文件同步 | 配置与数据库不一致 | 启动时自动同步，幂等操作，Source 字段标识来源 |
+| CLI 命令支持 | 缺少命令行管理工具 | 5 个子命令：targets/add/update/delete/enable/disable |
+| REST API 支持 | 缺少 API 集成能力 | 7 个端点，完整 CRUD 操作，JWT 认证 |
+| WebUI 管理界面 | 缺少可视化管理 | Dashboard 集成，Tailwind CSS，实时健康状态 |
+| URL 唯一性约束 | 可能配置重复 URL | 数据库 UNIQUE 约束，创建/更新时检查 |
+| 配置来源只读 | 误删配置文件 targets | Source=config 的 targets 在 API/WebUI 中只读 |
+| 完整测试覆盖 | 新功能质量保证 | 50+ 测试用例，覆盖所有层次（DB/CLI/API/E2E） |
+
+### 11.4 v2.5.0 版本亮点
 
 | 特性 | 问题解决 | 技术方案 |
 |------|----------|----------|
@@ -636,9 +678,10 @@ CREATE TABLE audit_logs (
 | 请求级重试 | 单次请求失败 | 自动重试到未尝试节点 |
 | 路由表主动发现 | 路由更新延迟 | 定期轮询 + 304 缓存 |
 | 健康检查配置化 | 固定参数不灵活 | 超时/阈值/恢复延迟可配置 |
+| 健康检查配置化 | 固定参数不灵活 | 超时/阈值/恢复延迟可配置 |
 | 请求体大小限制 | OOM 风险 | 10MB 限制 |
 
-### 11.4 版本发布流程
+### 11.5 版本发布流程
 
 ```bash
 # 1. 确保所有改动已合并到 main
@@ -787,6 +830,6 @@ sproxy:
 
 ---
 
-**文档版本**: 1.1
+**文档版本**: 1.2
 **最后更新**: 2026-03-09
-**适用版本**: PairProxy v2.6.0
+**适用版本**: PairProxy v2.7.0
