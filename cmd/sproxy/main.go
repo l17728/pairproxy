@@ -2790,7 +2790,7 @@ var adminLLMListCmd = &cobra.Command{
 }
 
 func init() {
-	adminLLMCmd.AddCommand(adminLLMTargetsCmd, adminLLMBindCmd, adminLLMUnbindCmd, adminLLMDistributeCmd, adminLLMListCmd)
+	adminLLMCmd.AddCommand(adminLLMTargetsCmd, adminLLMBindCmd, adminLLMUnbindCmd, adminLLMDistributeCmd, adminLLMListCmd, llmTargetCmd)
 }
 
 // ---------------------------------------------------------------------------
