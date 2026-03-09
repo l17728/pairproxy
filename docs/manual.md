@@ -1,6 +1,6 @@
 # PairProxy 用户手册
 
-**版本 v2.1.0**
+**版本 v2.6.0**
 
 ---
 
@@ -39,6 +39,7 @@
 13. [配置文件完整参考](#14-配置文件完整参考)
 14. [LLM 目标管理（网络可靠性 + 绑定均分）](#15-llm-目标管理网络可靠性--绑定均分)
 15. [接入 OpenAI 格式客户端](#16-接入-openai-格式客户端)
+    - [16.9 协议自动转换（Claude CLI + Ollama）](#169-协议自动转换claude-cli--ollama)
 16. [用户对话内容跟踪](#17-用户对话内容跟踪)
 17. [升级指南](#18-升级指南)
 
@@ -97,6 +98,7 @@ PairProxy 在 Claude Code 和 Anthropic API 之间插入一个透明代理层，
 | **身份认证** | 每人独立账号，密码登录，令牌自动续期 |
 | **精确统计用量** | 每次请求的输入/输出 token 数、耗时、费用均有记录 |
 | **配额管理** | 可按分组设置每日/每月 token 上限和每分钟请求次数上限 |
+| **协议自动转换** | Claude CLI 自动转换为 OpenAI 格式连接 Ollama，零配置启用（v2.6.0+）|
 | **Web 管理后台** | 浏览器中直接查看用量排行、管理用户、调整配额 |
 | **费用估算** | 按模型定价实时计算 USD 消耗 |
 | **告警通知** | 超额、节点故障等事件可推送到 Slack/飞书/企业微信 |
@@ -2525,7 +2527,184 @@ curl -X POST http://localhost:9000/auth/login \
 
 ---
 
-## 17. 用户对话内容跟踪
+### 16.9 协议自动转换（Claude CLI + Ollama）
+
+**版本要求**: v2.6.0+
+
+#### 16.9.1 功能概述
+
+PairProxy 支持自动协议转换，允许 Claude Code（使用 Anthropic Messages API）无缝连接到 Ollama 或其他 OpenAI 兼容的后端，无需任何手动配置。
+
+**使用场景**：
+- 企业内部部署 Ollama 本地模型
+- 使用 Claude Code 作为统一客户端访问不同后端
+- 降低 API 成本，使用本地推理服务
+
+**核心特性**：
+- ✅ **零配置**：自动检测并转换，无需手动开关
+- ✅ **双向转换**：Anthropic → OpenAI（请求）+ OpenAI → Anthropic（响应）
+- ✅ **流式支持**：完整支持 SSE 流式响应
+- ✅ **智能处理**：System 消息、结构化内容、finish_reason 自动映射
+- ✅ **优雅降级**：转换失败时自动回退到原始请求
+
+#### 16.9.2 配置示例
+
+在 `sproxy.yaml` 中添加 Ollama target：
+
+```yaml
+llm:
+  targets:
+    # Anthropic API（用于 Claude 模型）
+    - url: "https://api.anthropic.com"
+      api_key: "${ANTHROPIC_API_KEY}"
+      provider: "anthropic"
+      weight: 1
+
+    # Ollama 本地服务（自动协议转换）
+    - url: "http://localhost:11434"
+      api_key: "ollama"              # Ollama 不需要真实 API Key
+      provider: "ollama"              # 关键：设置 provider 为 ollama
+      name: "Ollama Local"
+      weight: 1
+```
+
+**重要**：必须设置 `provider: "ollama"` 或 `provider: "openai"`，sproxy 才会触发协议转换。
+
+#### 16.9.3 工作原理
+
+**自动检测条件**：
+- 请求路径 = `/v1/messages`（Anthropic 格式）
+- 目标 provider = `ollama` 或 `openai`
+
+满足以上条件时，sproxy 自动执行：
+
+1. **请求转换**（Anthropic → OpenAI）：
+   - 路径：`/v1/messages` → `/v1/chat/completions`
+   - System 字段：移动到 messages 数组第一条
+   - Content 结构：提取 text 类型内容
+   - 流式请求：自动注入 `stream_options.include_usage: true`
+
+2. **响应转换**（OpenAI → Anthropic）：
+   - 非流式：JSON 结构映射
+   - 流式：SSE 事件实时转换
+   - finish_reason 映射：
+     - `stop` → `end_turn`
+     - `length` → `max_tokens`
+     - `content_filter` → `stop_sequence`
+
+#### 16.9.4 使用步骤
+
+**1. 启动 Ollama**
+
+```bash
+# 安装 Ollama（macOS/Linux）
+curl -fsSL https://ollama.com/install.sh | sh
+
+# 拉取模型
+ollama pull llama3.2
+
+# 启动服务（默认端口 11434）
+ollama serve
+```
+
+**2. 配置 sproxy**
+
+编辑 `sproxy.yaml`，添加上述 Ollama target，然后重启：
+
+```bash
+systemctl restart sproxy
+```
+
+**3. 绑定用户到 Ollama**
+
+```bash
+# 将用户 alice 绑定到 Ollama target
+./sproxy admin llm bind alice --target http://localhost:11434
+
+# 或者绑定整个分组
+./sproxy admin llm bind --group engineering --target http://localhost:11434
+```
+
+**4. 使用 Claude Code**
+
+无需任何客户端配置变更，Claude Code 继续使用 Anthropic API 格式，sproxy 自动转换：
+
+```bash
+# 开发者端无需任何操作，正常使用 Claude Code
+# sproxy 会自动将请求转换为 OpenAI 格式发送给 Ollama
+```
+
+#### 16.9.5 验证转换是否生效
+
+**查看 sproxy 日志**：
+
+```bash
+# 查看协议转换日志
+journalctl -u sproxy -f | grep "protocol conversion"
+```
+
+**日志示例**（转换成功）：
+
+```
+INFO  sproxy  protocol conversion triggered  path=/v1/messages target_provider=ollama
+DEBUG sproxy  converted request  from=anthropic to=openai message_count=2 has_system=true
+INFO  sproxy  protocol conversion completed  direction=request→openai status=success
+INFO  sproxy  protocol conversion completed  direction=response→anthropic status=success
+```
+
+**日志示例**（无需转换）：
+
+```
+DEBUG sproxy  protocol conversion skipped  reason=same_provider path=/v1/messages target_provider=anthropic
+```
+
+#### 16.9.6 故障排查
+
+**问题：请求失败，日志显示 "conversion failed"**
+
+**原因**：请求 body 格式异常或包含不支持的字段。
+
+**解决**：
+1. 检查日志中的详细错误信息
+2. 协议转换失败时会自动回退到原始请求，不影响服务
+3. 如果持续失败，检查 Ollama 服务是否正常运行
+
+**问题：响应内容为空或格式错误**
+
+**原因**：Ollama 返回的响应格式与标准 OpenAI API 不完全一致。
+
+**解决**：
+1. 升级 Ollama 到最新版本
+2. 检查 Ollama 日志：`ollama logs`
+3. 验证模型是否正确加载：`ollama list`
+
+**问题：Token 统计不准确**
+
+**原因**：Ollama 可能不返回 usage 信息。
+
+**解决**：这是 Ollama 的限制，sproxy 会记录 `input_tokens=0, output_tokens=0`。如需准确统计，建议使用支持 usage 字段的 OpenAI 兼容服务。
+
+#### 16.9.7 性能与限制
+
+**性能影响**：
+- 协议转换在内存中完成，延迟 <1ms
+- 流式响应实时转换，无缓冲延迟
+- 对吞吐量无明显影响
+
+**已知限制**：
+1. **仅支持文本内容**：图片、工具调用等结构化内容会被忽略
+2. **System 消息限制**：仅支持单个 system 字段，多个 system 消息会合并
+3. **模型名称不转换**：请求中的 `model` 字段原样传递给 Ollama
+4. **Token 统计依赖后端**：如果 Ollama 不返回 usage，统计为 0
+
+#### 16.9.8 相关文档
+
+- 完整设计文档：`docs/PROTOCOL_CONVERSION.md`
+- 日志示例：`docs/PROTOCOL_CONVERSION_LOGS.md`
+- 响应转换详解：`docs/RESPONSE_CONVERSION.md`
+- 测试覆盖报告：`docs/TEST_COVERAGE_PROTOCOL_CONVERSION.md`
+
+
 
 ### 17.1 功能概述
 
