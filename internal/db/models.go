@@ -103,6 +103,22 @@ type LLMBinding struct {
 	CreatedAt time.Time
 }
 
+// LLMTarget LLM 目标端点（支持配置文件和数据库双来源）
+type LLMTarget struct {
+	ID              string     `gorm:"primarykey"`
+	URL             string     `gorm:"uniqueIndex;not null"` // LLM 端点 URL
+	APIKeyID        *string    `gorm:"index"`                // 外键 → api_keys.id（可选）
+	Provider        string     `gorm:"default:'anthropic'"`  // "anthropic" | "openai" | "ollama"
+	Name            string     // 显示名称
+	Weight          int        `gorm:"default:1"`            // 负载均衡权重
+	HealthCheckPath string     // 健康检查路径
+	Source          string     `gorm:"default:'database'"`   // "config" | "database"
+	IsEditable      bool       `gorm:"default:true"`         // false for config-sourced
+	IsActive        bool       `gorm:"default:true"`
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
 // TableName 方法（可选，用于显式指定表名）
 func (Group) TableName() string           { return "groups" }
 func (User) TableName() string            { return "users" }
@@ -113,3 +129,4 @@ func (AuditLog) TableName() string        { return "audit_logs" }
 func (APIKey) TableName() string          { return "api_keys" }
 func (APIKeyAssignment) TableName() string { return "api_key_assignments" }
 func (LLMBinding) TableName() string      { return "llm_bindings" }
+func (LLMTarget) TableName() string       { return "llm_targets" }
