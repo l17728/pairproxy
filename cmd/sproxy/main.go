@@ -2482,9 +2482,11 @@ var adminLLMCmd = &cobra.Command{
 
 // --- llm targets ---
 
+var llmTargetsFormat string
+
 var adminLLMTargetsCmd = &cobra.Command{
 	Use:   "targets",
-	Short: "List all configured LLM targets (reads from config; no live health info in CLI mode)",
+	Short: "List all LLM targets from database (both config and database sources)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		_, _, _, _, logger, database, err := openAdminDB()
 		if err != nil {
@@ -2492,39 +2494,111 @@ var adminLLMTargetsCmd = &cobra.Command{
 		}
 		defer closeGormDB(logger, database)
 
-		cfgPath := adminConfigFlag
-		if cfgPath == "" {
-			cfgPath = "sproxy.yaml"
-		}
-		cfg, _, err := config.LoadSProxyConfig(cfgPath)
+		// 获取所有 targets
+		llmTargetRepo := db.NewLLMTargetRepo(database, logger)
+		targets, err := llmTargetRepo.ListAll()
 		if err != nil {
-			return fmt.Errorf("load config: %w", err)
+			return fmt.Errorf("list targets: %w", err)
 		}
 
+		// 获取绑定数
 		llmBindingRepo := db.NewLLMBindingRepo(database, logger)
 		bindings, err := llmBindingRepo.List()
 		if err != nil {
 			return fmt.Errorf("list bindings: %w", err)
 		}
-		boundCount := map[string]int{}
+		bindingCounts := make(map[string]int)
 		for _, b := range bindings {
-			boundCount[b.TargetURL]++
+			bindingCounts[b.TargetURL]++
 		}
 
-		fmt.Printf("%-50s %-10s %-8s %s\n", "TARGET URL", "PROVIDER", "WEIGHT", "BOUND_USERS")
-		for _, t := range cfg.LLM.Targets {
-			w := t.Weight
-			if w <= 0 {
-				w = 1
-			}
-			prov := t.Provider
-			if prov == "" {
-				prov = "anthropic"
-			}
-			fmt.Printf("%-50s %-10s %-8d %d\n", t.URL, prov, w, boundCount[t.URL])
+		// 输出
+		if llmTargetsFormat == "json" {
+			return printTargetsJSON(targets, bindingCounts)
 		}
-		return nil
+		return printTargetsTable(targets, bindingCounts)
 	},
+}
+
+func init() {
+	adminLLMTargetsCmd.Flags().StringVar(&llmTargetsFormat, "format", "text", "Output format: text or json")
+}
+
+// printTargetsTable 以表格形式输出 LLM targets
+func printTargetsTable(targets []*db.LLMTarget, bindingCounts map[string]int) error {
+	fmt.Printf("%-40s %-10s %-20s %-6s %-8s %-6s %s\n",
+		"URL", "PROVIDER", "NAME", "WEIGHT", "SOURCE", "ACTIVE", "BINDINGS")
+	fmt.Printf("%-40s %-10s %-20s %-6s %-8s %-6s %s\n",
+		"---", "--------", "----", "------", "------", "------", "--------")
+
+	for _, t := range targets {
+		active := "✓"
+		if !t.IsActive {
+			active = "✗"
+		}
+
+		bindings := bindingCounts[t.URL]
+
+		// 截断过长的 URL 和 Name
+		url := t.URL
+		if len(url) > 40 {
+			url = url[:37] + "..."
+		}
+		name := t.Name
+		if len(name) > 20 {
+			name = name[:17] + "..."
+		}
+
+		fmt.Printf("%-40s %-10s %-20s %-6d %-8s %-6s %d\n",
+			url,
+			t.Provider,
+			name,
+			t.Weight,
+			t.Source,
+			active,
+			bindings,
+		)
+	}
+
+	return nil
+}
+
+// printTargetsJSON 以 JSON 形式输出 LLM targets
+func printTargetsJSON(targets []*db.LLMTarget, bindingCounts map[string]int) error {
+	type TargetOutput struct {
+		ID              string  `json:"id"`
+		URL             string  `json:"url"`
+		Provider        string  `json:"provider"`
+		Name            string  `json:"name"`
+		Weight          int     `json:"weight"`
+		HealthCheckPath string  `json:"health_check_path,omitempty"`
+		Source          string  `json:"source"`
+		IsEditable      bool    `json:"is_editable"`
+		IsActive        bool    `json:"is_active"`
+		BindingCount    int     `json:"binding_count"`
+		APIKeyID        *string `json:"api_key_id,omitempty"`
+	}
+
+	output := make([]TargetOutput, len(targets))
+	for i, t := range targets {
+		output[i] = TargetOutput{
+			ID:              t.ID,
+			URL:             t.URL,
+			Provider:        t.Provider,
+			Name:            t.Name,
+			Weight:          t.Weight,
+			HealthCheckPath: t.HealthCheckPath,
+			Source:          t.Source,
+			IsEditable:      t.IsEditable,
+			IsActive:        t.IsActive,
+			BindingCount:    bindingCounts[t.URL],
+			APIKeyID:        t.APIKeyID,
+		}
+	}
+
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(output)
 }
 
 // --- llm bind ---
