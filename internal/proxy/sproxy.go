@@ -825,8 +825,21 @@ func (sp *SProxy) weightedPickExcluding(path string, tried map[string]bool) (*lb
 
 	candidates := filter(all, preferred)
 	// 若 provider 过滤后无候选，回退到全量健康 target（保持兼容性）
+	usedFallback := false
 	if len(candidates) == 0 && preferred != nil {
+		sp.logger.Debug("routing: no preferred-provider candidates, falling back to all healthy targets",
+			zap.String("path", path),
+			zap.Any("preferred_providers", preferred),
+		)
 		candidates = filter(all, nil)
+		usedFallback = true
+	}
+	if preferred != nil && !usedFallback {
+		sp.logger.Debug("routing: path-based provider preference applied",
+			zap.String("path", path),
+			zap.Any("preferred_providers", preferred),
+			zap.Int("matching_candidates", len(candidates)),
+		)
 	}
 	if len(candidates) == 0 {
 		return nil, lb.ErrNoHealthyTarget
@@ -844,7 +857,9 @@ func (sp *SProxy) weightedPickExcluding(path string, tried map[string]bool) (*lb
 			sp.logger.Debug("picked LLM target (weighted random)",
 				zap.String("url", candidates[i].ID),
 				zap.String("path", path),
+				zap.String("provider", sp.providerForURL(candidates[i].ID)),
 				zap.Int("candidates", len(candidates)),
+				zap.Bool("path_preference_applied", preferred != nil && !usedFallback),
 			)
 			return sp.llmTargetInfoForURL(candidates[i].ID), nil
 		}

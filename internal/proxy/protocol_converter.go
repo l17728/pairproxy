@@ -641,17 +641,18 @@ func floatToInt(v interface{}) int {
 type toolCallBuffer struct {
 	id        string
 	name      string
-	argChunks []string // 按到达顺序存储的 arguments 片段（保留流式分片）
+	argChunks []string // 待发射的 arguments 片段
 }
 
 // OpenAIToAnthropicStreamConverter 将 OpenAI SSE 流转换为 Anthropic SSE 流。
 //
-// 设计：采用"全量缓冲后发射"策略——缓冲所有 OpenAI SSE chunk 直到收到 [DONE]，
-// 再按顺序重新发射完整的 Anthropic SSE 事件序列。
+// 设计：采用"逐步发射"策略——边接收 OpenAI SSE chunk，边即时发射 Anthropic SSE 事件。
+// message_start 在收到第一个内容 delta 时发射（input_tokens 置 0，因尚未可知），
+// content_block_start/delta 随数据到达逐步发射，
+// message_delta（携带准确 output_tokens）和 message_stop 在收到 [DONE] 时发射。
 //
-// 这样做的目的：OpenAI 的 token 用量（prompt_tokens）只在流的最后一个 chunk 中出现，
-// 而 Anthropic 的 message_start（流的第一个事件）就需要携带 input_tokens。
-// 缓冲策略确保 message_start 中的 input_tokens 始终是准确值，对计费至关重要。
+// 注：input_tokens 在 message_start 中为 0（占位）；准确的 input/output tokens 由
+// TeeResponseWriter 直接解析 OpenAI SSE 获取，不影响服务端计费。
 //
 // 实现 http.ResponseWriter 接口，可作为中间层插入响应链。
 type OpenAIToAnthropicStreamConverter struct {
@@ -660,31 +661,49 @@ type OpenAIToAnthropicStreamConverter struct {
 	reqID  string
 	model  string // 原始 Anthropic 模型名（如 "claude-opus-4-6"），用于 message_start.message.model
 
-	// 缓冲状态（在 Write 调用中逐步填充）
-	messageID  string
-	textChunks []string                // 按到达顺序的文本 delta 片段
-	toolCalls  map[int]*toolCallBuffer // tool_call index → 缓冲
-	toolOrder  []int                   // 工具调用的插入顺序（保证输出顺序）
-	finishReason string
+	// 渐进发射状态
+	messageID        string
+	messageStartSent bool
+	nextBlockIdx     int
 
-	// 来自 usage chunk 的 token 统计
+	// 文本块状态
+	textBlockIdx  int
+	textBlockOpen bool
+
+	// 工具调用块状态
+	toolBuffers    map[int]*toolCallBuffer
+	toolBlockIdxMap map[int]int
+	toolOrder      []int
+	openToolBlocks map[int]bool
+
+	// 流末信息（在收到 [DONE] 时使用）
+	finishReason     string
 	promptTokens     int
 	completionTokens int
 	cachedTokens     int
 
-	done bool // 是否已处理 [DONE] 并发射完毕
+	done bool
 }
 
-// NewOpenAIToAnthropicStreamConverter 创建流转换器。
-// model 为原始 Anthropic 请求中的模型名（可为空，空时不覆盖 message_start 的 model 字段）。
+// NewOpenAIToAnthropicStreamConverter 创建流转换器（渐进发射模式）。
+// model 为原始 Anthropic 请求中的模型名（可为空，空时不注入 message_start 的 model 字段）。
 func NewOpenAIToAnthropicStreamConverter(w http.ResponseWriter, logger *zap.Logger, reqID string, model string) *OpenAIToAnthropicStreamConverter {
+	msgID := "msg_"
+	if len(reqID) >= 8 {
+		msgID += reqID[:8]
+	} else {
+		msgID += reqID
+	}
 	return &OpenAIToAnthropicStreamConverter{
-		writer:    w,
-		logger:    logger,
-		reqID:     reqID,
-		model:     model,
-		messageID: "msg_" + reqID[:8],
-		toolCalls: make(map[int]*toolCallBuffer),
+		writer:          w,
+		logger:          logger,
+		reqID:           reqID,
+		model:           model,
+		messageID:       msgID,
+		textBlockIdx:    -1,
+		toolBuffers:     make(map[int]*toolCallBuffer),
+		toolBlockIdxMap: make(map[int]int),
+		openToolBlocks:  make(map[int]bool),
 	}
 }
 
@@ -698,7 +717,7 @@ func (c *OpenAIToAnthropicStreamConverter) WriteHeader(statusCode int) {
 	c.writer.WriteHeader(statusCode)
 }
 
-// Write 接收 OpenAI SSE chunk，缓冲所有数据。收到 [DONE] 后触发 flush()。
+// Write 接收 OpenAI SSE chunk，逐步发射对应 Anthropic SSE 事件。
 func (c *OpenAIToAnthropicStreamConverter) Write(chunk []byte) (int, error) {
 	if c.done {
 		return len(chunk), nil
@@ -712,9 +731,8 @@ func (c *OpenAIToAnthropicStreamConverter) Write(chunk []byte) (int, error) {
 		}
 		payload := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
 
-		// [DONE] 流结束标志：触发发射阶段
 		if string(payload) == "[DONE]" {
-			c.flush()
+			c.handleDone()
 			c.done = true
 			return len(chunk), nil
 		}
@@ -727,24 +745,25 @@ func (c *OpenAIToAnthropicStreamConverter) Write(chunk []byte) (int, error) {
 		if err := json.Unmarshal(payload, &openaiChunk); err != nil {
 			continue // 解析失败静默忽略
 		}
-		c.bufferChunk(openaiChunk)
+		c.processChunk(openaiChunk)
 	}
 	return len(chunk), nil
 }
 
-// bufferChunk 解析单个 OpenAI chunk，提取并缓冲各字段。
-func (c *OpenAIToAnthropicStreamConverter) bufferChunk(chunk map[string]interface{}) {
-	// 提取 message ID（首个 chunk 中）
-	if c.messageID == "msg_"+c.reqID[:8] {
+// processChunk 解析单个 OpenAI chunk 并立即发射对应 Anthropic 事件。
+func (c *OpenAIToAnthropicStreamConverter) processChunk(chunk map[string]interface{}) {
+	// 从首块提取 message ID（在 message_start 发射之前）
+	if !c.messageStartSent {
 		if id, ok := chunk["id"].(string); ok && id != "" {
-			// 去掉 chatcmpl- 前缀，替换为 msg_ 前缀
 			if after, found := strings.CutPrefix(id, "chatcmpl-"); found {
 				c.messageID = "msg_" + after
+			} else {
+				c.messageID = "msg_" + id
 			}
 		}
 	}
 
-	// 解析 usage（可能在 finish_reason chunk 或独立的 usage chunk 中）
+	// 提取 usage（通常在最后一个有效 chunk 中）
 	if usage, ok := chunk["usage"].(map[string]interface{}); ok {
 		c.promptTokens = floatToInt(usage["prompt_tokens"])
 		c.completionTokens = floatToInt(usage["completion_tokens"])
@@ -753,7 +772,6 @@ func (c *OpenAIToAnthropicStreamConverter) bufferChunk(chunk map[string]interfac
 		}
 	}
 
-	// 解析 choices[0].delta
 	choices, ok := chunk["choices"].([]interface{})
 	if !ok || len(choices) == 0 {
 		return
@@ -763,7 +781,6 @@ func (c *OpenAIToAnthropicStreamConverter) bufferChunk(chunk map[string]interfac
 		return
 	}
 
-	// finish_reason
 	if fr, ok := choice["finish_reason"].(string); ok && fr != "" {
 		c.finishReason = fr
 	}
@@ -775,49 +792,134 @@ func (c *OpenAIToAnthropicStreamConverter) bufferChunk(chunk map[string]interfac
 
 	// 文本内容 delta
 	if content, ok := delta["content"].(string); ok && content != "" {
-		c.textChunks = append(c.textChunks, content)
+		c.ensureMessageStart()
+		if !c.textBlockOpen {
+			c.textBlockIdx = c.nextBlockIdx
+			c.nextBlockIdx++
+			c.writeEvent("content_block_start", map[string]interface{}{
+				"type":  "content_block_start",
+				"index": c.textBlockIdx,
+				"content_block": map[string]interface{}{
+					"type": "text",
+					"text": "",
+				},
+			})
+			c.textBlockOpen = true
+		}
+		c.writeEvent("content_block_delta", map[string]interface{}{
+			"type":  "content_block_delta",
+			"index": c.textBlockIdx,
+			"delta": map[string]interface{}{
+				"type": "text_delta",
+				"text": content,
+			},
+		})
 	}
 
-	// 工具调用 delta（可能含多个并行工具，用 index 区分）
+	// 工具调用 delta
 	if rawToolCalls, ok := delta["tool_calls"].([]interface{}); ok {
+		c.ensureMessageStart()
+		// 文本块如仍开放，在工具调用开始前关闭
+		if c.textBlockOpen {
+			c.writeEvent("content_block_stop", map[string]interface{}{
+				"type":  "content_block_stop",
+				"index": c.textBlockIdx,
+			})
+			c.textBlockOpen = false
+		}
 		for _, rawTC := range rawToolCalls {
 			tcMap, ok := rawTC.(map[string]interface{})
 			if !ok {
 				continue
 			}
-			idx := floatToInt(tcMap["index"])
-
-			// 首次出现该 index：初始化缓冲
-			if _, exists := c.toolCalls[idx]; !exists {
-				c.toolCalls[idx] = &toolCallBuffer{}
-				c.toolOrder = append(c.toolOrder, idx)
-			}
-			tc := c.toolCalls[idx]
-
-			if id, ok := tcMap["id"].(string); ok && id != "" {
-				tc.id = id
-			}
-			if funcMap, ok := tcMap["function"].(map[string]interface{}); ok {
-				if name, ok := funcMap["name"].(string); ok && name != "" {
-					tc.name = name
-				}
-				if args, ok := funcMap["arguments"].(string); ok {
-					tc.argChunks = append(tc.argChunks, args)
-				}
-			}
+			c.processToolCallDelta(tcMap)
 		}
 	}
 }
 
-// flush 在收到 [DONE] 后，按顺序发射完整的 Anthropic SSE 事件序列。
-func (c *OpenAIToAnthropicStreamConverter) flush() {
-	inputTokens := c.promptTokens - c.cachedTokens
-	if inputTokens < 0 {
-		inputTokens = 0
+// processToolCallDelta 处理单个工具调用 delta，维护状态并逐步发射事件。
+func (c *OpenAIToAnthropicStreamConverter) processToolCallDelta(tcMap map[string]interface{}) {
+	idx := floatToInt(tcMap["index"])
+
+	// 初始化该工具调用的缓冲
+	if _, exists := c.toolBuffers[idx]; !exists {
+		c.toolBuffers[idx] = &toolCallBuffer{}
+		c.toolOrder = append(c.toolOrder, idx)
+		c.toolBlockIdxMap[idx] = c.nextBlockIdx
+		c.nextBlockIdx++
+	}
+	buf := c.toolBuffers[idx]
+	blockIdx := c.toolBlockIdxMap[idx]
+
+	if id, ok := tcMap["id"].(string); ok && id != "" {
+		buf.id = id
+	}
+	if funcMap, ok := tcMap["function"].(map[string]interface{}); ok {
+		if name, ok := funcMap["name"].(string); ok && name != "" {
+			buf.name = name
+		}
+		if args, ok := funcMap["arguments"].(string); ok && args != "" {
+			buf.argChunks = append(buf.argChunks, args)
+		}
 	}
 
-	// 1. message_start（携带准确的 input_tokens）
-	messageStartMsg := map[string]interface{}{
+	if !c.openToolBlocks[idx] {
+		// 未开放 → 若已有 id 和 name，立即开放并发射缓冲的 arg chunks
+		if buf.id != "" && buf.name != "" {
+			c.writeEvent("content_block_start", map[string]interface{}{
+				"type":  "content_block_start",
+				"index": blockIdx,
+				"content_block": map[string]interface{}{
+					"type":  "tool_use",
+					"id":    buf.id,
+					"name":  buf.name,
+					"input": map[string]interface{}{},
+				},
+			})
+			c.openToolBlocks[idx] = true
+			for _, argChunk := range buf.argChunks {
+				if argChunk == "" {
+					continue
+				}
+				c.writeEvent("content_block_delta", map[string]interface{}{
+					"type":  "content_block_delta",
+					"index": blockIdx,
+					"delta": map[string]interface{}{
+						"type":         "input_json_delta",
+						"partial_json": argChunk,
+					},
+				})
+			}
+			buf.argChunks = nil
+		}
+		// 尚无 id/name → 仅缓冲，等待下一个 chunk
+	} else {
+		// 已开放 → 直接发射新到达的 arg chunks
+		for _, argChunk := range buf.argChunks {
+			if argChunk == "" {
+				continue
+			}
+			c.writeEvent("content_block_delta", map[string]interface{}{
+				"type":  "content_block_delta",
+				"index": blockIdx,
+				"delta": map[string]interface{}{
+					"type":         "input_json_delta",
+					"partial_json": argChunk,
+				},
+			})
+		}
+		buf.argChunks = nil
+	}
+}
+
+// ensureMessageStart 确保 message_start 事件已发射（懒发射，首次内容到达时触发）。
+// 在渐进模式下，message_start 的 input_tokens 为 0（占位），
+// 服务端计费由 TeeResponseWriter 直接解析 OpenAI SSE 完成，不受此值影响。
+func (c *OpenAIToAnthropicStreamConverter) ensureMessageStart() {
+	if c.messageStartSent {
+		return
+	}
+	msgObj := map[string]interface{}{
 		"id":            c.messageID,
 		"type":          "message",
 		"role":          "assistant",
@@ -825,89 +927,78 @@ func (c *OpenAIToAnthropicStreamConverter) flush() {
 		"stop_reason":   nil,
 		"stop_sequence": nil,
 		"usage": map[string]interface{}{
-			"input_tokens":                inputTokens,
-			"output_tokens":               1, // 占位值，真实值在 message_delta
-			"cache_read_input_tokens":     c.cachedTokens,
+			"input_tokens":                0,
+			"output_tokens":               0,
+			"cache_read_input_tokens":     0,
 			"cache_creation_input_tokens": 0,
 		},
 	}
-	// 若有原始 Anthropic 模型名，注入 model 字段（避免客户端看到 Ollama 本地模型名）
 	if c.model != "" {
-		messageStartMsg["model"] = c.model
+		msgObj["model"] = c.model
 	}
 	c.writeEvent("message_start", map[string]interface{}{
 		"type":    "message_start",
-		"message": messageStartMsg,
+		"message": msgObj,
 	})
-	c.logger.Debug("stream conversion: message_start sent",
+	c.messageStartSent = true
+	c.logger.Debug("stream conversion: message_start sent (progressive)",
 		zap.String("request_id", c.reqID),
 		zap.String("message_id", c.messageID),
-		zap.Int("input_tokens", inputTokens),
 	)
+}
 
-	contentIdx := 0
+// handleDone 在收到 [DONE] 后完成 Anthropic 事件序列的发射。
+// 关闭所有开放内容块，并发射 message_delta（含准确 output_tokens）和 message_stop。
+func (c *OpenAIToAnthropicStreamConverter) handleDone() {
+	// 空响应（无任何内容 delta）也确保 message_start 已发射
+	c.ensureMessageStart()
 
-	// 2. 文本内容块（若有）
-	if len(c.textChunks) > 0 {
-		c.writeEvent("content_block_start", map[string]interface{}{
-			"type":  "content_block_start",
-			"index": contentIdx,
-			"content_block": map[string]interface{}{
-				"type": "text",
-				"text": "",
-			},
-		})
-		for _, chunk := range c.textChunks {
-			c.writeEvent("content_block_delta", map[string]interface{}{
-				"type":  "content_block_delta",
-				"index": contentIdx,
-				"delta": map[string]interface{}{
-					"type": "text_delta",
-					"text": chunk,
-				},
-			})
-		}
+	// 关闭文本块
+	if c.textBlockOpen {
 		c.writeEvent("content_block_stop", map[string]interface{}{
 			"type":  "content_block_stop",
-			"index": contentIdx,
+			"index": c.textBlockIdx,
 		})
-		contentIdx++
+		c.textBlockOpen = false
 	}
 
-	// 3. 工具调用内容块（按插入顺序）
+	// 关闭所有工具调用块（含未来得及开放的块）
 	for _, idx := range c.toolOrder {
-		tc := c.toolCalls[idx]
-		c.writeEvent("content_block_start", map[string]interface{}{
-			"type":  "content_block_start",
-			"index": contentIdx,
-			"content_block": map[string]interface{}{
-				"type":  "tool_use",
-				"id":    tc.id,
-				"name":  tc.name,
-				"input": map[string]interface{}{}, // 占位，真实内容在 input_json_delta
-			},
-		})
-		for _, argChunk := range tc.argChunks {
-			if argChunk == "" {
-				continue
-			}
-			c.writeEvent("content_block_delta", map[string]interface{}{
-				"type":  "content_block_delta",
-				"index": contentIdx,
-				"delta": map[string]interface{}{
-					"type":         "input_json_delta",
-					"partial_json": argChunk,
+		blockIdx := c.toolBlockIdxMap[idx]
+		buf := c.toolBuffers[idx]
+		if !c.openToolBlocks[idx] {
+			// 尚未开放 → 补发 content_block_start（用已有信息）
+			c.writeEvent("content_block_start", map[string]interface{}{
+				"type":  "content_block_start",
+				"index": blockIdx,
+				"content_block": map[string]interface{}{
+					"type":  "tool_use",
+					"id":    buf.id,
+					"name":  buf.name,
+					"input": map[string]interface{}{},
 				},
 			})
+			for _, argChunk := range buf.argChunks {
+				if argChunk == "" {
+					continue
+				}
+				c.writeEvent("content_block_delta", map[string]interface{}{
+					"type":  "content_block_delta",
+					"index": blockIdx,
+					"delta": map[string]interface{}{
+						"type":         "input_json_delta",
+						"partial_json": argChunk,
+					},
+				})
+			}
 		}
 		c.writeEvent("content_block_stop", map[string]interface{}{
 			"type":  "content_block_stop",
-			"index": contentIdx,
+			"index": blockIdx,
 		})
-		contentIdx++
 	}
 
-	// 4. message_delta（stop_reason + 准确 output_tokens）
+	// message_delta：准确 output_tokens（在 [DONE] 时已知）
 	stopReason := convertFinishReason(c.finishReason)
 	if stopReason == "" {
 		stopReason = "end_turn"
@@ -922,18 +1013,21 @@ func (c *OpenAIToAnthropicStreamConverter) flush() {
 			"output_tokens": c.completionTokens,
 		},
 	})
-	c.logger.Debug("stream conversion: message_delta sent",
-		zap.String("request_id", c.reqID),
-		zap.String("stop_reason", stopReason),
-		zap.Int("output_tokens", c.completionTokens),
-	)
 
-	// 5. message_stop
+	// message_stop
 	c.writeEvent("message_stop", map[string]interface{}{
 		"type": "message_stop",
 	})
-	c.logger.Debug("stream conversion: message_stop sent, stream complete",
+
+	inputTokens := c.promptTokens - c.cachedTokens
+	if inputTokens < 0 {
+		inputTokens = 0
+	}
+	c.logger.Debug("stream conversion: completed (progressive)",
 		zap.String("request_id", c.reqID),
+		zap.String("stop_reason", stopReason),
+		zap.Int("output_tokens", c.completionTokens),
+		zap.Int("input_tokens_actual", inputTokens),
 	)
 }
 

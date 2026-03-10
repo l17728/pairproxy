@@ -191,6 +191,16 @@ func runStart(cmd *cobra.Command, args []string) error {
 			zap.String("provider", t.Provider),
 			zap.Int("weight", t.Weight),
 		)
+		// 协议转换依赖 model_mapping 将 Anthropic 模型名映射到本地模型名；
+		// 未配置时 Anthropic 模型名将直接透传，可能导致 Ollama/OpenAI 找不到模型。
+		if (t.Provider == "ollama" || t.Provider == "openai") && len(t.ModelMapping) == 0 {
+			logger.Warn("LLM target uses protocol conversion but has no model_mapping configured; "+
+				"Anthropic model names will be forwarded as-is to the target",
+				zap.String("url", t.URL),
+				zap.String("provider", t.Provider),
+				zap.String("hint", "add model_mapping in sproxy.yaml, e.g. model_mapping: {\"*\": \"llama3.2\"}"),
+			)
+		}
 	}
 
 	// ---------------------------------------------------------------------------

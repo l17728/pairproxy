@@ -942,13 +942,16 @@ func TestConvertOpenAIToAnthropicResponseCachedTokens(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// P0 新增测试：流式缓冲策略 — input_tokens 准确性
+// P0 新增测试：流式渐进发射 — output_tokens 准确性 + 内容即时发射
 // ---------------------------------------------------------------------------
 
 func TestOpenAIToAnthropicStreamConverterTokenAccuracy(t *testing.T) {
 	logger := zap.NewNop()
 
-	t.Run("input_tokens = prompt_tokens - cached_tokens", func(t *testing.T) {
+	// 注：渐进模式下 message_start.message.usage.input_tokens 为 0（占位）。
+	// 准确 input/output tokens 由 TeeResponseWriter 直接解析 OpenAI SSE 获取，不受此影响。
+
+	t.Run("output_tokens accurate in message_delta", func(t *testing.T) {
 		w := newMockResponseWriter()
 		converter := NewOpenAIToAnthropicStreamConverter(w, logger, "test-req-aaa0", "")
 
@@ -963,13 +966,15 @@ func TestOpenAIToAnthropicStreamConverterTokenAccuracy(t *testing.T) {
 		}
 
 		output := w.String()
-		// input_tokens = 100 - 80 = 20
-		assert.Contains(t, output, `"input_tokens":20`)
-		assert.Contains(t, output, `"cache_read_input_tokens":80`)
+		// message_start に input_tokens:0 を送る（プログレッシブモードの仕様）
+		assert.Contains(t, output, `"input_tokens":0`)
+		// output_tokens は message_delta に正確な値で含まれる
 		assert.Contains(t, output, `"output_tokens":10`)
+		// content が即時に送信されること
+		assert.Contains(t, output, `"text":"Hi"`)
 	})
 
-	t.Run("no cached tokens: input_tokens = prompt_tokens", func(t *testing.T) {
+	t.Run("output_tokens accurate when no cached tokens", func(t *testing.T) {
 		w := newMockResponseWriter()
 		converter := NewOpenAIToAnthropicStreamConverter(w, logger, "test-req-bbb0", "")
 
@@ -984,13 +989,13 @@ func TestOpenAIToAnthropicStreamConverterTokenAccuracy(t *testing.T) {
 		}
 
 		output := w.String()
-		assert.Contains(t, output, `"input_tokens":50`)
 		assert.Contains(t, output, `"output_tokens":8`)
+		assert.Contains(t, output, `"text":"Hello"`)
 	})
 
-	t.Run("usage emitted AFTER content → message_start still has accurate tokens", func(t *testing.T) {
-		// OpenAI sometimes emits a separate usage-only chunk after [DONE] chunk;
-		// in the buffered strategy usage arrives before [DONE], so tokens are always accurate.
+	t.Run("content deltas emitted progressively before [DONE]", func(t *testing.T) {
+		// 渐進モード: usage が後から来ても、content は即座に発射される。
+		// message_start は最初の content delta 到着時に発射（input_tokens=0 のプレースホルダー付き）。
 		w := newMockResponseWriter()
 		converter := NewOpenAIToAnthropicStreamConverter(w, logger, "test-req-ccc0", "")
 
@@ -1010,12 +1015,15 @@ func TestOpenAIToAnthropicStreamConverterTokenAccuracy(t *testing.T) {
 		// message_start appears first in output
 		startIdx := strings.Index(output, "event: message_start")
 		assert.Greater(t, startIdx, -1)
-		// Verify tokens are correct despite usage arriving late
-		assert.Contains(t, output, `"input_tokens":30`)
+		// output_tokens accurate in message_delta
 		assert.Contains(t, output, `"output_tokens":5`)
-		// Both text chunks should appear as separate deltas
+		// Both text chunks appear as separate deltas (progressive emission)
 		assert.Contains(t, output, `"text":"A"`)
 		assert.Contains(t, output, `"text":"B"`)
+		// Content deltas come before message_stop
+		contentIdx := strings.Index(output, `"text":"A"`)
+		stopIdx := strings.Index(output, "event: message_stop")
+		assert.Less(t, contentIdx, stopIdx, "content should appear before message_stop")
 	})
 }
 
