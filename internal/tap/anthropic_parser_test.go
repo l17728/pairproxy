@@ -574,6 +574,19 @@ data: {"type": "message_stop"}
 	}
 }
 
+// ---------------------------------------------------------------------------
+// TestSSEParserFeed_NilAndEmpty：nil/空 slice 不崩溃，不触发回调
+// ---------------------------------------------------------------------------
+
+func TestSSEParserFeed_NilAndEmpty(t *testing.T) {
+	parser := NewAnthropicSSEParser(func(in, out int) {
+		t.Error("callback must not be triggered for nil/empty feed")
+	})
+	// 不应 panic
+	parser.Feed(nil)
+	parser.Feed([]byte{})
+}
+
 // splitLines 按换行符分割字符串（辅助函数）。
 func splitLines(s string) []string {
 	var lines []string

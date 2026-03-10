@@ -290,8 +290,9 @@ func TestE2E_AdminQueryQuotaStatus_SpecificUser(t *testing.T) {
 		t.Fatalf("Create charlie: %v", err)
 	}
 
-	// 为 charlie 写入今日用量
-	today := time.Now().Truncate(24 * time.Hour).Add(time.Hour)
+	// 为 charlie 写入今日用量（使用本地时间，与 handler 的 now.Location() 保持一致）
+	now := time.Now()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 1, 0, 0, 0, now.Location())
 	if err := env.gormDB.Create(&db.UsageLog{
 		RequestID:    "req-charlie-today",
 		UserID:       user.ID,

@@ -212,3 +212,16 @@ func TestOpenAIParser_ViaInterface(t *testing.T) {
 		t.Errorf("InputTokens() = %d via interface, want 10", p.InputTokens())
 	}
 }
+
+// ---------------------------------------------------------------------------
+// TestOpenAISSEParser_Feed_NilAndEmpty：nil/空 slice 不崩溃，不触发回调
+// ---------------------------------------------------------------------------
+
+func TestOpenAISSEParser_Feed_NilAndEmpty(t *testing.T) {
+	p := NewOpenAISSEParser(func(in, out int) {
+		t.Error("callback must not be triggered for nil/empty feed")
+	})
+	// 不应 panic
+	p.Feed(nil)
+	p.Feed([]byte{})
+}

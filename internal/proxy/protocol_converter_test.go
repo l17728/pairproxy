@@ -2004,3 +2004,73 @@ func TestConvertDebugTxt_MultiTurnNoLastAssistant(t *testing.T) {
 	require.True(t, ok, "stream_options must be present for streaming request")
 	assert.True(t, streamOpts["include_usage"].(bool))
 }
+
+// TestMapModelName_EmptyStringModel 验证空字符串 model 名的边界行为：
+// 空字符串既不命中精确匹配键，也不命中通配符（"*"），
+// 故按 "no match" 规则原样返回空字符串，不 panic。
+func TestMapModelName_EmptyStringModel(t *testing.T) {
+	mapping := map[string]string{"claude-3-opus": "gpt-4"}
+	result := mapModelName("", mapping)
+	// 空字符串在 mapping 中找不到，也没有通配符 "*"，原样返回
+	assert.Equal(t, "", result, "mapModelName with empty model and no wildcard should return empty string")
+
+	// 含通配符时，空字符串仍被通配符覆盖
+	wildcardMapping := map[string]string{"*": "llama3.2"}
+	result2 := mapModelName("", wildcardMapping)
+	assert.Equal(t, "llama3.2", result2, "empty model with wildcard should use wildcard value")
+}
+
+// TestProtocolConversion_EmptyBody 验证空请求/响应 body 不崩溃。
+func TestProtocolConversion_EmptyBody(t *testing.T) {
+	logger := zap.NewNop()
+
+	converted, path, err := convertAnthropicToOpenAIRequest([]byte{}, logger, "test", nil)
+	require.NoError(t, err)
+	assert.Equal(t, "/v1/chat/completions", path)
+	assert.Empty(t, converted)
+
+	converted, err = convertOpenAIToAnthropicResponse([]byte{}, logger, "test", "")
+	require.NoError(t, err)
+	assert.Empty(t, converted)
+}
+
+// TestProtocolConversion_MalformedJSON 验证格式错误的 JSON 返回错误且不崩溃。
+func TestProtocolConversion_MalformedJSON(t *testing.T) {
+	logger := zap.NewNop()
+
+	body := []byte(`{invalid json}`)
+
+	converted, path, err := convertAnthropicToOpenAIRequest(body, logger, "test", nil)
+	assert.Error(t, err)
+	assert.Equal(t, "/v1/chat/completions", path)
+	assert.Equal(t, body, converted) // 原样返回
+
+	converted, err = convertOpenAIToAnthropicResponse(body, logger, "test", "")
+	assert.Error(t, err)
+	assert.Equal(t, body, converted) // 原样返回
+}
+
+// TestProtocolConversion_ParallelToolCalls 验证并行工具调用（多 index）的顺序保持。
+func TestProtocolConversion_ParallelToolCalls(t *testing.T) {
+	logger := zap.NewNop()
+	w := newMockResponseWriter()
+	converter := NewOpenAIToAnthropicStreamConverter(w, logger, "test-req-par", "")
+
+	chunks := []string{
+		`data: {"id":"chatcmpl-par","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"func_a","arguments":"{}"}}]},"finish_reason":null}]}` + "\n\n",
+		`data: {"id":"chatcmpl-par","choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_2","type":"function","function":{"name":"func_b","arguments":"{}"}}]},"finish_reason":null}]}` + "\n\n",
+		`data: {"id":"chatcmpl-par","choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":30,"completion_tokens":20}}` + "\n\n",
+		`data: [DONE]` + "\n\n",
+	}
+
+	for _, chunk := range chunks {
+		_, err := converter.Write([]byte(chunk))
+		require.NoError(t, err)
+	}
+
+	output := w.String()
+	assert.Contains(t, output, `"name":"func_a"`)
+	assert.Contains(t, output, `"name":"func_b"`)
+	// func_a (index 0) 必须先于 func_b (index 1) 出现
+	assert.Less(t, strings.Index(output, `"name":"func_a"`), strings.Index(output, `"name":"func_b"`))
+}
