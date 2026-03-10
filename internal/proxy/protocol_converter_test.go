@@ -1777,3 +1777,71 @@ func TestOpenAIToAnthropicStreamConverter_Model(t *testing.T) {
 		assert.NotContains(t, output, `"model":""`)
 	})
 }
+
+func TestConvertAnthropicToOpenAIRequest_Temperature(t *testing.T) {
+	logger := zap.NewNop()
+	body := []byte(`{"model":"claude-3-opus","max_tokens":1024,"temperature":0.7,"messages":[{"role":"user","content":"hi"}]}`)
+
+	result, _, err := convertAnthropicToOpenAIRequest(body, logger, "req-temp-1", nil)
+	require.NoError(t, err)
+
+	var req map[string]interface{}
+	require.NoError(t, json.Unmarshal(result, &req))
+
+	temp, ok := req["temperature"]
+	if !ok {
+		t.Fatal("temperature field missing in converted OpenAI request")
+	}
+	// JSON numbers unmarshal as float64
+	if temp.(float64) != 0.7 {
+		t.Errorf("temperature = %v, want 0.7", temp)
+	}
+}
+
+func TestConvertAnthropicToOpenAIRequest_TopP(t *testing.T) {
+	logger := zap.NewNop()
+	body := []byte(`{"model":"claude-3-opus","max_tokens":1024,"top_p":0.9,"messages":[{"role":"user","content":"hi"}]}`)
+
+	result, _, err := convertAnthropicToOpenAIRequest(body, logger, "req-topp-1", nil)
+	require.NoError(t, err)
+
+	var req map[string]interface{}
+	require.NoError(t, json.Unmarshal(result, &req))
+
+	topP, ok := req["top_p"]
+	if !ok {
+		t.Fatal("top_p field missing in converted OpenAI request")
+	}
+	if topP.(float64) != 0.9 {
+		t.Errorf("top_p = %v, want 0.9", topP)
+	}
+}
+
+func TestConvertAnthropicToOpenAIRequest_StopSequences(t *testing.T) {
+	logger := zap.NewNop()
+	body := []byte(`{"model":"claude-3-opus","max_tokens":1024,"stop_sequences":["STOP","END"],"messages":[{"role":"user","content":"hi"}]}`)
+
+	result, _, err := convertAnthropicToOpenAIRequest(body, logger, "req-stop-1", nil)
+	require.NoError(t, err)
+
+	var req map[string]interface{}
+	require.NoError(t, json.Unmarshal(result, &req))
+
+	stop, ok := req["stop"]
+	if !ok {
+		t.Fatal("stop field missing in converted OpenAI request (expected from stop_sequences)")
+	}
+	stopSlice, ok := stop.([]interface{})
+	if !ok {
+		t.Fatalf("stop field type = %T, want []interface{}", stop)
+	}
+	if len(stopSlice) != 2 {
+		t.Fatalf("stop sequences count = %d, want 2", len(stopSlice))
+	}
+	if stopSlice[0].(string) != "STOP" {
+		t.Errorf("stop[0] = %q, want STOP", stopSlice[0])
+	}
+	if stopSlice[1].(string) != "END" {
+		t.Errorf("stop[1] = %q, want END", stopSlice[1])
+	}
+}

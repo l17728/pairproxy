@@ -16,6 +16,7 @@ import (
 
 	"github.com/l17728/pairproxy/internal/auth"
 	"github.com/l17728/pairproxy/internal/db"
+	"github.com/l17728/pairproxy/internal/lb"
 )
 
 // newTestSProxy 创建一个指向 mockLLMURL 的 SProxy（使用内存 DB）。
@@ -529,6 +530,93 @@ func TestSProxyRejectsRequestWhenBoundTargetUnhealthy(t *testing.T) {
 	}
 	if !errors.Is(err, ErrBoundTargetUnavailable) {
 		t.Errorf("error = %v, want ErrBoundTargetUnavailable", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestSProxyRejectsRequestWhenBoundTargetUnhealthy_ResponseBody
+// 验证当绑定 target 不在健康列表中时，HTTP 响应状态为 503 且响应体包含正确的错误码。
+// ---------------------------------------------------------------------------
+
+func TestSProxyRejectsRequestWhenBoundTargetUnhealthy_ResponseBody(t *testing.T) {
+	mt := &mockTransport{}
+
+	targets := []LLMTarget{
+		{URL: "http://healthy-target.local", APIKey: "keyH"},
+	}
+	sp, token := newReliabilityTestSProxy(t, targets, mt)
+
+	// 配置负载均衡器，只有 healthy-target 在列表中（且健康）
+	lbTargets := []lb.Target{
+		{ID: "http://healthy-target.local", Addr: "http://healthy-target.local", Weight: 1, Healthy: true},
+	}
+	bal := lb.NewWeightedRandom(lbTargets)
+	sp.SetLLMHealthChecker(bal, nil)
+
+	// 绑定到一个不存在于均衡器 target 列表中的 URL
+	// pickLLMTarget 中的健康检查循环找不到该 URL，healthy 保持 false → ErrBoundTargetUnavailable
+	sp.SetBindingResolver(func(userID, groupID string) (string, bool) {
+		return "http://nonexistent-target.example.com:9999", true
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages",
+		strings.NewReader(`{"model":"claude-opus-4-6","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-PairProxy-Auth", token)
+	rr := httptest.NewRecorder()
+
+	sp.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503 ServiceUnavailable", rr.Code)
+	}
+
+	var body map[string]interface{}
+	if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response body: %v", err)
+	}
+	if body["error"] != "upstream_unavailable" {
+		t.Errorf("error code = %q, want \"upstream_unavailable\"", body["error"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestSProxyNoBindingResolver_FallsBackToLoadBalancer
+// 当 bindingResolver 未设置（nil）时，请求应 fall through 到负载均衡器，不返回 403。
+// ---------------------------------------------------------------------------
+
+func TestSProxyNoBindingResolver_FallsBackToLoadBalancer(t *testing.T) {
+	// 启动一个返回 200 的 mock LLM backend
+	mockLLM := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"id":"msg_ok","type":"message"}`)
+	}))
+	defer mockLLM.Close()
+
+	// newTestSProxy 不调用 SetBindingResolver，bindingResolver 保持 nil
+	sp, jwtMgr := newTestSProxy(t, mockLLM.URL)
+
+	tok, err := jwtMgr.Sign(auth.JWTClaims{UserID: "user1", Username: "user1"}, time.Hour)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages",
+		strings.NewReader(`{"model":"claude-opus-4-6","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-PairProxy-Auth", tok)
+	rr := httptest.NewRecorder()
+
+	sp.Handler().ServeHTTP(rr, req)
+
+	// 未设置 bindingResolver 时，不应返回 403（无绑定拒绝）
+	if rr.Code == http.StatusForbidden {
+		t.Errorf("status = 403, should not reject when bindingResolver is nil (no mandatory binding)")
+	}
+	// 请求应被转发到 mock LLM，返回 200
+	if rr.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 (should fall through to load balancer)", rr.Code)
 	}
 }
 

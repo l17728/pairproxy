@@ -198,3 +198,132 @@ func TestParseImportFile_FileNotFound(t *testing.T) {
 		t.Fatal("expected error for missing file, got nil")
 	}
 }
+
+// TestParseImportFile_WindowsCRLF 验证 \r\n 换行符能被正确解析。
+func TestParseImportFile_WindowsCRLF(t *testing.T) {
+	// Write raw bytes with CRLF line endings.
+	dir := t.TempDir()
+	fpath := filepath.Join(dir, "import-crlf.txt")
+	content := "[engineering]\r\nalice  Password123\r\nbob    Password456\r\n"
+	if err := os.WriteFile(fpath, []byte(content), 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	sections, err := parseImportFile(fpath)
+	if err != nil {
+		t.Fatalf("parseImportFile with CRLF: %v", err)
+	}
+
+	// sections[0] = implicit empty head section, sections[1] = engineering
+	var eng importSection
+	for _, s := range sections {
+		if s.GroupName == "engineering" {
+			eng = s
+			break
+		}
+	}
+	if len(eng.Users) != 2 {
+		t.Fatalf("engineering users = %d, want 2", len(eng.Users))
+	}
+	if eng.Users[0].Username != "alice" {
+		t.Errorf("users[0].Username = %q, want alice", eng.Users[0].Username)
+	}
+	if eng.Users[1].Username != "bob" {
+		t.Errorf("users[1].Username = %q, want bob", eng.Users[1].Username)
+	}
+}
+
+// TestParseImportFile_DuplicateGroups 验证两个同名 [engineering] section 各自独立解析（共 3 个 section）。
+func TestParseImportFile_DuplicateGroups(t *testing.T) {
+	path := writeImportFile(t, `
+[engineering]
+eng1  Password111
+
+[engineering]
+eng2  Password222
+`)
+	sections, err := parseImportFile(path)
+	if err != nil {
+		t.Fatalf("parseImportFile: %v", err)
+	}
+
+	// sections: [0]=head(empty), [1]=engineering(eng1), [2]=engineering(eng2)
+	if len(sections) != 3 {
+		t.Fatalf("sections = %d, want 3 (head + eng1 section + eng2 section)", len(sections))
+	}
+	if sections[1].Users[0].Username != "eng1" {
+		t.Errorf("sections[1] user = %q, want eng1", sections[1].Users[0].Username)
+	}
+	if sections[2].Users[0].Username != "eng2" {
+		t.Errorf("sections[2] user = %q, want eng2", sections[2].Users[0].Username)
+	}
+}
+
+// TestParseImportFile_DuplicateUsers 验证同名用户在同一分组中均被追加（解析器不去重）。
+func TestParseImportFile_DuplicateUsers(t *testing.T) {
+	path := writeImportFile(t, `
+[engineering]
+alice  Password123
+alice  Password456
+`)
+	sections, err := parseImportFile(path)
+	if err != nil {
+		t.Fatalf("parseImportFile: %v", err)
+	}
+
+	eng := sections[1]
+	if len(eng.Users) != 2 {
+		t.Fatalf("engineering users = %d, want 2 (duplicate not deduped by parser)", len(eng.Users))
+	}
+	if eng.Users[0].Username != "alice" || eng.Users[1].Username != "alice" {
+		t.Errorf("expected both users to be alice, got %q and %q", eng.Users[0].Username, eng.Users[1].Username)
+	}
+}
+
+// TestParseImportFile_MalformedLLMEmpty 验证 "llm=" 值为空时的行为。
+func TestParseImportFile_MalformedLLMEmpty(t *testing.T) {
+	path := writeImportFile(t, `
+[engineering]
+alice pass llm=
+`)
+	sections, err := parseImportFile(path)
+	if err != nil {
+		// Error is acceptable if the parser rejects empty LLM URL.
+		return
+	}
+	// If parser succeeds, alice should have LLMOverride == "" (empty string after "llm=").
+	eng := sections[1]
+	if len(eng.Users) != 1 {
+		t.Fatalf("engineering users = %d, want 1", len(eng.Users))
+	}
+	if eng.Users[0].LLMOverride != "" {
+		t.Errorf("LLMOverride = %q, want empty string for 'llm='", eng.Users[0].LLMOverride)
+	}
+}
+
+// TestParseImportFile_ExtraFieldsIgnored 验证额外字段被忽略，llm= URL 仍能正确解析。
+func TestParseImportFile_ExtraFieldsIgnored(t *testing.T) {
+	path := writeImportFile(t, `
+[engineering]
+alice pass extra1 extra2 llm=https://api.anthropic.com
+`)
+	sections, err := parseImportFile(path)
+	if err != nil {
+		t.Fatalf("parseImportFile: %v", err)
+	}
+
+	eng := sections[1]
+	if len(eng.Users) != 1 {
+		t.Fatalf("engineering users = %d, want 1", len(eng.Users))
+	}
+	u := eng.Users[0]
+	if u.Username != "alice" {
+		t.Errorf("Username = %q, want alice", u.Username)
+	}
+	if u.Password != "pass" {
+		t.Errorf("Password = %q, want pass", u.Password)
+	}
+	if u.LLMOverride != "https://api.anthropic.com" {
+		t.Errorf("LLMOverride = %q, want https://api.anthropic.com", u.LLMOverride)
+	}
+}

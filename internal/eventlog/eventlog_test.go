@@ -161,3 +161,111 @@ func TestCore_InfoNotCaptured(t *testing.T) {
 		t.Error("INFO logs should not be captured")
 	}
 }
+
+func TestLog_Since_EmptyLog(t *testing.T) {
+	l := New(10)
+	got := l.Since(time.Now())
+	if len(got) != 0 {
+		t.Errorf("Since() on empty log: want empty, got %d events", len(got))
+	}
+}
+
+func TestLog_Since_BeforeAll(t *testing.T) {
+	l := New(10)
+	base := time.Now()
+	l.Append(Event{Time: base.Add(1 * time.Second), Message: "a"})
+	l.Append(Event{Time: base.Add(2 * time.Second), Message: "b"})
+	l.Append(Event{Time: base.Add(3 * time.Second), Message: "c"})
+
+	// t is before all events → all events returned
+	got := l.Since(base)
+	if len(got) != 3 {
+		t.Fatalf("Since(before all): want 3 events, got %d", len(got))
+	}
+}
+
+func TestLog_Since_AfterAll(t *testing.T) {
+	l := New(10)
+	base := time.Now()
+	l.Append(Event{Time: base.Add(-3 * time.Second), Message: "a"})
+	l.Append(Event{Time: base.Add(-2 * time.Second), Message: "b"})
+	l.Append(Event{Time: base.Add(-1 * time.Second), Message: "c"})
+
+	// t is after all events → empty result
+	got := l.Since(base)
+	if len(got) != 0 {
+		t.Errorf("Since(after all): want 0 events, got %d", len(got))
+	}
+}
+
+func TestLog_Recent_Zero(t *testing.T) {
+	l := New(10)
+	for i := range 5 {
+		l.Append(Event{Time: time.Now(), Message: string(rune('a' + i))})
+	}
+	// n <= 0 means return all stored events
+	got := l.Recent(0)
+	if len(got) != 5 {
+		t.Fatalf("Recent(0): want all 5 events, got %d", len(got))
+	}
+}
+
+func TestLog_Recent_MoreThanStored(t *testing.T) {
+	l := New(10)
+	for i := range 3 {
+		l.Append(Event{Time: time.Now(), Message: string(rune('a' + i))})
+	}
+	got := l.Recent(999)
+	if len(got) != 3 {
+		t.Fatalf("Recent(999) with 3 stored: want 3, got %d", len(got))
+	}
+}
+
+func TestLog_New_ZeroCapacity(t *testing.T) {
+	l := New(0) // should default to capacity 500
+	for i := range 600 {
+		l.Append(Event{Time: time.Now(), Message: string(rune('a' + i%26))})
+	}
+	got := l.Recent(999)
+	if len(got) > 500 {
+		t.Errorf("New(0) defaulted to capacity > 500: got %d events", len(got))
+	}
+	if len(got) != 500 {
+		t.Errorf("New(0): want 500 events after 600 appends, got %d", len(got))
+	}
+}
+
+func TestCore_NamedLogger(t *testing.T) {
+	l := New(10)
+	base := zap.New(NewCore(l))
+	named := base.Named("mycomp")
+	named.Warn("hello")
+
+	got := l.Recent(10)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(got))
+	}
+	if got[0].Logger != "mycomp" {
+		t.Errorf("event.Logger = %q, want %q", got[0].Logger, "mycomp")
+	}
+}
+
+func TestCore_DPanicLevel(t *testing.T) {
+	l := New(10)
+	// Use just the eventlog core directly (no zapcore.NewTee) so we control behavior.
+	// zap.WithPanicHook(zapcore.WriteThenNoop) prevents actual panic in test.
+	logger := zap.New(NewCore(l), zap.WithPanicHook(zapcore.WriteThenNoop))
+	logger.DPanic("dpanic msg")
+
+	got := l.Recent(10)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 event for DPanic, got %d", len(got))
+	}
+	// DPanic is >= ErrorLevel, so levelFromZap maps it to LevelError.
+	if got[0].Level != LevelError {
+		t.Errorf("DPanic event level = %q, want %q", got[0].Level, LevelError)
+	}
+	if got[0].Message != "dpanic msg" {
+		t.Errorf("DPanic event message = %q, want %q", got[0].Message, "dpanic msg")
+	}
+}
