@@ -1082,7 +1082,8 @@ func (h *Handler) handleImportPage(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleImportSubmit(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseMultipartForm(1 << 20); err != nil {
-		// 普通 form 也 OK
+		// 普通 form 也 OK，multipart 解析失败时回退
+		h.logger.Debug("multipart parse failed, falling back to urlencoded form", zap.Error(err))
 		_ = r.ParseForm()
 	}
 
@@ -1090,8 +1091,10 @@ func (h *Handler) handleImportSubmit(w http.ResponseWriter, r *http.Request) {
 	content := ""
 	if file, _, err := r.FormFile("file"); err == nil {
 		defer file.Close()
-		data, err := io.ReadAll(file)
-		if err == nil {
+		data, readErr := io.ReadAll(file)
+		if readErr != nil {
+			h.logger.Warn("import: failed to read uploaded file", zap.Error(readErr))
+		} else {
 			content = string(data)
 		}
 	}
@@ -1111,6 +1114,7 @@ func (h *Handler) handleImportSubmit(w http.ResponseWriter, r *http.Request) {
 
 	sections, err := parseImportContent(content)
 	if err != nil {
+		h.logger.Warn("import: failed to parse content", zap.Error(err), zap.Bool("dry_run", dryRun))
 		h.renderPage(w, "import.html", importPageData{
 			baseData: baseData{},
 			Content:  content,
@@ -1120,6 +1124,12 @@ func (h *Handler) handleImportSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result := dashImportResult{DryRun: dryRun, Done: true}
+
+	if dryRun {
+		h.logger.Info("import dry-run started (no changes will be applied)")
+	} else {
+		h.logger.Info("import started")
+	}
 
 	for _, sec := range sections {
 		var groupID *string
@@ -1211,6 +1221,15 @@ func (h *Handler) handleImportSubmit(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	h.logger.Info("import completed",
+		zap.Bool("dry_run", dryRun),
+		zap.Int("groups_created", result.GroupsCreated),
+		zap.Int("groups_skipped", result.GroupsSkipped),
+		zap.Int("users_created", result.UsersCreated),
+		zap.Int("users_skipped", result.UsersSkipped),
+		zap.Int("bindings_set", result.BindingsSet),
+	)
+
 	h.renderPage(w, "import.html", importPageData{
 		Content: content,
 		Result:  result,
@@ -1254,6 +1273,10 @@ func (h *Handler) handleEventsAPI(w http.ResponseWriter, r *http.Request) {
 			since = t
 		} else if t, err := time.Parse(time.RFC3339, s); err == nil {
 			since = t
+		} else {
+			h.logger.Debug("events API: invalid 'since' parameter, ignoring",
+				zap.String("since", s),
+			)
 		}
 	}
 

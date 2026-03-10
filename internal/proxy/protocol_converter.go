@@ -86,7 +86,15 @@ func convertAnthropicToOpenAIRequest(body []byte, logger *zap.Logger, reqID stri
 
 	// 1. 基础字段
 	if model, ok := anthropicReq["model"].(string); ok {
-		openaiReq["model"] = mapModelName(model, modelMapping)
+		mapped := mapModelName(model, modelMapping)
+		openaiReq["model"] = mapped
+		if mapped != model {
+			logger.Debug("model name mapped for protocol conversion",
+				zap.String("request_id", reqID),
+				zap.String("original", model),
+				zap.String("mapped", mapped),
+			)
+		}
 	}
 	if maxTokens, ok := anthropicReq["max_tokens"].(float64); ok {
 		openaiReq["max_tokens"] = int(maxTokens)

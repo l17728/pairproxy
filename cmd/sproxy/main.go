@@ -3445,6 +3445,16 @@ var adminImportCmd = &cobra.Command{
 		defer closeGormDB(logger, database)
 		llmBindingRepo := db.NewLLMBindingRepo(database, logger)
 
+		if dryRun {
+			logger.Info("starting import dry-run (no changes will be written)",
+				zap.String("file", filePath),
+			)
+		} else {
+			logger.Info("starting import",
+				zap.String("file", filePath),
+			)
+		}
+
 		// 统计计数
 		var (
 			groupsCreated int
@@ -3557,6 +3567,16 @@ var adminImportCmd = &cobra.Command{
 				fmt.Printf("  - %s\n", d)
 			}
 		}
+
+		logger.Info("import completed",
+			zap.Bool("dry_run", dryRun),
+			zap.String("file", filePath),
+			zap.Int("groups_created", groupsCreated),
+			zap.Int("groups_skipped", groupsSkipped),
+			zap.Int("users_created", usersCreated),
+			zap.Int("users_skipped", usersSkipped),
+			zap.Int("bindings_set", bindingsSet),
+		)
 
 		if !dryRun {
 			summary := fmt.Sprintf("groups_created=%d groups_skipped=%d users_created=%d users_skipped=%d bindings=%d",
