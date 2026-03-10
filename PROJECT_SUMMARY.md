@@ -3,7 +3,7 @@
 **项目名称**: PairProxy - 企业级 LLM API 代理网关
 **模块路径**: `github.com/l17728/pairproxy`
 **开源协议**: Apache License 2.0
-**最新版本**: v2.7.0
+**最新版本**: v2.8.0
 **Go 版本**: 1.24
 
 ---
@@ -50,10 +50,10 @@ PairProxy 是一个**企业级 LLM API 透明代理网关**，专为多人共用
 | 指标 | 数值 |
 |------|------|
 | Go 源文件 | 160+ (internal 目录) |
-| 总代码行数 | 64,440+ 行 |
+| 总代码行数 | 65,000+ 行 |
 | 内部包数量 | 22 个 |
-| 测试用例 | 1,400+ 个 |
-| 文档数量 | 14 个主要文档 |
+| 测试用例 | 1,331+ 个 |
+| 文档数量 | 12 个主要文档 |
 | 文档总量 | 200KB+ |
 
 ---
@@ -125,6 +125,7 @@ sproxy 转发给 LLM:
 | **LDAP/AD 集成** | 一行配置接入企业目录，JIT 自动创建用户 | v1.0+ |
 | **多 Provider 支持** | Anthropic / OpenAI / Ollama，按路径自动路由 | v1.0+ |
 | **协议自动转换** | Claude CLI ↔ Ollama/OpenAI 自动协议转换，零配置 | v2.6+ |
+| **协议转换进阶** | 图片转换、错误格式转换、id前缀替换、prefill/thinking拒绝、强制绑定、model_mapping | v2.8+ |
 | **Token 统计** | 同步/流式(SSE)请求均精确统计，不缓冲不延迟 | v1.0+ |
 | **费用估算** | 按模型定价配置，Dashboard 实时显示 USD 消耗 | v1.0+ |
 | **用户配额** | 按分组设置每日/每月 token 上限，超额返回 429 | v1.0+ |
@@ -155,8 +156,27 @@ sproxy 转发给 LLM:
 | **配置文件同步** | 启动时自动同步配置文件 targets 到数据库 | v2.7+ |
 | **URL 唯一性约束** | 数据库层面强制 URL 唯一性 | v2.7+ |
 | **配置来源只读** | 配置文件来源的 targets 在 WebUI/API 中只读 | v2.7+ |
+| **告警页面** | Dashboard 实时 WARN/ERROR 日志查看器，SSE 推送 | v2.8+ |
+| **批量导入** | 文件模板批量创建分组/用户，CLI + WebUI + dry-run | v2.8+ |
+| **GLM 风格 SSE 修复** | message_start.input_tokens=0 时从 message_delta 回填 | v2.8+ |
 
-### 3.2 v2.7.0 新增特性
+### 3.2 v2.8.0 新增特性
+
+| 功能 | 说明 |
+|------|------|
+| **告警页面** | Dashboard `/dashboard/alerts`，实时展示 WARN/ERROR 日志，SSE 推送（`/api/admin/alerts/stream`） |
+| **批量导入** | `sproxy admin import <file>` + WebUI `/dashboard/import`，支持分组/用户批量创建，`--dry-run` 预览 |
+| **图片内容块转换** | Anthropic base64 image → OpenAI image_url，完整 URL / base64 数据 URL 两种格式 |
+| **OpenAI 错误响应转换** | 上游返回 OpenAI 格式错误时，自动转为 Anthropic `{"type":"error"}` 格式 |
+| **chatcmpl- 前缀替换** | OpenAI 响应 ID 前缀 `chatcmpl-` 替换为 `msg_`，符合 Anthropic 客户端期望 |
+| **assistant prefill 拒绝** | 消息列表末尾包含 assistant 消息时，对 OpenAI/Ollama targets 返回 HTTP 400 |
+| **thinking 参数拒绝** | 请求体包含 `thinking` 参数时，对 OpenAI/Ollama targets 返回 HTTP 400 |
+| **强制 LLM 绑定** | 未配置 LLM target 的用户/分组发起请求时返回 HTTP 403 |
+| **model_mapping 配置** | `model_mapping` 字段支持精确匹配和通配符 `*` 回退，Anthropic 模型名 → Ollama 模型名 |
+| **GLM 风格 SSE 修复** | 检测 `message_start.input_tokens=0`，从 `message_delta.usage.input_tokens` 回填 |
+| **测试覆盖增强** | 32+ 新测试用例，含 SSE 边界、协议转换边界、用户流量 E2E |
+
+### 3.3 v2.7.0 新增特性
 
 | 功能 | 说明 |
 |------|------|
@@ -184,7 +204,7 @@ sproxy 转发给 LLM:
 | **完整测试** | 50+ 测试用例，覆盖数据库层、配置同步、CLI、REST API、E2E |
 | **文档完善** | 更新手册、API 文档、测试报告、验收报告 |
 
-### 3.3 v2.6.0 新增特性
+### 3.4 v2.6.0 新增特性
 
 | 功能 | 说明 |
 |------|------|
@@ -195,7 +215,7 @@ sproxy 转发给 LLM:
 | **优雅降级** | 转换失败时自动回退到原始请求 |
 | **完整日志** | INFO/DEBUG/WARN 三级日志，便于故障排查 |
 
-### 3.4 v2.5.0 新增特性
+### 3.5 v2.5.0 新增特性
 
 | 功能 | 说明 |
 |------|------|
@@ -348,7 +368,7 @@ pairproxy/
 │   └── version/              # 版本信息注入
 │
 ├── test/
-│   ├── e2e/                  # E2E 测试 (66+ 用例)
+│   ├── e2e/                  # E2E 测试 (82+ 用例)
 │   └── integration/          # 集成测试 (8 用例)
 │
 ├── config/
@@ -371,13 +391,12 @@ pairproxy/
 
 | 测试类型 | 测试数量 | 通过率 | 说明 |
 |---------|---------|--------|------|
-| 单元测试 (UT) | 1,122+ | 100% | 21 个包全量单元测试（含 LLM Target 管理） |
+| 单元测试 (UT) | 1,142+ | 100% | 21 个包全量单元测试（含 v2.8.0 新功能） |
 | 集成测试 | 8 | 100% | 真实数据库操作 |
-| E2E 测试 (httptest) | 81 | 100% | httptest 自动化测试（含 LLM Target 7个新E2E） |
-| E2E 测试 (integration) | 84 | 100% | 真实进程集成测试 |
-| 协议转换测试 | 27 | 100% | 协议转换专项测试 |
-| LLM Target 管理测试 | 50+ | 100% | v2.7.0 新增测试 |
-| **总计** | **1,400+** | **100%** | - |
+| E2E 测试 (httptest) | 82 | 100% | httptest 自动化测试（含用户流量5个新E2E） |
+| E2E 测试 (integration) | 68 | 100% | 真实进程集成测试 |
+| 协议转换测试 | 31 | 100% | 协议转换专项测试（v2.8.0 增强） |
+| **总计** | **1,331+** | **100%** | - |
 
 ### 6.2 测试覆盖率
 
@@ -389,7 +408,7 @@ pairproxy/
 | internal/proxy | 80% |
 | internal/quota | 88% |
 | internal/lb | 80% |
-| protocol_converter | 80.1% |
+| protocol_converter | 83.2% |
 
 ### 6.3 三种 E2E 测试方法
 
@@ -416,7 +435,7 @@ go test -tags=integration ./test/e2e/...
 | 文档 | 大小 | 说明 |
 |------|------|------|
 | `README.md` | - | 项目概述、快速开始 |
-| `docs/manual.md` | 86KB | 完整用户手册（v2.7.0） |
+| `docs/manual.md` | 90KB+ | 完整用户手册（v2.8.0） |
 | `docs/API.md` | 22KB | REST API 参考 |
 | `docs/SECURITY.md` | 16KB | 安全模型说明 |
 | `docs/TROUBLESHOOTING.md` | 17KB | 故障排查手册 |
@@ -424,14 +443,9 @@ go test -tags=integration ./test/e2e/...
 | `docs/PERFORMANCE.md` | 6.3KB | 性能优化指南 |
 | `docs/CLUSTER_DESIGN.md` | 14KB | 集群架构设计 |
 | `docs/FAULT_TOLERANCE_ANALYSIS.md` | 24KB | 故障容错分析 (v2.5.0) |
-| `docs/PROTOCOL_CONVERSION.md` | - | 协议转换文档 (v2.6.0) |
-| `docs/TEST_REPORT.md` | - | 测试报告（v2.7.0） |
-| `docs/ACCEPTANCE_REPORT.md` | 20KB | 验收报告（v2.7.0） |
-| `docs/WEBUI_CAPABILITY_ASSESSMENT.md` | - | WebUI 能力评估（v2.7.0） |
-| `docs/API_KEY_MANAGEMENT_GUIDE.md` | - | API Key 管理指南（v2.7.0） |
-| `docs/REVIEW_RECOMMENDATIONS_IMPLEMENTATION_PLAN.md` | - | 代码审查建议实施计划（v2.7.0） |
-| `docs/OPENCLAW_OPS_GUIDE.md` | 733 行 | 自动化运维手册 |
-| `docs/SUMMARY.md` | - | 版本特性总结 |
+| `docs/PROTOCOL_CONVERSION.md` | - | 协议转换文档 (v2.6.0+) |
+| `docs/TEST_REPORT.md` | - | 测试报告（v2.8.0） |
+| `docs/ACCEPTANCE_REPORT.md` | 22KB | 验收报告（v2.8.0） |
 | `PROJECT_SUMMARY.md` | - | 项目总结（本文档） |
 
 ### 7.2 文档覆盖场景
@@ -646,8 +660,23 @@ CREATE TABLE audit_logs (
 | v2.5.0 | 2026-03-08 | 可靠性增强：水印追踪、请求重试、路由发现、健康检查配置化、请求体大小限制 |
 | v2.6.0 | 2026-03-09 | 协议自动转换：Claude CLI ↔ Ollama/OpenAI，智能检测，流式支持，优雅降级 |
 | v2.7.0 | 2026-03-09 | LLM Target 动态管理：配置文件 + 数据库双来源，CLI/API/WebUI 全方位管理，50+ 新测试 |
+| v2.8.0 | 2026-03-11 | 协议转换进阶（图片/错误/前缀/prefill/thinking/绑定/model_mapping）+ 告警页面 + 批量导入 |
 
-### 11.2 v2.6.0 版本亮点
+### 11.2 v2.8.0 版本亮点
+
+| 特性 | 问题解决 | 技术方案 |
+|------|----------|----------|
+| 告警页面 | 管理员无法实时感知错误 | Dashboard SSE 推送 WARN/ERROR 日志 |
+| 批量导入 | 手动逐个创建用户低效 | 模板文件 + CLI/WebUI，支持 dry-run 预览 |
+| 图片内容块转换 | Claude CLI 发图片到 Ollama 失败 | Anthropic image → OpenAI image_url 自动转换 |
+| OpenAI 错误响应转换 | Ollama 错误格式 Claude 客户端无法解析 | 自动转为 Anthropic error 格式 |
+| assistant prefill 拒绝 | 非 Anthropic targets 不支持 prefill | 检测末尾 assistant 消息，返回 HTTP 400 |
+| thinking 参数拒绝 | 非 Anthropic targets 不支持思考模式 | 检测 thinking 字段，返回 HTTP 400 |
+| 强制 LLM 绑定 | 未绑定用户请求不明确路由 | 未绑定时返回 HTTP 403 明确错误 |
+| model_mapping 配置 | Anthropic 模型名 Ollama 不认识 | 精确匹配 + 通配符 `*` 回退映射表 |
+| GLM 风格 SSE 修复 | GLM-5 等模型 input_tokens 统计为 0 | message_start 为 0 时从 message_delta 回填 |
+
+### 11.3 v2.6.0 版本亮点
 
 | 特性 | 问题解决 | 技术方案 |
 |------|----------|----------|
@@ -657,7 +686,7 @@ CREATE TABLE audit_logs (
 | 优雅降级 | 转换失败影响服务 | 自动回退到原始请求 |
 | 完整测试 | 协议转换质量保证 | 27 个测试用例，80.1% 覆盖率 |
 
-### 11.3 v2.7.0 版本亮点
+### 11.4 v2.7.0 版本亮点
 
 | 特性 | 问题解决 | 技术方案 |
 |------|----------|----------|
@@ -670,7 +699,7 @@ CREATE TABLE audit_logs (
 | 配置来源只读 | 误删配置文件 targets | Source=config 的 targets 在 API/WebUI 中只读 |
 | 完整测试覆盖 | 新功能质量保证 | 50+ 测试用例，覆盖所有层次（DB/CLI/API/E2E） |
 
-### 11.4 v2.5.0 版本亮点
+### 11.5 v2.5.0 版本亮点
 
 | 特性 | 问题解决 | 技术方案 |
 |------|----------|----------|
@@ -681,7 +710,7 @@ CREATE TABLE audit_logs (
 | 健康检查配置化 | 固定参数不灵活 | 超时/阈值/恢复延迟可配置 |
 | 请求体大小限制 | OOM 风险 | 10MB 限制 |
 
-### 11.5 版本发布流程
+### 11.6 版本发布流程
 
 ```bash
 # 1. 确保所有改动已合并到 main
@@ -830,6 +859,6 @@ sproxy:
 
 ---
 
-**文档版本**: 1.2
-**最后更新**: 2026-03-09
-**适用版本**: PairProxy v2.7.0
+**文档版本**: 1.3
+**最后更新**: 2026-03-11
+**适用版本**: PairProxy v2.8.0

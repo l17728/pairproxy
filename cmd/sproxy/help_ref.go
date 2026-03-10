@@ -719,7 +719,60 @@ Natural language: "clear alice's conversations", "delete tracked records", "wipe
 
 ---
 
-## 14. Other Top-level Commands
+## 14. Bulk Import
+
+` + bq + `sproxy admin import <file> [--dry-run]` + bq + `
+
+Bulk-create groups and users from a template file. Groups and users that
+already exist are silently skipped (idempotent).
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| ` + bq + `--dry-run` + bq + ` | false | Preview changes without writing to the database |
+| ` + bq + `--config` + bq + ` | sproxy.yaml | Configuration file |
+
+Template file format:
+
+` + bq + bq + bq + `
+# Comment lines start with #
+# [group-name]              — declare a group section
+# [group-name llm=URL]      — declare a group section with default LLM binding
+# username password         — create user in the current group
+# username password llm=URL — create user with individual LLM override
+# [-]                       — users with no group
+` + bq + bq + bq + `
+
+Example template:
+
+` + bq + bq + bq + `
+[engineering llm=https://api.anthropic.com]
+alice  Password123
+bob    Password456 llm=https://api.openai.com
+
+[marketing]
+charlie  Marketing789
+
+[-]
+dave  NoGroup_Pass
+` + bq + bq + bq + `
+
+Import rules:
+- Existing groups/users are skipped (original data preserved)
+- Group LLM binding is only set if the group is newly created
+- User-level ` + bq + `llm=URL` + bq + ` overrides only that user's binding
+- Template file contains plaintext passwords — store or delete it securely after import
+
+Examples:
+  sproxy admin import users.txt
+  sproxy admin import --dry-run users.txt
+  sproxy admin import --config /etc/pairproxy/sproxy.yaml users.txt
+
+Natural language: "import users from file", "bulk create users", "dry-run import",
+"preview import", "batch create groups and users"
+
+---
+
+## 15. Other Top-level Commands
 
 ### hash-password
 
@@ -798,5 +851,7 @@ Natural language: "start server", "start sproxy", "run the proxy"
 | List all tracked users | sproxy admin track list |
 | Show alice's conversation records | sproxy admin track show alice |
 | Clear alice's conversation records | sproxy admin track clear alice |
+| Import groups/users from file | sproxy admin import users.txt |
+| Preview import without writing | sproxy admin import --dry-run users.txt |
 | Hash a new admin password | sproxy hash-password |
 `

@@ -47,6 +47,9 @@
 | **用户自助页面（F-10）** | 普通用户可查看自己的配额状态、用量历史，访问 `/dashboard/my-usage` 或调用 `/api/user/*` API |
 | **对话内容追踪** | 按用户隔离记录完整对话内容（JSON 文件），支持非流式和 SSE 流式双路径捕获，`sproxy admin track` 管理 |
 | **动态 LLM Target 管理** | 配置文件 + 数据库双来源，支持运行时增删 LLM 节点，用户/分组级绑定，自动健康检查与负载均衡 |
+| **告警页面** | Dashboard 实时 WARN/ERROR 日志查看器，通过 SSE 推送，无需刷新 |
+| **批量导入** | `sproxy admin import <file>` 从模板文件批量创建分组/用户，支持 `--dry-run` 预览和 WebUI 操作 |
+| **协议转换进阶** | 图片内容块转换（Anthropic→OpenAI）、OpenAI 错误响应转 Anthropic 格式、model_mapping 配置、prefill/thinking 拒绝（HTTP 400） |
 
 ---
 
@@ -220,6 +223,8 @@ cproxy 启动
 | **分组** | 分组管理、设置每日/每月 token 上限和 RPM |
 | **日志** | 最近 N 条请求记录，支持按用户 ID 过滤 |
 | **审计** | 管理员操作审计日志（用户/分组增删改操作） |
+| **告警** | 实时 WARN/ERROR 日志流，SSE 推送（v2.8.0）|
+| **批量导入** | 从模板文件批量创建分组和用户，支持 dry-run 预览（v2.8.0） |
 
 ---
 
@@ -250,6 +255,10 @@ sproxy admin track disable <username>  # 关闭追踪
 sproxy admin track list                # 查看所有被追踪用户
 sproxy admin track show <username>     # 查看追踪记录
 sproxy admin track clear <username>    # 清除历史记录
+
+# 批量导入（v2.8.0）
+sproxy admin import users.txt          # 从模板文件批量创建分组/用户
+sproxy admin import --dry-run users.txt  # 预览（不实际写入）
 
 # 工具
 sproxy hash-password [--password <pwd>]   # 生成 bcrypt hash

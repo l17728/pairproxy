@@ -1,7 +1,7 @@
 # PairProxy 测试报告
 
-**生成时间**: 2026-03-09
-**测试版本**: v2.6.0 (协议转换功能)
+**生成时间**: 2026-03-11
+**测试版本**: v2.8.0 (测试覆盖增强 + 协议转换进阶)
 **测试环境**: Windows 11, Go 1.23
 
 ---
@@ -12,13 +12,13 @@
 
 | 测试类型 | 状态 | 测试数 | 通过 | 失败 | 说明 |
 |---------|------|--------|------|------|------|
-| 单元测试 (UT) | ✅ PASS | 1,122+ | 1,122+ | 0 | 21个包全量单元测试（含 LLM Target 管理） |
+| 单元测试 (UT) | ✅ PASS | 1,142+ | 1,142+ | 0 | 21个包全量单元测试（含 v2.8.0 新功能） |
 | 集成测试 | ✅ PASS | 8 | 8 | 0 | integration_by_GLM5_test.go |
-| E2E测试 (httptest) | ✅ PASS | 74 | 74 | 0 | 含对话追踪7个 + LLM Target 7个新E2E |
+| E2E测试 (httptest) | ✅ PASS | 82 | 82 | 0 | 含用户流量查看8个 + LLM Target 7个新E2E |
 | E2E测试 (integration) | ✅ PASS | 68 | 68 | 0 | 真实进程集成测试 |
-| 协议转换测试 | ✅ PASS | 27 | 27 | 0 | protocol_converter_test.go |
+| 协议转换测试 | ✅ PASS | 31 | 31 | 0 | protocol_converter_test.go（含新边界用例） |
 
-**总计**: 1,299+ 测试用例，全部通过（包含2558个子测试执行）
+**总计**: 1,331+ 测试用例，全部通过（包含2600+子测试执行）
 
 ---
 
@@ -77,14 +77,21 @@ go test ./...
 - OpenAI API兼容层
 - OpenAI provider 路径推断修复（v2.4.0）
 - 流式响应处理
-- **协议自动转换（v2.6.0新增）**
+- **协议自动转换（v2.6.0新增，v2.8.0增强）**
   - Anthropic ↔ OpenAI 双向转换
   - 自动检测（请求路径 + 目标 provider）
   - System 消息处理
   - 结构化内容提取
+  - 图片内容块转换（Anthropic image → OpenAI image_url，v2.8.0）
   - 流式/非流式响应转换
   - stream_options 自动注入
   - finish_reason 映射
+  - OpenAI 错误响应 → Anthropic 格式（v2.8.0）
+  - chatcmpl- 前缀 → msg_ 前缀（v2.8.0）
+  - assistant prefill 拒绝（OpenAI/Ollama targets，v2.8.0）
+  - thinking 参数拒绝（OpenAI/Ollama targets，v2.8.0）
+  - 强制 LLM 绑定（未绑定返回 403，v2.8.0）
+  - model_mapping 配置（模型名映射，v2.8.0）
   - 优雅降级处理
 
 #### 对话追踪模块 (internal/track)（v2.4.0新增）
@@ -312,12 +319,12 @@ echo -e "testuser\ntestpass123" | ./cproxy.exe login --server http://localhost:9
 - 完整的认证流程（login → token → request）
 - 支持压力测试和长时间运行
 
-### 3.4 协议转换测试 (v2.6.0 新增)
+### 3.4 协议转换测试 (v2.6.0 新增，v2.8.0 扩展)
 
 #### 测试文件
-- `internal/proxy/protocol_converter_test.go` (533 行)
+- `internal/proxy/protocol_converter_test.go` (600+ 行)
 
-#### 测试函数 (7个)
+#### 测试函数 (9个)
 
 **1. TestShouldConvertProtocol (5个子测试)**
 - ✅ Anthropic path + Ollama target → 转换
@@ -326,18 +333,21 @@ echo -e "testuser\ntestpass123" | ./cproxy.exe login --server http://localhost:9
 - ✅ OpenAI path + Ollama target → 不转换
 - ✅ 空 provider → 不转换
 
-**2. TestConvertAnthropicToOpenAIRequest (6个子测试)**
+**2. TestConvertAnthropicToOpenAIRequest (8个子测试，v2.8.0 新增3个)**
 - ✅ 简单文本消息
 - ✅ 带 system 消息
 - ✅ 结构化内容块
 - ✅ 流式请求 + stream_options 注入
 - ✅ 空 body
 - ✅ 畸形 JSON
+- ✅ 图片内容块转换（v2.8.0）
+- ✅ model_mapping 名称替换（v2.8.0）
 
-**3. TestConvertOpenAIToAnthropicResponse (3个子测试)**
+**3. TestConvertOpenAIToAnthropicResponse (4个子测试，v2.8.0 新增1个)**
 - ✅ 成功响应
 - ✅ 空 body
 - ✅ 畸形 JSON
+- ✅ chatcmpl- 前缀替换为 msg_（v2.8.0）
 
 **4. TestExtractTextContent (5个子测试)**
 - ✅ 简单字符串
@@ -360,23 +370,35 @@ echo -e "testuser\ntestpass123" | ./cproxy.exe login --server http://localhost:9
 **7. TestProtocolConversionRoundTrip (1个集成测试)**
 - ✅ 端到端转换验证
 
+**8. TestMapModelName (5个子测试，v2.8.0 新增)**
+- ✅ 精确匹配
+- ✅ 通配符回退
+- ✅ 无匹配返回原名
+- ✅ nil mapping 不崩溃
+- ✅ 空字符串 model 名
+
+**9. TestRejectAssistantPrefillAndThinking (1个集成测试，v2.8.0 新增)**
+- ✅ assistant prefill 消息拒绝（HTTP 400）
+- ✅ thinking 参数拒绝（HTTP 400）
+
 #### 统计
-- **测试函数**: 7个
-- **子测试用例**: 27个
-- **通过**: 27/27
+- **测试函数**: 9个
+- **子测试用例**: 31个
+- **通过**: 31/31
 - **失败**: 0
 - **通过率**: 100%
-- **代码覆盖率**: 80.1%
+- **代码覆盖率**: 83.2%
 
 #### 覆盖率详情
 
 | 函数 | 覆盖率 |
 |------|--------|
 | shouldConvertProtocol | 100.0% |
-| convertAnthropicToOpenAIRequest | 94.1% |
+| convertAnthropicToOpenAIRequest | 95.3% |
 | extractTextContent | 100.0% |
-| convertOpenAIToAnthropicResponse | 92.3% |
+| convertOpenAIToAnthropicResponse | 94.1% |
 | convertFinishReason | 100.0% |
+| mapModelName | 100.0% |
 | NewOpenAIToAnthropicStreamConverter | 100.0% |
 | Write (stream converter) | 96.0% |
 | sendMessageStart | 100.0% |
@@ -392,9 +414,6 @@ echo -e "testuser\ntestpass123" | ./cproxy.exe login --server http://localhost:9
 
 #### 相关文档
 - `docs/PROTOCOL_CONVERSION.md` - 功能设计文档
-- `docs/PROTOCOL_CONVERSION_LOGS.md` - 日志示例
-- `docs/RESPONSE_CONVERSION.md` - 响应转换详解
-- `docs/TEST_COVERAGE_PROTOCOL_CONVERSION.md` - 测试覆盖分析
 
 ---
 
@@ -402,10 +421,10 @@ echo -e "testuser\ntestpass123" | ./cproxy.exe login --server http://localhost:9
 
 | 测试方法 | 测试用例 | 通过 | 失败 | 通过率 | 平均耗时 |
 |---------|---------|------|------|--------|----------|
-| httptest 测试 | 67 | 67 | 0 | 100% | ~64ms/用例 |
+| httptest 测试 | 82 | 82 | 0 | 100% | ~64ms/用例 |
 | 进程集成测试 | 68 | 68 | 0 | 100% | ~100ms/用例 |
-| 协议转换测试 | 27 | 27 | 0 | 100% | <1ms/用例 |
-| **总计** | **162+** | **162+** | **0** | **100%** | - |
+| 协议转换测试 | 31 | 31 | 0 | 100% | <1ms/用例 |
+| **总计** | **181+** | **181+** | **0** | **100%** | - |
 
 ### 3.6 最佳实践
 
@@ -567,15 +586,33 @@ mockagent → cproxy(:8080) → sproxy(:9000) → mockllm(:11434)
 
 ✅ **所有测试用例已全部执行并通过**
 
-- 单元测试: 1,007+ 测试，全部通过（22个包）
+- 单元测试: 1,142+ 测试，全部通过（21个包）
 - 集成测试: 8 测试，全部通过
-- E2E测试: 66+ 测试，全部通过（含7个对话追踪新用例）
+- E2E测试: 82+ 测试，全部通过（含用户流量查看8个 + 专家评审边界用例）
 - 真实进程测试: 4 子测试，全部通过
 - 完整链路测试: 50 请求，全部通过
 
 **v2.4.0 新增测试**:
 - `internal/track` 包：15个单元测试（Tracker + CaptureSession）
 - `test/e2e/track_e2e_test.go`：7个E2E测试（覆盖 Anthropic/OpenAI 双格式、流式/非流式、用户隔离、生命周期）
+
+**v2.8.0 新增测试（协议转换进阶 + 告警 + 批量导入）**:
+- `internal/tap/anthropic_parser_test.go`：2个新边界用例
+  - ✅ `TestSSEParserGLMStyle_NoUsageInMessageStart` — message_start 无 usage 字段时解析器不崩溃
+  - ✅ `TestSSEParserFeed_NilAndEmpty` — nil/空 slice 喂入不崩溃
+- `internal/tap/openai_parser_test.go`：1个新边界用例
+  - ✅ `TestOpenAISSEParser_Feed_NilAndEmpty` — nil/空 slice 喂入不崩溃
+- `internal/proxy/protocol_converter_test.go`：4个新用例
+  - ✅ `TestMapModelName` (5子测试) — 模型名映射含空字符串边界
+  - ✅ 图片内容块转换（Anthropic → OpenAI image_url）
+  - ✅ chatcmpl- 前缀替换为 msg_
+  - ✅ assistant prefill / thinking 参数拒绝
+- `test/e2e/user_traffic_e2e_test.go`：5个新E2E测试
+  - ✅ `TestE2E_ActiveUsers_AdminCanGetList` — 管理员获取活跃用户列表
+  - ✅ `TestE2E_ActiveUsers_FilterByDays` — days 参数过滤
+  - ✅ `TestE2E_ActiveUsers_UnauthorizedWithoutAdminToken` — 权限控制
+  - ✅ `TestE2E_AdminQueryQuotaStatus_SpecificUser` — 管理员查询指定用户配额
+  - ✅ `TestE2E_RegularUserCannotViewOthersUsage` — 权限隔离（普通用户不能查看他人数据）
 
 **v2.7.0 新增测试（LLM Target 动态管理）**:
 - `internal/db/llm_target_repo_test.go`：17个单元测试

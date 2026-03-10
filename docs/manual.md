@@ -1,6 +1,6 @@
 # PairProxy 用户手册
 
-**版本 v2.7.0**
+**版本 v2.8.0**
 
 ---
 
@@ -552,6 +552,53 @@ sproxy admin stats --days 7
 # 查看某个用户最近 30 天的用量
 sproxy admin stats --user alice --days 30
 ```
+
+### 4.7 批量导入分组和用户（v2.8.0）
+
+如果需要一次性导入大量用户（如初始化部署、批量入职），可以使用批量导入功能：
+
+```bash
+# 从模板文件批量导入
+sproxy admin import users.txt
+
+# 先预览（不实际创建）
+sproxy admin import --dry-run users.txt
+```
+
+**模板文件格式**（示例 `users.txt`）：
+
+```
+# 注释以 # 开头，空行忽略
+
+[engineering llm=https://api.anthropic.com]
+alice  Password123
+bob    Password456 llm=https://api.openai.com   # 用户级 LLM 覆盖
+
+[marketing]
+charlie  Marketing789
+
+[-]
+dave  NoGroup_Pass
+```
+
+**格式说明**：
+
+| 语法 | 说明 |
+|------|------|
+| `[分组名]` | 声明分组区块 |
+| `[分组名 llm=URL]` | 声明分组区块并绑定组级 LLM |
+| `用户名 密码` | 在当前分组下创建用户 |
+| `用户名 密码 llm=URL` | 用户级 LLM 覆盖（不影响同组其他用户） |
+| `[-]` | 无分组区块（下方用户不属于任何分组） |
+
+**导入规则**：
+- 已存在的分组/用户**跳过**，不报错，不修改
+- 仅创建文件中新增的分组/用户
+- `--dry-run` 会列出所有将要创建的内容，不实际写入数据库
+
+> ⚠️ 模板文件含明文密码，导入完成后请妥善保管或删除文件。
+
+也可以通过 Dashboard 的**批量导入**页面进行可视化操作（见 §10.9）。
 
 ---
 
@@ -1770,6 +1817,62 @@ GET /api/user/usage-history?days=30  # 每日 token 历史
 ```
 
 > 字段为 0 表示该维度无限制（用户不属于任何分组，或分组未设置该项配额）。
+
+### 10.8 告警页面（v2.8.0）
+
+实时展示服务运行期间产生的 WARN / ERROR 日志，帮助管理员快速感知异常。
+
+**访问方式**：Dashboard 顶部导航点击 **"告警"**，或直接访问 `http://服务器IP:9000/dashboard/alerts`。
+
+**功能说明**：
+- 通过 **Server-Sent Events (SSE)** 实时推送新日志，无需刷新页面
+- 仅展示 WARN 及以上级别的日志，不包含 INFO/DEBUG
+- 日志格式：`时间 [级别] 消息体`，便于快速扫描
+
+**对应 API**（需管理员 Cookie 认证）：
+```
+GET /api/admin/alerts/stream    # SSE 流，长连接推送实时告警
+```
+
+### 10.9 批量导入页面（v2.8.0）
+
+通过 WebUI 一次性从模板文件批量创建分组和用户，适合初始化部署或批量入职。
+
+**访问方式**：Dashboard 顶部导航点击 **"批量导入"**，或直接访问 `http://服务器IP:9000/dashboard/import`。
+
+**页面操作步骤**：
+1. 粘贴或编辑模板内容（格式见下文）
+2. 点击 **"预览"** 查看将要创建的内容（等同于 `--dry-run`）
+3. 确认无误后点击 **"导入"** 执行
+
+**模板文件格式**：
+
+```
+# 注释以 # 开头，空行忽略
+#
+# [分组名]              — 声明分组区块
+# [分组名 llm=URL]      — 声明分组区块并绑定组级 LLM
+# 用户名 密码           — 在当前分组下创建用户
+# 用户名 密码 llm=URL   — 用户级 LLM 覆盖组默认值
+# [-]                   — 无分组区块
+
+[engineering llm=https://api.anthropic.com]
+alice  Password123
+bob    Password456 llm=https://api.openai.com
+
+[marketing]
+charlie  Marketing789
+
+[-]
+dave  NoGroup_Pass
+```
+
+**导入规则**：
+- 已存在的分组/用户 **跳过**（保留原有数据，仅创建新增）
+- 组已存在时不会重置其 LLM 绑定
+- 用户级 `llm=URL` 覆盖该用户绑定，不影响同组其他用户
+
+> ⚠️ 模板文件含明文密码，请在导入完成后妥善保管或删除。
 
 ---
 
@@ -3043,17 +3146,122 @@ DEBUG sproxy  protocol conversion skipped  reason=same_provider path=/v1/message
 - 对吞吐量无明显影响
 
 **已知限制**：
-1. **仅支持文本内容**：图片、工具调用等结构化内容会被忽略
-2. **System 消息限制**：仅支持单个 system 字段，多个 system 消息会合并
-3. **模型名称不转换**：请求中的 `model` 字段原样传递给 Ollama
-4. **Token 统计依赖后端**：如果 Ollama 不返回 usage，统计为 0
+1. **System 消息限制**：仅支持单个 system 字段，多个 system 消息会合并
+2. **Token 统计依赖后端**：如果 Ollama 不返回 usage，统计为 0
+
+> **v2.8.0 已解决的旧限制**：图片内容块（Anthropic base64 image）现已自动转换为 OpenAI `image_url` 格式；模型名称可通过 `model_mapping` 配置自动映射；OpenAI 格式错误响应会自动转换为 Anthropic 格式。
 
 #### 16.9.8 相关文档
 
 - 完整设计文档：`docs/PROTOCOL_CONVERSION.md`
-- 日志示例：`docs/PROTOCOL_CONVERSION_LOGS.md`
-- 响应转换详解：`docs/RESPONSE_CONVERSION.md`
-- 测试覆盖报告：`docs/TEST_COVERAGE_PROTOCOL_CONVERSION.md`
+
+### 16.10 v2.8.0 协议转换进阶功能
+
+v2.8.0 在 v2.6.0 的基础上大幅增强了协议转换能力，覆盖更多真实使用场景：
+
+#### 16.10.1 图片内容块转换
+
+**问题**：Claude CLI 发送带图片的请求（Anthropic `image` 类型）到 Ollama 时失败。
+
+**v2.8.0 解决方案**：自动将 Anthropic `image` 内容块转换为 OpenAI `image_url` 格式：
+
+```json
+// Anthropic 输入
+{
+  "type": "image",
+  "source": {
+    "type": "base64",
+    "media_type": "image/jpeg",
+    "data": "<base64-data>"
+  }
+}
+
+// OpenAI 输出（自动转换）
+{
+  "type": "image_url",
+  "image_url": {
+    "url": "data:image/jpeg;base64,<base64-data>"
+  }
+}
+```
+
+外部 URL 格式同样支持：`"type": "url"` 时自动提取 `url` 字段。
+
+#### 16.10.2 模型名称映射 (model_mapping)
+
+**问题**：Anthropic 模型名称（如 `claude-sonnet-4-6`）Ollama 不认识。
+
+**v2.8.0 解决方案**：在 sproxy.yaml 中配置 `model_mapping`：
+
+```yaml
+llm:
+  targets:
+    - url: "http://localhost:11434"
+      provider: "ollama"
+      name: "Local Ollama"
+      # 协议转换时的模型名称映射
+      model_mapping:
+        "claude-sonnet-4-6": "qwen2.5:32b"       # 精确匹配
+        "claude-haiku-*": "phi3:mini"             # 前缀匹配（暂不支持 glob）
+        "*": "llama3:8b"                           # 通配符兜底
+```
+
+**匹配规则**：
+1. 精确匹配优先（完整模型名）
+2. 无精确匹配时，使用 `"*"` 键的值作为默认映射
+3. 无任何匹配时，原样传递模型名
+
+#### 16.10.3 OpenAI 错误响应自动转换
+
+**问题**：Ollama 返回 OpenAI 格式错误时，Claude 客户端无法正确解析。
+
+**v2.8.0 解决方案**：自动检测 OpenAI 格式错误并转换为 Anthropic 格式：
+
+```json
+// OpenAI 错误（Ollama 返回）
+{"error": {"message": "model not found", "type": "invalid_request_error"}}
+
+// Anthropic 格式（自动转换）
+{"type": "error", "error": {"type": "invalid_request_error", "message": "model not found"}}
+```
+
+#### 16.10.4 ID 前缀替换
+
+**问题**：OpenAI 响应 ID 使用 `chatcmpl-xxx` 前缀，Claude 客户端期望 `msg_xxx`。
+
+**v2.8.0 解决方案**：自动将 `chatcmpl-` 前缀替换为 `msg_`，流式和非流式响应均处理。
+
+#### 16.10.5 Assistant Prefill 拒绝
+
+**背景**：Anthropic API 支持 assistant prefill（消息列表末尾放一条 assistant 消息，让模型续写）。OpenAI/Ollama 不支持此功能。
+
+**v2.8.0 行为**：检测到 messages 末尾有 assistant 消息时，对 OpenAI/Ollama targets 返回 HTTP 400：
+
+```json
+{"type": "error", "error": {"type": "invalid_request_error", "message": "assistant prefill is not supported for OpenAI/Ollama targets"}}
+```
+
+#### 16.10.6 Thinking 参数拒绝
+
+**背景**：Anthropic API 的扩展思考模式（`thinking` 参数）OpenAI/Ollama 不支持。
+
+**v2.8.0 行为**：检测到请求体包含 `thinking` 字段时，对 OpenAI/Ollama targets 返回 HTTP 400：
+
+```json
+{"type": "error", "error": {"type": "invalid_request_error", "message": "thinking parameter is not supported for OpenAI/Ollama targets"}}
+```
+
+#### 16.10.7 强制 LLM 绑定
+
+**背景**：未配置 LLM target 的用户/分组发起请求时，路由不明确。
+
+**v2.8.0 行为**：未找到任何 LLM target 时返回 HTTP 403：
+
+```json
+{"type": "error", "error": {"type": "permission_error", "message": "no LLM target configured for this user"}}
+```
+
+**解决方法**：通过 CLI 或 Dashboard 为用户/分组绑定 LLM target，或确保有可用的全局 target。
 
 ---
 

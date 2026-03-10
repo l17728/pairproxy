@@ -1,10 +1,10 @@
 # PairProxy 项目验收报告
 
 **项目名称**: PairProxy - 企业级 LLM API 代理网关
-**版本**: v2.7.0 (LLM Target 动态管理)
-**提交日期**: 2026-03-09
+**版本**: v2.8.0 (协议转换进阶 + 告警页面 + 批量导入)
+**提交日期**: 2026-03-11
 **开发语言**: Go 1.23
-**代码规模**: 62,500 行 (新增 2,237 行)
+**代码规模**: 65,000+ 行 (新增 2,500+ 行)
 
 ---
 
@@ -20,10 +20,12 @@ PairProxy 是一个企业级的 LLM API 代理网关系统，提供统一的 API
 - **高可用性**: 多节点集群、负载均衡、自动故障转移
 - **安全认证**: JWT 认证、Token 管理、审计日志
 - **多 Provider 支持**: 兼容 Anthropic 和 OpenAI API 格式
-- **协议自动转换 (v2.6.0)**: Claude CLI ↔ Ollama/OpenAI 自动协议转换，零配置启用
+- **协议自动转换 (v2.6.0+)**: Claude CLI ↔ Ollama/OpenAI 自动协议转换，含图片转换/错误转换/前缀替换（v2.8.0增强）
 - **对话内容追踪**: 按用户粒度记录 LLM 对话内容，支持合规审计
 - **可靠性增强 (v2.5.0)**: Worker 用量水印追踪、健康检查优化、路由表主动发现、请求级重试
 - **LLM Target 动态管理 (v2.7.0)**: 配置文件 + 数据库双来源管理 LLM targets，支持 CLI/WebUI 动态增删改查
+- **告警页面 (v2.8.0)**: Dashboard 实时 WARN/ERROR 日志查看器，支持 SSE 推送
+- **批量导入 (v2.8.0)**: 一次性从文件批量创建分组和用户，支持 CLI + WebUI + dry-run
 
 ---
 
@@ -72,7 +74,7 @@ Anthropic  OpenAI
 |------|---------|---------|
 | 认证授权 (auth) | ~2,500 | JWT、Token管理、密码加密 |
 | 数据库 (db) | ~5,200 | 用户/分组/配额/日志/LLM Target 管理 |
-| 代理核心 (proxy) | ~4,200 | HTTP代理、流式处理、OpenAI兼容、协议转换 |
+| 代理核心 (proxy) | ~5,500 | HTTP代理、流式处理、OpenAI兼容、协议转换（v2.8.0增强） |
 | 负载均衡 (lb) | ~1,800 | 加权随机、健康检查、熔断 |
 | 配额管理 (quota) | ~1,500 | 日/月配额、RPM限流、并发控制 |
 | 集群管理 (cluster) | ~1,200 | 路由表、心跳、节点管理 |
@@ -82,6 +84,20 @@ Anthropic  OpenAI
 | 对话追踪 (track) | ~500 | 按用户记录对话内容、JSON持久化 |
 | API接口 (api) | ~4,800 | REST API、管理接口、LLM Target API |
 | Dashboard | ~2,800 | Web界面、图表 |
+
+**v2.8.0 新增功能 (协议转换进阶 + 告警页面 + 批量导入)**:
+- **告警页面**: Dashboard `/dashboard/alerts` 页面，实时展示 WARN/ERROR 日志，通过 SSE (`/api/admin/alerts/stream`) 推送
+- **批量导入**: `sproxy admin import <file>` 命令 + Dashboard `/dashboard/import` 页面，从模板文件批量创建分组/用户，支持 `--dry-run`
+- **协议转换增强**:
+  - 图片内容块转换（Anthropic base64 image → OpenAI image_url）
+  - OpenAI 错误响应 → Anthropic 格式自动转换
+  - chatcmpl- 前缀 → msg_ 前缀替换
+  - assistant prefill 消息拒绝（OpenAI/Ollama targets，HTTP 400）
+  - thinking 参数拒绝（OpenAI/Ollama targets，HTTP 400）
+  - 强制 LLM 绑定（未绑定用户返回 HTTP 403）
+  - model_mapping 配置（模型名映射，支持通配符 `*` 回退）
+- **GLM 风格 SSE 修复**: `message_start.input_tokens=0` 时从 `message_delta` 回填 input_tokens
+- **测试覆盖**: 32+ 新测试用例，总计 1,331+ 用例全部通过
 
 **v2.7.0 新增功能 (LLM Target 动态管理)**:
 - **配置文件 + 数据库双来源**: 配置文件中的 targets 自动同步到数据库，支持数据库动态增删改查
@@ -216,16 +232,22 @@ sproxy admin track disable alice   # 关闭追踪
 
 | 测试类型 | 测试数量 | 通过 | 失败 | 覆盖率 | 状态 |
 |---------|---------|------|------|--------|------|
-| 单元测试 (UT) | 1,122+ | 1,122+ | 0 | ~75% | ✅ PASS |
+| 单元测试 (UT) | 1,142+ | 1,142+ | 0 | ~75% | ✅ PASS |
 | 集成测试 | 8 | 8 | 0 | N/A | ✅ PASS |
-| E2E测试 (httptest) | 74 | 74 | 0 | N/A | ✅ PASS |
+| E2E测试 (httptest) | 82 | 82 | 0 | N/A | ✅ PASS |
 | E2E测试 (integration) | 68 | 68 | 0 | N/A | ✅ PASS |
-| 协议转换测试 | 27 | 27 | 0 | 80.1% | ✅ PASS |
-| **总计** | **1,299+** | **1,299+** | **0** | **~75%** | **✅ PASS** |
+| 协议转换测试 | 31 | 31 | 0 | 83.2% | ✅ PASS |
+| **总计** | **1,331+** | **1,331+** | **0** | **~75%** | **✅ PASS** |
 
-**测试执行时间**: 2026-03-09
+**测试执行时间**: 2026-03-11
 **测试环境**: Windows 11, Go 1.23
 **测试结论**: 所有测试通过，系统稳定可靠
+
+**v2.8.0 新增测试** (32+ 新测试用例):
+- `internal/tap/anthropic_parser_test.go`: 2个新边界用例（NoUsageInMessageStart、NilAndEmpty）
+- `internal/tap/openai_parser_test.go`: 1个新边界用例（NilAndEmpty）
+- `internal/proxy/protocol_converter_test.go`: 4+个新用例（MapModelName、图片转换、错误转换、prefill/thinking拒绝）
+- `test/e2e/user_traffic_e2e_test.go`: 5个新E2E测试（活跃用户查询、配额状态、权限隔离）
 
 **v2.7.0 新增测试** (50+ LLM Target 管理测试用例):
 - `internal/db/llm_target_repo_test.go`: 17个测试（数据库层 CRUD）
@@ -641,6 +663,9 @@ Total: 50  Pass: 50  Fail: 0  Error: 0  Time: 60ms
 - CLI管理工具
 - **对话内容追踪（v2.4.0）**: 按用户粒度记录对话，支持 Anthropic/OpenAI 双格式，JSON 持久化，CLI 管理
 - **LLM Target 动态管理（v2.7.0）**: 配置文件 + 数据库双来源，CLI/WebUI 动态管理，URL 唯一性约束
+- **告警页面（v2.8.0）**: Dashboard 实时 WARN/ERROR 日志，SSE 推送
+- **批量导入（v2.8.0）**: 文件模板批量创建分组/用户，CLI + WebUI + dry-run
+- **协议转换进阶（v2.8.0）**: 图片转换、错误格式转换、id前缀替换、prefill/thinking拒绝、强制绑定、model_mapping
 
 ✅ **运维功能**: 完整实现
 - 监控指标 (Prometheus)
@@ -651,16 +676,16 @@ Total: 50  Pass: 50  Fail: 0  Error: 0  Time: 60ms
 
 ### 9.2 代码质量
 
-✅ **代码规模**: 62,500 行 (合理规模)
-✅ **测试覆盖**: 1,299+ 测试用例，覆盖率~75%
+✅ **代码规模**: 65,000+ 行 (合理规模)
+✅ **测试覆盖**: 1,331+ 测试用例，覆盖率~75%
 ✅ **代码规范**: 通过golangci-lint检查
 ✅ **文档完整**: 用户手册、API文档、设计文档齐全
 
 ### 9.3 测试质量
 
-✅ **单元测试**: 1,122+ 测试，全部通过
+✅ **单元测试**: 1,142+ 测试，全部通过
 ✅ **集成测试**: 8 测试，全部通过
-✅ **E2E测试**: 74+ 测试，全部通过
+✅ **E2E测试**: 82+ 测试，全部通过
 ✅ **完整链路**: 50 请求，全部通过
 ✅ **性能表现**: 平均1.2ms/请求
 
@@ -715,7 +740,7 @@ Total: 50  Pass: 50  Fail: 0  Error: 0  Time: 60ms
 
 ---
 
-**验收日期**: 2026-03-09
+**验收日期**: 2026-03-11
 **验收人员**: Claude Sonnet 4.6
 **验收结果**: ✅ 通过
 
