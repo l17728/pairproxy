@@ -504,8 +504,9 @@ func runStart(cmd *cobra.Command, args []string) error {
 	)
 
 	// F-5: 多 API Key 管理（需要 key_encryption_key 配置）
+	var apiKeyRepo *db.APIKeyRepo
 	if cfg.Admin.KeyEncryptionKey != "" {
-		apiKeyRepo := db.NewAPIKeyRepo(database, logger)
+		apiKeyRepo = db.NewAPIKeyRepo(database, logger)
 		encryptFn := func(plain string) (string, error) {
 			return auth.Encrypt(plain, cfg.Admin.KeyEncryptionKey)
 		}
@@ -645,6 +646,8 @@ func runStart(cmd *cobra.Command, args []string) error {
 			cfg.Admin.PasswordHash, adminTokenTTL,
 		)
 		dashHandler.SetLLMDeps(llmBindingRepo, sp.LLMTargetStatuses)
+		dashHandler.SetLLMTargetRepo(llmTargetRepo)
+		dashHandler.SetAPIKeyRepo(apiKeyRepo)
 		dashHandler.SetTokenRepo(tokenRepo)
 		dashHandler.SetDrainFunctions(sp.Drain, sp.Undrain, sp.GetDrainStatus)
 		dashHandler.RegisterRoutes(mux)
@@ -2157,6 +2160,13 @@ func buildLogger(atom zap.AtomicLevel) *zap.Logger {
 // buildDebugFileLogger 创建写入独立文件的 DEBUG 级日志器，用于转发内容记录。
 // 使用 JSON 格式，DEBUG 级别（不受主日志 level 限制），适合高频写入。
 func buildDebugFileLogger(path string) (*zap.Logger, error) {
+	// zap 内置 sink 无需检查目录
+	if path != "stderr" && path != "stdout" {
+		dir := filepath.Dir(path)
+		if _, err := os.Stat(dir); os.IsNotExist(err) {
+			return nil, fmt.Errorf("directory %q does not exist; please create it manually before starting (mkdir -p %s)", dir, dir)
+		}
+	}
 	cfg := zap.NewProductionConfig()
 	cfg.Level = zap.NewAtomicLevelAt(zapcore.DebugLevel)
 	cfg.OutputPaths = []string{path}

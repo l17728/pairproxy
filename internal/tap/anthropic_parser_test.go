@@ -258,6 +258,107 @@ func TestBuildAnthropicSSE(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// TestSSEParserCacheTokens：含 prompt caching 时输入 token 正确求和
+// ---------------------------------------------------------------------------
+
+func TestSSEParserCacheTokens(t *testing.T) {
+	// 模拟 Claude Code 场景：系统提示被缓存，只有当前消息计入 input_tokens
+	// 总输入 = 10(input) + 0(cache_creation) + 500(cache_read) = 510
+	sse := `event: message_start
+data: {"type":"message_start","message":{"id":"msg_x","type":"message","role":"assistant","content":[],"model":"claude-opus-4-6","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":1,"cache_read_input_tokens":500,"cache_creation_input_tokens":0}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":30}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`
+
+	var gotInput, gotOutput int
+	var called bool
+	parser := NewAnthropicSSEParser(func(in, out int) {
+		gotInput = in
+		gotOutput = out
+		called = true
+	})
+	parser.Feed([]byte(sse))
+
+	if !called {
+		t.Fatal("OnComplete callback was not called")
+	}
+	if gotInput != 510 {
+		t.Errorf("inputTokens = %d, want 510 (10 input + 500 cache_read)", gotInput)
+	}
+	if gotOutput != 30 {
+		t.Errorf("outputTokens = %d, want 30", gotOutput)
+	}
+}
+
+// TestSSEParserCacheCreationTokens：首次写入缓存时 cache_creation_input_tokens 也计入总输入
+func TestSSEParserCacheCreationTokens(t *testing.T) {
+	// 首次请求：系统提示写入缓存
+	// 总输入 = 5(input) + 1000(cache_creation) + 0(cache_read) = 1005
+	sse := `event: message_start
+data: {"type":"message_start","message":{"id":"msg_y","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-6","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":5,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":1000}}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":20}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`
+
+	var gotInput int
+	parser := NewAnthropicSSEParser(func(in, _ int) { gotInput = in })
+	parser.Feed([]byte(sse))
+
+	if gotInput != 1005 {
+		t.Errorf("inputTokens = %d, want 1005 (5 input + 1000 cache_creation)", gotInput)
+	}
+}
+
+// TestNonStreamingCacheTokens：非流式响应含 prompt caching 时输入 token 正确求和
+func TestNonStreamingCacheTokens(t *testing.T) {
+	body := []byte(`{
+		"id": "msg_123",
+		"type": "message",
+		"role": "assistant",
+		"content": [{"type": "text", "text": "Hello!"}],
+		"model": "claude-opus-4-6",
+		"stop_reason": "end_turn",
+		"usage": {
+			"input_tokens": 10,
+			"output_tokens": 25,
+			"cache_read_input_tokens": 800,
+			"cache_creation_input_tokens": 0
+		}
+	}`)
+
+	in, out, err := ParseNonStreaming(body)
+	if err != nil {
+		t.Fatalf("ParseNonStreaming: %v", err)
+	}
+	// 总输入 = 10 + 800 + 0 = 810
+	if in != 810 {
+		t.Errorf("inputTokens = %d, want 810 (10 + 800 cache_read)", in)
+	}
+	if out != 25 {
+		t.Errorf("outputTokens = %d, want 25", out)
+	}
+}
+
 // splitLines 按换行符分割字符串（辅助函数）。
 func splitLines(s string) []string {
 	var lines []string

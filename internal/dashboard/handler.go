@@ -121,6 +121,11 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 
 	// 用户统计 API（dashboard-user-token-stats）
 	mux.Handle("GET /dashboard/api/user-stats", h.requireSession(http.HandlerFunc(h.handleUserStats)))
+
+	// my-usage 页面数据 API（session 认证，无需 Bearer token）
+	mux.Handle("GET /api/dashboard/active-users", h.requireSession(http.HandlerFunc(h.handleDashboardActiveUsers)))
+	mux.Handle("GET /api/dashboard/user-quota", h.requireSession(http.HandlerFunc(h.handleDashboardUserQuota)))
+	mux.Handle("GET /api/dashboard/user-history", h.requireSession(http.HandlerFunc(h.handleDashboardUserHistory)))
 }
 
 // SetLLMDeps 设置 LLM 绑定相关依赖（可选；不设置则 LLM 页面显示空状态）。
@@ -900,8 +905,14 @@ func (h *Handler) handleUserStats(w http.ResponseWriter, r *http.Request) {
 		if stat.DaysActive > 0 {
 			avgDaily = stat.TotalTokens / int64(stat.DaysActive)
 		}
-		if stat.MonthsActive > 0 {
-			avgMonthly = stat.TotalTokens / int64(stat.MonthsActive)
+		// MonthsActive 由 SQL CAST(days/30 AS INTEGER) 计算，不足 30 天时为 0。
+		// 用 max(1, MonthsActive) 作除数，确保新用户也能显示有意义的月均值。
+		months := stat.MonthsActive
+		if months < 1 {
+			months = 1
+		}
+		if stat.TotalTokens > 0 {
+			avgMonthly = stat.TotalTokens / int64(months)
 		}
 
 		var firstUsed, lastUsed string

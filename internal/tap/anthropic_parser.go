@@ -11,7 +11,8 @@ import (
 // Anthropic SSE 事件格式（参考官方文档）
 //
 //   event: message_start
-//   data: {"type":"message_start","message":{"usage":{"input_tokens":100,"output_tokens":0}}}
+//   data: {"type":"message_start","message":{"usage":{"input_tokens":10,"output_tokens":1,
+//          "cache_read_input_tokens":200,"cache_creation_input_tokens":0}}}
 //
 //   event: content_block_delta
 //   data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello"}}
@@ -21,6 +22,8 @@ import (
 //
 //   event: message_stop
 //   data: {"type":"message_stop"}
+//
+// 注意：总输入 token = input_tokens + cache_read_input_tokens + cache_creation_input_tokens
 // ---------------------------------------------------------------------------
 
 // OnCompleteFunc 是 token 统计完成后的回调函数类型。
@@ -126,8 +129,10 @@ type msgPayload struct {
 }
 
 type usageBlock struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 }
 
 // parseSSEData 解析 SSE data 字段 JSON，提取 token 信息。
@@ -140,9 +145,13 @@ func (p *AnthropicSSEParser) parseSSEData(payload []byte) {
 
 	switch event.Type {
 	case "message_start":
-		// {"type":"message_start","message":{"usage":{"input_tokens":100,"output_tokens":0}}}
+		// {"type":"message_start","message":{"usage":{"input_tokens":10,"output_tokens":1,
+		//   "cache_read_input_tokens":200,"cache_creation_input_tokens":0}}}
+		// 总输入 = input_tokens + cache_read_input_tokens + cache_creation_input_tokens
+		// 参见 Anthropic 协议文档 §4.1：input_tokens 仅为最后一个 cache 断点之后的 token 数
 		if event.Message != nil && event.Message.Usage != nil {
-			p.inputTokens = event.Message.Usage.InputTokens
+			u := event.Message.Usage
+			p.inputTokens = u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
 		}
 
 	case "message_delta":
@@ -167,22 +176,27 @@ func (p *AnthropicSSEParser) parseSSEData(payload []byte) {
 // nonStreamingResponse 用于解析 Anthropic 非 streaming 响应的 usage 字段。
 type nonStreamingResponse struct {
 	Usage struct {
-		InputTokens  int `json:"input_tokens"`
-		OutputTokens int `json:"output_tokens"`
+		InputTokens              int `json:"input_tokens"`
+		OutputTokens             int `json:"output_tokens"`
+		CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+		CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 	} `json:"usage"`
 }
 
 // ParseNonStreaming 解析 Anthropic 普通（非 streaming）JSON 响应体，
 // 返回 inputTokens 和 outputTokens。
+// inputTokens 为 input_tokens + cache_read_input_tokens + cache_creation_input_tokens 之和
+// （参见 Anthropic 协议文档 §4.1：input_tokens 不等于完整输入总量）。
 // body 应为完整的响应 JSON，如：
 //
-//	{"id":"msg_1","type":"message","usage":{"input_tokens":100,"output_tokens":50},...}
+//	{"id":"msg_1","type":"message","usage":{"input_tokens":100,"output_tokens":50,...},...}
 func ParseNonStreaming(body []byte) (inputTokens, outputTokens int, err error) {
 	var resp nonStreamingResponse
 	if jsonErr := json.Unmarshal(body, &resp); jsonErr != nil {
 		return 0, 0, jsonErr
 	}
-	return resp.Usage.InputTokens, resp.Usage.OutputTokens, nil
+	totalInput := resp.Usage.InputTokens + resp.Usage.CacheReadInputTokens + resp.Usage.CacheCreationInputTokens
+	return totalInput, resp.Usage.OutputTokens, nil
 }
 
 // ParseNonStreaming 实现 ResponseParser 接口：解析 Anthropic 非 streaming JSON 响应。

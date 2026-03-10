@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -592,6 +593,13 @@ func init() {
 // buildDebugFileLogger 构建写入独立文件的 debug 日志器，
 // 用于记录 c-proxy 的双向转发内容（请求体、响应体、streaming chunks）。
 func buildDebugFileLogger(path string) (*zap.Logger, error) {
+	// zap 内置 sink 无需检查目录
+	if path != "stderr" && path != "stdout" {
+		dir := filepath.Dir(path)
+		if _, err := os.Stat(dir); os.IsNotExist(err) {
+			return nil, fmt.Errorf("directory %q does not exist; please create it manually before starting (mkdir -p %s)", dir, dir)
+		}
+	}
 	cfg := zap.NewProductionConfig()
 	cfg.Level = zap.NewAtomicLevelAt(zapcore.DebugLevel)
 	cfg.OutputPaths = []string{path}

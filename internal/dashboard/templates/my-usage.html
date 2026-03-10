@@ -85,9 +85,9 @@ let currentUsername = ''; // 当前选中的用户名
 // 加载活跃用户列表（管理员）
 async function loadActiveUsers() {
   try {
-    const res = await fetch('/api/admin/active-users?days=30');
+    const res = await fetch('/api/dashboard/active-users?days=30');
     if (!res.ok) {
-      console.error('Failed to load active users');
+      console.error('Failed to load active users:', res.status);
       return;
     }
     const users = await res.json();
@@ -101,7 +101,9 @@ async function loadActiveUsers() {
       select.appendChild(opt);
     });
 
-    console.log(`Loaded ${users.length} active users`);
+    if (users.length === 0) {
+      select.innerHTML = '<option value="">暂无活跃用户</option>';
+    }
   } catch (err) {
     console.error('Failed to load active users:', err);
   }
@@ -109,11 +111,13 @@ async function loadActiveUsers() {
 
 // 加载配额状态
 async function loadQuotaStatus() {
+  if (!currentUsername) return;
   try {
-    const url = currentUsername
-      ? `/api/user/quota-status?username=${encodeURIComponent(currentUsername)}`
-      : '/api/user/quota-status';
-    const res = await fetch(url);
+    const res = await fetch(`/api/dashboard/user-quota?username=${encodeURIComponent(currentUsername)}`);
+    if (!res.ok) {
+      console.error('Failed to load quota status:', res.status);
+      return;
+    }
     const data = await res.json();
 
     // 更新日配额
@@ -148,13 +152,14 @@ async function loadQuotaStatus() {
 
 // 加载用量历史
 async function loadUsageHistory(days) {
+  if (!currentUsername) return;
   try {
-    const url = currentUsername
-      ? `/api/user/usage-history?days=${days}&username=${encodeURIComponent(currentUsername)}`
-      : `/api/user/usage-history?days=${days}`;
-    const res = await fetch(url);
+    const res = await fetch(`/api/dashboard/user-history?username=${encodeURIComponent(currentUsername)}&days=${days}`);
+    if (!res.ok) {
+      console.error('Failed to load usage history:', res.status);
+      return;
+    }
     const data = await res.json();
-
     updateUsageChart(data.history);
   } catch (err) {
     console.error('Failed to load usage history:', err);
@@ -215,9 +220,7 @@ document.getElementById('userSelect').addEventListener('change', (e) => {
   }
 });
 
-// 页面加载时初始化
+// 页面加载时初始化（先加载用户列表，等待选择后再加载数据）
 loadActiveUsers();
-loadQuotaStatus();
-loadUsageHistory(30);
 </script>
 {{end}}
