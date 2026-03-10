@@ -1845,3 +1845,162 @@ func TestConvertAnthropicToOpenAIRequest_StopSequences(t *testing.T) {
 		t.Errorf("stop[1] = %q, want END", stopSlice[1])
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Tests derived from actual production traffic captured in debug.txt.
+//
+// debug.txt shows two concurrent Claude Code (claude-cli/2.0.76) requests
+// routed through sproxy to a GLM-5.0 Anthropic-compatible backend.
+//
+// Although GLM-5.0 itself uses the Anthropic API format (no conversion
+// needed), the request bodies represent the exact shape Claude Code sends:
+//   - "system" as an array of text blocks (sometimes with cache_control)
+//   - Multi-turn messages with content-block arrays (not plain strings)
+//   - A trailing assistant message acting as a prefill injection
+//   - "tools": [] — empty tools array
+//
+// These test cases verify that the protocol converter handles all of these
+// patterns correctly when routing to an OpenAI/Ollama target.
+// ---------------------------------------------------------------------------
+
+// TestConvertDebugTxt_SystemArrayWithCacheControl mirrors the actual Claude
+// Code system-prompt format: system is an array of text blocks, some carrying
+// cache_control.  The OpenAI request must:
+//   1. Fold all blocks into a single system message joined with "\n"
+//   2. Silently drop cache_control (OpenAI has no caching concept)
+func TestConvertDebugTxt_SystemArrayWithCacheControl(t *testing.T) {
+	logger := zap.NewNop()
+
+	// Mirrors the real Claude Code system field structure seen in debug.txt.
+	// Request 2 (89 kB) has cache_control on the first block; request 1 does
+	// not — we test both variants here.
+	body := []byte(`{
+		"model": "GLM-5.0",
+		"max_tokens": 32000,
+		"stream": true,
+		"system": [
+			{"type": "text", "text": "You are Claude Code, Anthropic's official CLI for Claude.", "cache_control": {"type": "ephemeral"}},
+			{"type": "text", "text": "Analyze if this message indicates a new conversation topic."}
+		],
+		"messages": [{"role": "user", "content": "hello"}]
+	}`)
+
+	converted, _, err := convertAnthropicToOpenAIRequest(body, logger, "req-debug-system", nil)
+	require.NoError(t, err)
+
+	var req map[string]interface{}
+	require.NoError(t, json.Unmarshal(converted, &req))
+
+	messages := req["messages"].([]interface{})
+	require.GreaterOrEqual(t, len(messages), 2, "expected system msg + user msg")
+
+	sysMsg := messages[0].(map[string]interface{})
+	assert.Equal(t, "system", sysMsg["role"])
+	// Both system blocks must be present, joined by "\n"; cache_control dropped
+	wantSystem := "You are Claude Code, Anthropic's official CLI for Claude.\nAnalyze if this message indicates a new conversation topic."
+	assert.Equal(t, wantSystem, sysMsg["content"])
+	// cache_control must not bleed into the converted message
+	_, hasCacheControl := sysMsg["cache_control"]
+	assert.False(t, hasCacheControl, "cache_control must be stripped from system message")
+}
+
+// TestConvertDebugTxt_EmptyToolsArray verifies that when the Anthropic request
+// carries "tools": [] (as Claude Code always sends), the converted OpenAI
+// request does NOT include a "tools" key (OpenAI rejects empty tools arrays
+// on some backends).
+func TestConvertDebugTxt_EmptyToolsArray(t *testing.T) {
+	logger := zap.NewNop()
+
+	// Exact shape from debug.txt request 1 body (tools key present but empty).
+	body := []byte(`{
+		"model": "GLM-5.0",
+		"max_tokens": 32000,
+		"stream": true,
+		"tools": [],
+		"messages": [{"role": "user", "content": "hello"}]
+	}`)
+
+	converted, _, err := convertAnthropicToOpenAIRequest(body, logger, "req-debug-empty-tools", nil)
+	require.NoError(t, err)
+
+	var req map[string]interface{}
+	require.NoError(t, json.Unmarshal(converted, &req))
+
+	_, hasTools := req["tools"]
+	assert.False(t, hasTools, "empty Anthropic tools array must not produce a tools key in OpenAI request")
+}
+
+// TestConvertDebugTxt_PrefillAsContentBlocks mirrors debug.txt request 1
+// where the trailing assistant message uses content-block array format:
+//
+//	{"role":"assistant","content":[{"type":"text","text":"{"}]}
+//
+// This is a prefill (assistant opening bracket injection), which must be
+// rejected with ErrPrefillNotSupported for OpenAI/Ollama targets.
+func TestConvertDebugTxt_PrefillAsContentBlocks(t *testing.T) {
+	logger := zap.NewNop()
+
+	// Exact two-message pattern from debug.txt request 1.
+	body := []byte(`{
+		"model": "GLM-5.0",
+		"max_tokens": 32000,
+		"stream": true,
+		"system": [
+			{"type": "text", "text": "You are Claude Code, Anthropic's official CLI for Claude."},
+			{"type": "text", "text": "Analyze if this message indicates a new conversation topic."}
+		],
+		"messages": [
+			{"role": "user",      "content": [{"type": "text", "text": "hello"}]},
+			{"role": "assistant", "content": [{"type": "text", "text": "{"}]}
+		],
+		"tools": [],
+		"metadata": {"user_id": "user_abc123"},
+		"max_tokens": 32000
+	}`)
+
+	_, _, err := convertAnthropicToOpenAIRequest(body, logger, "req-debug-prefill", nil)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrPrefillNotSupported,
+		"trailing assistant content-block message must be rejected as prefill")
+}
+
+// TestConvertDebugTxt_MultiTurnNoLastAssistant verifies that a normal
+// multi-turn conversation (the pattern in debug.txt request 2) ending with a
+// user message is NOT rejected and produces correct messages.
+func TestConvertDebugTxt_MultiTurnNoLastAssistant(t *testing.T) {
+	logger := zap.NewNop()
+
+	// Simplified version of debug.txt request 2 message structure:
+	// user → assistant → user (no trailing assistant = no prefill)
+	body := []byte(`{
+		"model": "GLM-5.0",
+		"max_tokens": 32000,
+		"stream": true,
+		"system": [{"type": "text", "text": "You are a helpful assistant."}],
+		"messages": [
+			{"role": "user",      "content": [{"type": "text", "text": "hello"}]},
+			{"role": "assistant", "content": [{"type": "text", "text": "Hello! How can I help?"}]},
+			{"role": "user",      "content": "hello"}
+		]
+	}`)
+
+	converted, newPath, err := convertAnthropicToOpenAIRequest(body, logger, "req-debug-multiturn", nil)
+	require.NoError(t, err, "multi-turn conversation not ending with assistant must not be rejected")
+	assert.Equal(t, "/v1/chat/completions", newPath)
+
+	var req map[string]interface{}
+	require.NoError(t, json.Unmarshal(converted, &req))
+
+	messages := req["messages"].([]interface{})
+	// system + user + assistant + user = 4 messages
+	require.Len(t, messages, 4)
+
+	last := messages[3].(map[string]interface{})
+	assert.Equal(t, "user", last["role"])
+	assert.Equal(t, "hello", last["content"])
+
+	// stream_options must be injected (stream:true)
+	streamOpts, ok := req["stream_options"].(map[string]interface{})
+	require.True(t, ok, "stream_options must be present for streaming request")
+	assert.True(t, streamOpts["include_usage"].(bool))
+}
