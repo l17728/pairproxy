@@ -96,14 +96,14 @@ func TestPrintQuotaRow_ExactlyAtLimit(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// buildLogger — 覆盖 buildLogger 函数
+// buildCore — 覆盖 buildCore 函数
 // ---------------------------------------------------------------------------
 
 func TestBuildLogger_ReturnsNonNil(t *testing.T) {
 	atom := zap.NewAtomicLevel()
-	logger := buildLogger(atom)
-	if logger == nil {
-		t.Error("buildLogger should return non-nil logger")
+	core := buildCore(atom)
+	if core == nil {
+		t.Error("buildCore should return non-nil core")
 	}
 }
 
@@ -113,9 +113,9 @@ func TestBuildLogger_DifferentLevels(t *testing.T) {
 		if err := atom.UnmarshalText([]byte(lvlStr)); err != nil {
 			t.Fatalf("UnmarshalText(%q): %v", lvlStr, err)
 		}
-		logger := buildLogger(atom)
-		if logger == nil {
-			t.Errorf("buildLogger(%q) returned nil", lvlStr)
+		core := buildCore(atom)
+		if core == nil {
+			t.Errorf("buildCore(%q) returned nil", lvlStr)
 		}
 	}
 }

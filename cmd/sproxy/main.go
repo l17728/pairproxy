@@ -32,6 +32,7 @@ import (
 	"github.com/l17728/pairproxy/internal/config"
 	"github.com/l17728/pairproxy/internal/dashboard"
 	"github.com/l17728/pairproxy/internal/db"
+	"github.com/l17728/pairproxy/internal/eventlog"
 	"github.com/l17728/pairproxy/internal/lb"
 	"github.com/l17728/pairproxy/internal/metrics"
 	pptel "github.com/l17728/pairproxy/internal/otel"
@@ -89,8 +90,13 @@ func init() {
 
 func runStart(cmd *cobra.Command, args []string) error {
 	// 初始化日志（使用 AtomicLevel 支持 SIGHUP 动态调整日志级别）
+	// eventlog Core 拦截 WARN+ 日志写入内存环形缓冲区，供 Dashboard 告警页使用。
 	atom := zap.NewAtomicLevelAt(zapcore.InfoLevel)
-	logger := buildLogger(atom)
+	evtLog := eventlog.New(500)
+	logger := zap.New(
+		zapcore.NewTee(buildCore(atom), eventlog.NewCore(evtLog)),
+		zap.AddCaller(),
+	)
 	defer logger.Sync() //nolint:errcheck
 
 	// 加载配置
@@ -662,6 +668,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 		dashHandler.SetAPIKeyRepo(apiKeyRepo)
 		dashHandler.SetTokenRepo(tokenRepo)
 		dashHandler.SetDrainFunctions(sp.Drain, sp.Undrain, sp.GetDrainStatus)
+		dashHandler.SetEventLog(evtLog)
 		dashHandler.RegisterRoutes(mux)
 		logger.Info("dashboard registered at /dashboard/")
 	}
@@ -2155,18 +2162,17 @@ func wrapOtelHTTP(h http.Handler, operation string) http.Handler {
 	return otelhttp.NewHandler(h, operation)
 }
 
-// buildLogger 使用给定的 AtomicLevel 构建一个结构化 JSON logger。
-// AtomicLevel 允许在运行时（例如通过 SIGHUP）动态修改日志级别。
-func buildLogger(atom zap.AtomicLevel) *zap.Logger {
+// buildCore 使用给定的 AtomicLevel 构建一个结构化 JSON zapcore.Core。
+// 返回 Core 而非 Logger，以便调用方可以通过 zapcore.NewTee 组合多个 Core。
+func buildCore(atom zap.AtomicLevel) zapcore.Core {
 	encCfg := zap.NewProductionEncoderConfig()
 	encCfg.TimeKey = "ts"
 	encCfg.EncodeTime = zapcore.ISO8601TimeEncoder
-	core := zapcore.NewCore(
+	return zapcore.NewCore(
 		zapcore.NewJSONEncoder(encCfg),
 		zapcore.AddSync(os.Stderr),
 		atom,
 	)
-	return zap.New(core, zap.AddCaller())
 }
 
 // buildDebugFileLogger 创建写入独立文件的 DEBUG 级日志器，用于转发内容记录。

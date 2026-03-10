@@ -1,0 +1,209 @@
+{{template "layout" .}}
+{{define "content"}}
+<div class="max-w-7xl mx-auto">
+
+  <div class="flex items-center justify-between mb-6">
+    <h2 class="text-xl font-bold text-gray-800">系统告警与错误</h2>
+    <div class="flex items-center gap-3">
+      <!-- 过滤器 -->
+      <div class="flex rounded-lg border border-gray-200 overflow-hidden text-sm">
+        <button onclick="setFilter('all')" id="filterAll"
+          class="filter-btn active px-3 py-1.5 bg-indigo-600 text-white font-medium transition-colors">全部</button>
+        <button onclick="setFilter('error')" id="filterError"
+          class="filter-btn px-3 py-1.5 bg-white text-gray-600 hover:bg-gray-50 transition-colors">仅错误</button>
+        <button onclick="setFilter('warn')" id="filterWarn"
+          class="filter-btn px-3 py-1.5 bg-white text-gray-600 hover:bg-gray-50 transition-colors">仅警告</button>
+      </div>
+      <!-- 状态指示 -->
+      <span id="liveIndicator" class="flex items-center gap-1.5 text-xs text-gray-500">
+        <span class="inline-block w-2 h-2 rounded-full bg-green-400 animate-pulse"></span>实时
+      </span>
+      <!-- 手动刷新 -->
+      <button onclick="fetchEvents(true)" id="refreshBtn"
+        class="text-xs text-indigo-600 hover:text-indigo-800 border border-indigo-200 rounded px-2 py-1 transition-colors">
+        ↻ 刷新
+      </button>
+    </div>
+  </div>
+
+  <!-- 事件表格 -->
+  <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="border-b border-gray-100 bg-gray-50 text-left text-xs text-gray-500 font-medium">
+          <th class="px-4 py-3 w-36">时间</th>
+          <th class="px-3 py-3 w-16">级别</th>
+          <th class="px-3 py-3 w-36">来源</th>
+          <th class="px-3 py-3">消息</th>
+          <th class="px-3 py-3 w-64">字段</th>
+        </tr>
+      </thead>
+      <tbody id="eventsBody">
+        <!-- 初始加载占位 -->
+        <tr id="loadingRow">
+          <td colspan="5" class="px-4 py-8 text-center text-sm text-gray-400">正在加载…</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- 状态栏 -->
+  <div class="mt-3 flex items-center justify-between text-xs text-gray-400">
+    <span id="statusText">—</span>
+    <span>容量上限 500 条 · 重启后清空</span>
+  </div>
+</div>
+
+<script>
+(function() {
+  var currentFilter = 'all';
+  var lastEventTime = null;   // ISO string of newest event we have
+  var allEvents = [];         // all fetched events (newest first)
+  var refreshTimer = null;
+
+  /* ── 过滤器 ── */
+  window.setFilter = function(f) {
+    currentFilter = f;
+    document.querySelectorAll('.filter-btn').forEach(function(btn) {
+      btn.classList.remove('bg-indigo-600', 'text-white', 'font-medium', 'active');
+      btn.classList.add('bg-white', 'text-gray-600');
+    });
+    var active = document.getElementById('filter' + f.charAt(0).toUpperCase() + f.slice(1));
+    if (active) {
+      active.classList.add('bg-indigo-600', 'text-white', 'font-medium');
+      active.classList.remove('bg-white', 'text-gray-600');
+    }
+    renderTable();
+  };
+
+  /* ── 数据获取 ── */
+  window.fetchEvents = function(full) {
+    var url = '/api/dashboard/events';
+    if (!full && lastEventTime) {
+      url += '?since=' + encodeURIComponent(lastEventTime);
+    } else {
+      url += '?limit=200';
+    }
+
+    fetch(url)
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (!data.events) return;
+        if (full) {
+          allEvents = data.events;
+        } else {
+          // Prepend new events (they arrive newest-first already)
+          allEvents = data.events.concat(allEvents);
+          // Cap at 300 to avoid DOM bloat
+          if (allEvents.length > 300) allEvents = allEvents.slice(0, 300);
+        }
+        if (allEvents.length > 0) {
+          lastEventTime = allEvents[0].time;
+        }
+        renderTable();
+        updateStatus();
+      })
+      .catch(function() {
+        document.getElementById('liveIndicator').innerHTML =
+          '<span class="inline-block w-2 h-2 rounded-full bg-red-400"></span>连接失败';
+      });
+  };
+
+  /* ── 渲染 ── */
+  function renderTable() {
+    var tbody = document.getElementById('eventsBody');
+    var loadRow = document.getElementById('loadingRow');
+    if (loadRow) loadRow.remove();
+
+    var filtered = allEvents.filter(function(e) {
+      if (currentFilter === 'all') return true;
+      return e.level === currentFilter;
+    });
+
+    if (filtered.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" class="px-4 py-8 text-center text-sm text-gray-400">' +
+        (currentFilter === 'all' ? '暂无告警' : '暂无' + (currentFilter === 'error' ? '错误' : '警告') + '事件') + '</td></tr>';
+      return;
+    }
+
+    var rows = filtered.map(function(e) {
+      var isError = e.level === 'error';
+      var rowBg = isError ? 'bg-red-50 hover:bg-red-100' : 'bg-amber-50 hover:bg-amber-100';
+      var badge = isError
+        ? '<span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-semibold bg-red-100 text-red-700">ERROR</span>'
+        : '<span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-semibold bg-amber-100 text-amber-700">WARN</span>';
+
+      var ts = formatTime(e.time);
+      var logger = escHtml(e.logger || '—');
+      var caller = e.caller ? ' <span class="text-gray-400 text-xs">(' + escHtml(e.caller) + ')</span>' : '';
+      var msg = escHtml(e.message || '');
+      var fields = formatFields(e.fields);
+
+      return '<tr class="' + rowBg + ' border-b border-gray-100 last:border-0 align-top">' +
+        '<td class="px-4 py-2.5 text-xs text-gray-500 whitespace-nowrap font-mono">' + ts + '</td>' +
+        '<td class="px-3 py-2.5">' + badge + '</td>' +
+        '<td class="px-3 py-2.5 text-xs text-gray-600 font-mono">' + logger + caller + '</td>' +
+        '<td class="px-3 py-2.5 text-gray-800 font-medium">' + msg + '</td>' +
+        '<td class="px-3 py-2.5 text-xs text-gray-500 font-mono">' + fields + '</td>' +
+        '</tr>';
+    });
+
+    tbody.innerHTML = rows.join('');
+  }
+
+  /* ── 辅助函数 ── */
+  function formatTime(iso) {
+    if (!iso) return '—';
+    try {
+      var d = new Date(iso);
+      var pad = function(n) { return n < 10 ? '0' + n : n; };
+      return d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate()) +
+        ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+    } catch(e) { return iso; }
+  }
+
+  function formatFields(fields) {
+    if (!fields || Object.keys(fields).length === 0) return '<span class="text-gray-300">—</span>';
+    var parts = [];
+    Object.keys(fields).forEach(function(k) {
+      var v = fields[k];
+      if (v === null || v === undefined) return;
+      var vStr = (typeof v === 'object') ? JSON.stringify(v) : String(v);
+      // Truncate long values
+      if (vStr.length > 60) vStr = vStr.slice(0, 57) + '…';
+      parts.push('<span class="text-gray-400">' + escHtml(k) + '=</span>' + escHtml(vStr));
+    });
+    return parts.join('<br>');
+  }
+
+  function escHtml(s) {
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function updateStatus() {
+    var total = allEvents.length;
+    var errors = allEvents.filter(function(e){ return e.level === 'error'; }).length;
+    var warns  = allEvents.filter(function(e){ return e.level === 'warn'; }).length;
+    var now = new Date();
+    var pad = function(n) { return n < 10 ? '0' + n : n; };
+    var ts = pad(now.getHours()) + ':' + pad(now.getMinutes()) + ':' + pad(now.getSeconds());
+    document.getElementById('statusText').textContent =
+      '共 ' + total + ' 条（错误 ' + errors + '，警告 ' + warns + '）· 更新于 ' + ts;
+  }
+
+  /* ── 自动刷新 ── */
+  function startAutoRefresh() {
+    if (refreshTimer) clearInterval(refreshTimer);
+    refreshTimer = setInterval(function() { fetchEvents(false); }, 15000);
+  }
+
+  /* ── 初始化 ── */
+  fetchEvents(true);
+  startAutoRefresh();
+})();
+</script>
+{{end}}

@@ -18,6 +18,7 @@ import (
 	"github.com/l17728/pairproxy/internal/api"
 	"github.com/l17728/pairproxy/internal/auth"
 	"github.com/l17728/pairproxy/internal/db"
+	"github.com/l17728/pairproxy/internal/eventlog"
 	"github.com/l17728/pairproxy/internal/proxy"
 )
 
@@ -42,6 +43,7 @@ type Handler struct {
 	drainFn           func() error                   // 可选，进入排水模式
 	undrainFn         func() error                   // 可选，退出排水模式
 	drainStatusFn     func() proxy.DrainStatus       // 可选，查询排水状态
+	eventLog          *eventlog.Log                  // 可选，内存告警事件缓冲区
 
 	// 用户统计缓存（5 分钟 TTL，PRD NFR-缓存要求）
 	userStatsCacheMu  sync.Mutex
@@ -57,6 +59,9 @@ func (h *Handler) SetLLMTargetRepo(repo *db.LLMTargetRepo) { h.llmTargetRepo = r
 
 // SetAPIKeyRepo 设置 APIKeyRepo（用于 API Key 管理）
 func (h *Handler) SetAPIKeyRepo(repo *db.APIKeyRepo) { h.apiKeyRepo = repo }
+
+// SetEventLog 设置内存事件日志（用于 /dashboard/alerts 页面）
+func (h *Handler) SetEventLog(log *eventlog.Log) { h.eventLog = log }
 
 // NewHandler 创建 Dashboard Handler
 func NewHandler(
@@ -123,6 +128,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// 批量导入
 	mux.Handle("GET /dashboard/import", h.requireSession(http.HandlerFunc(h.handleImportPage)))
 	mux.Handle("POST /dashboard/import", h.requireSession(http.HandlerFunc(h.handleImportSubmit)))
+
+	// 告警与错误日志
+	mux.Handle("GET /dashboard/alerts", h.requireSession(http.HandlerFunc(h.handleAlertsPage)))
+	mux.Handle("GET /api/dashboard/events", h.requireSession(http.HandlerFunc(h.handleEventsAPI)))
 
 	// Trends API（F-10 WebUI 增强）
 	mux.Handle("GET /api/dashboard/trends", h.requireSession(http.HandlerFunc(h.handleTrendsAPI)))
@@ -1206,4 +1215,86 @@ func (h *Handler) handleImportSubmit(w http.ResponseWriter, r *http.Request) {
 		Content: content,
 		Result:  result,
 	})
+}
+
+// ── 告警与错误日志 ────────────────────────────────────────────────────────────
+
+// handleAlertsPage 渲染告警页；实际数据由客户端 JS 通过 handleEventsAPI 获取。
+func (h *Handler) handleAlertsPage(w http.ResponseWriter, r *http.Request) {
+	h.renderPage(w, "alerts.html", baseData{})
+}
+
+// eventsResponse 是 /api/dashboard/events 的 JSON 响应结构。
+type eventsResponse struct {
+	Events []eventlog.Event `json:"events"`
+	Total  int              `json:"total"`
+}
+
+// handleEventsAPI 返回告警事件列表。
+//
+// 支持的查询参数：
+//
+//	level=error|warn|all  (默认 all)
+//	limit=N               (默认 100，最大 500)
+//	since=<RFC3339>       (只返回该时间点之后的事件)
+func (h *Handler) handleEventsAPI(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if h.eventLog == nil {
+		_ = json.NewEncoder(w).Encode(eventsResponse{Events: []eventlog.Event{}, Total: 0})
+		return
+	}
+
+	q := r.URL.Query()
+
+	// 解析 since 参数
+	var since time.Time
+	if s := q.Get("since"); s != "" {
+		if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+			since = t
+		} else if t, err := time.Parse(time.RFC3339, s); err == nil {
+			since = t
+		}
+	}
+
+	// 获取事件（按 since 或取最近 N 条）
+	var events []eventlog.Event
+	if !since.IsZero() {
+		events = h.eventLog.Since(since)
+	} else {
+		limit := 100
+		if l := q.Get("limit"); l != "" {
+			if n, err := strconv.Atoi(l); err == nil && n > 0 {
+				if n > 500 {
+					n = 500
+				}
+				limit = n
+			}
+		}
+		events = h.eventLog.Recent(limit)
+	}
+
+	// 客户端过滤：level=error|warn
+	level := q.Get("level")
+	if level == "error" || level == "warn" {
+		filtered := events[:0]
+		want := eventlog.Level(level)
+		for _, e := range events {
+			if e.Level == want {
+				filtered = append(filtered, e)
+			}
+		}
+		events = filtered
+	}
+
+	if events == nil {
+		events = []eventlog.Event{}
+	}
+
+	// 返回最新在前（reverse）
+	for i, j := 0, len(events)-1; i < j; i, j = i+1, j-1 {
+		events[i], events[j] = events[j], events[i]
+	}
+
+	_ = json.NewEncoder(w).Encode(eventsResponse{Events: events, Total: len(events)})
 }
