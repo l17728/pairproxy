@@ -1,8 +1,8 @@
 # PairProxy OpenClaw 自动化运维手册
 
-**版本**: v1.0
-**适用系统**: PairProxy v2.5.0+
-**更新日期**: 2026-03-08
+**版本**: v2.0
+**适用系统**: PairProxy v2.8.0+
+**更新日期**: 2026-03-11
 
 ---
 
@@ -25,7 +25,10 @@
 | CProxy 客户端 | 连接状态、Token 有效性 | 5 分钟 |
 | 数据库 | 磁盘空间、连接数、慢查询 | 5 分钟 |
 | LLM 上游 | 端点可达性、响应时间 | 3 分钟 |
+| LLM 动态 Target（v2.7.0+） | 活跃 target 数量、各 target 健康状态 | 2 分钟 |
+| 协议转换（v2.6.0+） | 转换错误率、不支持的请求拒绝数 | 5 分钟 |
 | 集群节点 | 心跳状态、用量同步 | 2 分钟 |
+| 告警流（v2.8.0+） | SSE 端点可达性、WARN/ERROR 日志积压 | 5 分钟 |
 
 ---
 
@@ -128,6 +131,17 @@ task:
       threshold: 100
       severity: "warning"
 
+    - name: "llm_active_targets"
+      command: |
+        curl -s http://localhost:9000/metrics | grep 'pairproxy_llm_targets_active' | awk '{print $2}'
+      threshold: 1
+      compare: "lt"   # alert if active targets < 1
+      severity: "critical"
+
+    - name: "alerts_sse_endpoint"
+      command: "curl -sf --max-time 3 -H 'X-PairProxy-Auth: ${ADMIN_TOKEN}' http://localhost:9000/api/admin/alerts/stream -o /dev/null"
+      severity: "warning"
+
   # 故障响应
   on_failure:
     - check: "sproxy_process"
@@ -141,6 +155,9 @@ task:
 
     - check: "active_requests"
       action: "alert_high_load"
+
+    - check: "llm_active_targets"
+      action: "alert_no_llm_targets"
 
   # AI 提示词
   ai_prompt: |
@@ -482,6 +499,70 @@ task:
 
 ---
 
+### 3.6 LLM Target 动态管理任务（v2.7.0+）
+
+创建 `tasks/llm_target_management.yaml`:
+
+```yaml
+task:
+  name: "llm_target_management"
+  description: "检查 LLM 动态 target 状态，自动检测并告警无健康 target"
+
+  checks:
+    - name: "active_targets_count"
+      command: "./sproxy admin llm targets 2>&1 | grep -c 'active'"
+      threshold: 1
+      compare: "lt"
+      severity: "critical"
+
+    - name: "target_list"
+      command: "./sproxy admin llm targets"
+      severity: "info"
+
+  ai_prompt: |
+    你是 PairProxy LLM Target 运维专家。当前 LLM Target 状态：
+
+    {{target_list_output}}
+
+    请检查：
+    1. 是否有活跃的健康 target？
+    2. 是否有 target 长时间处于不健康状态？
+    3. 用户/分组绑定是否合理？
+
+    常用运维操作：
+    - 临时禁用故障节点：`./sproxy admin llm target disable <url>`
+    - 添加新节点：`./sproxy admin llm target add --url <url> --api-key <key> --provider anthropic --name <name>`
+    - 均衡分配用户：`./sproxy admin llm distribute`
+    - 查看绑定详情：`./sproxy admin llm list`
+
+    输出格式：
+    - Target 健康概要：[活跃数/总数]
+    - 告警事项：[问题列表]
+    - 建议操作：[具体命令]
+```
+
+### 3.7 批量导入运维任务（v2.8.0+）
+
+批量导入通常在以下场景由运维触发：
+- 新团队入职（批量创建分组和用户）
+- 组织架构调整（批量迁移用户）
+
+```bash
+# 预览导入内容（不实际写入）
+./sproxy admin import --dry-run /opt/pairproxy/onboarding/new_users.txt
+
+# 执行导入
+./sproxy admin import /opt/pairproxy/onboarding/new_users.txt
+
+# 验证导入结果
+./sproxy admin user list
+./sproxy admin group list
+```
+
+**安全提示**: 模板文件包含明文密码，导入后立即删除或加密存储。
+
+---
+
 ## 4. 启动和配置
 
 ### 4.1 安装 OpenClaw
@@ -503,8 +584,12 @@ openclaw --version
 PAIRPROXY_HOME=/opt/pairproxy
 PAIRPROXY_DB=/var/lib/pairproxy/pairproxy.db
 
-# 测试用户 JWT（用于健康检查）
+# 测试用户 JWT（用于健康检查，非管理员权限）
 TEST_USER_JWT=eyJhbGc...
+
+# 管理员 JWT（用于告警 SSE 端点、LLM Target 管理检查）
+# 通过 cproxy login 获取，或调用 POST /api/auth/login 获取
+ADMIN_TOKEN=eyJhbGc...
 
 # LLM API Key（用于直连测试）
 ANTHROPIC_API_KEY=sk-ant-...
@@ -572,6 +657,7 @@ OpenClaw 自动收集以下指标：
 | `disk_usage_percent` | 磁盘使用率 | > 80% |
 | `active_requests` | 活跃请求数 | > 100 |
 | `dropped_usage_count` | 丢弃的用量记录 | > 0 |
+| `pairproxy_llm_targets_active`（v2.7.0+） | 活跃的 LLM target 数量 | < 1（紧急：无可用 target）|
 
 ### 5.2 告警规则
 
@@ -596,6 +682,11 @@ alerts:
     condition: "disk_usage_percent > 90%"
     severity: "critical"
     message: "磁盘空间不足"
+
+  - name: "no_active_llm_targets"
+    condition: "pairproxy_llm_targets_active == 0"
+    severity: "critical"
+    message: "所有 LLM target 均不可用，所有请求将失败"
 ```
 
 ---
@@ -610,6 +701,9 @@ alerts:
 | 数据库损坏 | 完整性检查 | 从备份恢复 | 是 |
 | 磁盘空间不足 | 磁盘检查 | 清理日志 | 否 |
 | LLM 上游故障 | 直连测试 | 告警通知 | 是 |
+| 所有 LLM target 不可用（v2.7.0+） | target 数量检查 | 告警通知，尝试重新启用 | 是 |
+| 单个 LLM target 故障（v2.7.0+） | 被动健康检查 | 自动熔断，流量切换到健康 target | 否 |
+| 协议转换错误（v2.6.0+） | 日志 WARN 率 | 日志记录，请求使用 fallback | 否（持续高错误率则介入）|
 | 配额耗尽 | 配额检查 | 告警通知 | 是 |
 | 用量数据丢失 | dropped 计数 | 告警+调查 | 是 |
 
@@ -627,9 +721,66 @@ alerts:
     └─→ 上游故障 → 告警通知 → 等待恢复 → 持续监控
 ```
 
----
+### 6.3 LLM Target 故障处理流程（v2.7.0+）
 
-## 7. 最佳实践
+```
+检测到 LLM target 不健康
+    ↓
+检查活跃 target 数量
+    ↓
+    ├─→ 仍有其他健康 target
+    │     → 系统已自动熔断，流量切换，无需立即干预
+    │     → 记录故障，通知相关人员
+    │     → 等待故障 target 自动恢复（recovery_delay 默认 60s）
+    │
+    └─→ 所有 target 均不可用
+          → 立即告警（Critical）
+          → 检查上游 API 是否故障（直连测试）
+          → 检查 API Key 是否有效
+          → 手动添加备用 target：
+            ./sproxy admin llm target add --url <backup> --api-key <key> --provider anthropic
+```
+
+**快速恢复命令**：
+```bash
+# 查看 target 当前状态
+./sproxy admin llm targets
+
+# 重新启用被禁用的 target
+./sproxy admin llm target enable "https://api.anthropic.com"
+
+# 临时添加备用 target
+./sproxy admin llm target add \
+  --url "https://api-backup.anthropic.com" \
+  --api-key "${BACKUP_API_KEY}" \
+  --provider "anthropic" \
+  --name "备用节点" \
+  --weight 1
+
+# 均衡分配用户到健康 target
+./sproxy admin llm distribute
+```
+
+### 6.4 告警页面使用（v2.8.0+）
+
+Dashboard 告警页面 (`/dashboard/alerts`) 提供实时 WARN/ERROR 日志流（SSE 推送），
+是故障初步诊断的快捷入口。
+
+```bash
+# API 方式获取实时告警流（OpenClaw 可订阅）
+curl -N -H "X-PairProxy-Auth: ${ADMIN_TOKEN}" \
+  http://localhost:9000/api/admin/alerts/stream
+```
+
+SSE 事件格式：
+```
+data: {"level":"WARN","ts":"2026-03-11T10:00:00Z","msg":"quota limit reached","user":"alice"}
+data: {"level":"ERROR","ts":"2026-03-11T10:01:00Z","msg":"llm target unhealthy","url":"https://api.anthropic.com"}
+```
+
+OpenClaw 可订阅此流并在错误积累到阈值时触发告警升级。
+
+---
 
 ### 7.1 运维建议
 
@@ -706,6 +857,11 @@ openclaw history --task health_check --limit 10
 
 参考 `docs/TROUBLESHOOTING.md` 和 `docs/FAULT_TOLERANCE_ANALYSIS.md`。
 
+新功能（v2.7.0/v2.8.0）相关排查：
+- LLM Target 管理问题：参考 `docs/manual.md` §11 和 `docs/CLUSTER_DESIGN.md`
+- 协议转换问题：参考 `docs/manual.md` §16（协议转换章节）
+- 告警页面问题：检查 `internal/eventlog` 包日志；确认 admin JWT 有效
+
 ---
 
 ## 9. 附录
@@ -716,10 +872,12 @@ openclaw history --task health_check --limit 10
 
 ### 9.2 相关文档
 
-- 用户手册: `docs/manual.md`
+- 用户手册: `docs/manual.md`（含 LLM Target 管理、协议转换、批量导入章节）
 - 故障排查: `docs/TROUBLESHOOTING.md`
 - 故障容错分析: `docs/FAULT_TOLERANCE_ANALYSIS.md`
+- 集群设计: `docs/CLUSTER_DESIGN.md`
 - 升级指南: `docs/UPGRADE.md`
+- 性能调优: `docs/PERFORMANCE.md`
 
 ### 9.3 联系方式
 
@@ -728,6 +886,6 @@ openclaw history --task health_check --limit 10
 
 ---
 
-**文档版本**: 1.0
-**最后更新**: 2026-03-08
+**文档版本**: 2.0
+**最后更新**: 2026-03-11
 **维护者**: PairProxy Team
