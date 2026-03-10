@@ -104,7 +104,7 @@ func TestConvertAnthropicToOpenAIRequest(t *testing.T) {
 		}
 		body, _ := json.Marshal(anthropicReq)
 
-		converted, newPath, err := convertAnthropicToOpenAIRequest(body, logger, "test-req-id")
+		converted, newPath, err := convertAnthropicToOpenAIRequest(body, logger, "test-req-id", nil)
 		require.NoError(t, err)
 		assert.Equal(t, "/v1/chat/completions", newPath)
 
@@ -136,7 +136,7 @@ func TestConvertAnthropicToOpenAIRequest(t *testing.T) {
 		}
 		body, _ := json.Marshal(anthropicReq)
 
-		converted, _, err := convertAnthropicToOpenAIRequest(body, logger, "test-req-id")
+		converted, _, err := convertAnthropicToOpenAIRequest(body, logger, "test-req-id", nil)
 		require.NoError(t, err)
 
 		var openaiReq map[string]interface{}
@@ -178,7 +178,7 @@ func TestConvertAnthropicToOpenAIRequest(t *testing.T) {
 		}
 		body, _ := json.Marshal(anthropicReq)
 
-		converted, _, err := convertAnthropicToOpenAIRequest(body, logger, "test-req-id")
+		converted, _, err := convertAnthropicToOpenAIRequest(body, logger, "test-req-id", nil)
 		require.NoError(t, err)
 
 		var openaiReq map[string]interface{}
@@ -206,7 +206,7 @@ func TestConvertAnthropicToOpenAIRequest(t *testing.T) {
 		}
 		body, _ := json.Marshal(anthropicReq)
 
-		converted, _, err := convertAnthropicToOpenAIRequest(body, logger, "test-req-id")
+		converted, _, err := convertAnthropicToOpenAIRequest(body, logger, "test-req-id", nil)
 		require.NoError(t, err)
 
 		var openaiReq map[string]interface{}
@@ -220,7 +220,7 @@ func TestConvertAnthropicToOpenAIRequest(t *testing.T) {
 	})
 
 	t.Run("empty body", func(t *testing.T) {
-		converted, newPath, err := convertAnthropicToOpenAIRequest([]byte{}, logger, "test-req-id")
+		converted, newPath, err := convertAnthropicToOpenAIRequest([]byte{}, logger, "test-req-id", nil)
 		require.NoError(t, err)
 		assert.Equal(t, "/v1/chat/completions", newPath)
 		assert.Empty(t, converted)
@@ -228,7 +228,7 @@ func TestConvertAnthropicToOpenAIRequest(t *testing.T) {
 
 	t.Run("malformed JSON", func(t *testing.T) {
 		body := []byte(`{invalid json}`)
-		converted, newPath, err := convertAnthropicToOpenAIRequest(body, logger, "test-req-id")
+		converted, newPath, err := convertAnthropicToOpenAIRequest(body, logger, "test-req-id", nil)
 		assert.Error(t, err)
 		assert.Equal(t, "/v1/chat/completions", newPath)
 		assert.Equal(t, body, converted) // Should return original
@@ -261,7 +261,7 @@ func TestConvertOpenAIToAnthropicResponse(t *testing.T) {
 		}
 		body, _ := json.Marshal(openaiResp)
 
-		converted, err := convertOpenAIToAnthropicResponse(body, logger, "test-req-id")
+		converted, err := convertOpenAIToAnthropicResponse(body, logger, "test-req-id", "")
 		require.NoError(t, err)
 
 		var anthropicResp map[string]interface{}
@@ -286,14 +286,14 @@ func TestConvertOpenAIToAnthropicResponse(t *testing.T) {
 	})
 
 	t.Run("empty body", func(t *testing.T) {
-		converted, err := convertOpenAIToAnthropicResponse([]byte{}, logger, "test-req-id")
+		converted, err := convertOpenAIToAnthropicResponse([]byte{}, logger, "test-req-id", "")
 		require.NoError(t, err)
 		assert.Empty(t, converted)
 	})
 
 	t.Run("malformed JSON", func(t *testing.T) {
 		body := []byte(`{invalid}`)
-		converted, err := convertOpenAIToAnthropicResponse(body, logger, "test-req-id")
+		converted, err := convertOpenAIToAnthropicResponse(body, logger, "test-req-id", "")
 		assert.Error(t, err)
 		assert.Equal(t, body, converted) // Should return original
 	})
@@ -390,7 +390,7 @@ func TestOpenAIToAnthropicStreamConverter(t *testing.T) {
 
 	t.Run("complete streaming response", func(t *testing.T) {
 		w := newMockResponseWriter()
-		converter := NewOpenAIToAnthropicStreamConverter(w, logger, "test-req-123")
+		converter := NewOpenAIToAnthropicStreamConverter(w, logger, "test-req-123", "")
 
 		// Simulate OpenAI SSE chunks
 		chunks := []string{
@@ -432,7 +432,7 @@ func TestOpenAIToAnthropicStreamConverter(t *testing.T) {
 
 	t.Run("empty chunks", func(t *testing.T) {
 		w := newMockResponseWriter()
-		converter := NewOpenAIToAnthropicStreamConverter(w, logger, "test-req-456")
+		converter := NewOpenAIToAnthropicStreamConverter(w, logger, "test-req-456", "")
 
 		_, err := converter.Write([]byte("\n\n"))
 		require.NoError(t, err)
@@ -445,7 +445,7 @@ func TestOpenAIToAnthropicStreamConverter(t *testing.T) {
 
 	t.Run("malformed JSON chunk", func(t *testing.T) {
 		w := newMockResponseWriter()
-		converter := NewOpenAIToAnthropicStreamConverter(w, logger, "test-req-789")
+		converter := NewOpenAIToAnthropicStreamConverter(w, logger, "test-req-789", "")
 
 		// Should not crash on malformed JSON
 		_, err := converter.Write([]byte(`data: {invalid json}` + "\n\n"))
@@ -478,7 +478,7 @@ func TestProtocolConversionRoundTrip(t *testing.T) {
 	}
 	anthropicBody, _ := json.Marshal(anthropicReq)
 
-	openaiBody, newPath, err := convertAnthropicToOpenAIRequest(anthropicBody, logger, "test-req")
+	openaiBody, newPath, err := convertAnthropicToOpenAIRequest(anthropicBody, logger, "test-req", nil)
 	require.NoError(t, err)
 	assert.Equal(t, "/v1/chat/completions", newPath)
 
@@ -510,7 +510,7 @@ func TestProtocolConversionRoundTrip(t *testing.T) {
 	openaiRespBody, _ := json.Marshal(openaiResp)
 
 	// 3. OpenAI response → Anthropic response
-	anthropicRespBody, err := convertOpenAIToAnthropicResponse(openaiRespBody, logger, "test-req")
+	anthropicRespBody, err := convertOpenAIToAnthropicResponse(openaiRespBody, logger, "test-req", "")
 	require.NoError(t, err)
 
 	var anthropicResp map[string]interface{}
@@ -832,7 +832,7 @@ func TestConvertOpenAIToAnthropicResponseToolCalls(t *testing.T) {
 		}
 		body, _ := json.Marshal(openaiResp)
 
-		converted, err := convertOpenAIToAnthropicResponse(body, logger, "test-req")
+		converted, err := convertOpenAIToAnthropicResponse(body, logger, "test-req", "")
 		require.NoError(t, err)
 
 		var resp map[string]interface{}
@@ -882,7 +882,7 @@ func TestConvertOpenAIToAnthropicResponseToolCalls(t *testing.T) {
 		}
 		body, _ := json.Marshal(openaiResp)
 
-		converted, err := convertOpenAIToAnthropicResponse(body, logger, "test-req")
+		converted, err := convertOpenAIToAnthropicResponse(body, logger, "test-req", "")
 		require.NoError(t, err)
 
 		var resp map[string]interface{}
@@ -926,7 +926,7 @@ func TestConvertOpenAIToAnthropicResponseCachedTokens(t *testing.T) {
 	}
 	body, _ := json.Marshal(openaiResp)
 
-	converted, err := convertOpenAIToAnthropicResponse(body, logger, "test-req")
+	converted, err := convertOpenAIToAnthropicResponse(body, logger, "test-req", "")
 	require.NoError(t, err)
 
 	var resp map[string]interface{}
@@ -950,7 +950,7 @@ func TestOpenAIToAnthropicStreamConverterTokenAccuracy(t *testing.T) {
 
 	t.Run("input_tokens = prompt_tokens - cached_tokens", func(t *testing.T) {
 		w := newMockResponseWriter()
-		converter := NewOpenAIToAnthropicStreamConverter(w, logger, "test-req-aaa0")
+		converter := NewOpenAIToAnthropicStreamConverter(w, logger, "test-req-aaa0", "")
 
 		chunks := []string{
 			`data: {"id":"chatcmpl-tok1","choices":[{"delta":{"content":"Hi"},"finish_reason":null}]}` + "\n\n",
@@ -971,7 +971,7 @@ func TestOpenAIToAnthropicStreamConverterTokenAccuracy(t *testing.T) {
 
 	t.Run("no cached tokens: input_tokens = prompt_tokens", func(t *testing.T) {
 		w := newMockResponseWriter()
-		converter := NewOpenAIToAnthropicStreamConverter(w, logger, "test-req-bbb0")
+		converter := NewOpenAIToAnthropicStreamConverter(w, logger, "test-req-bbb0", "")
 
 		chunks := []string{
 			`data: {"id":"chatcmpl-tok2","choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}` + "\n\n",
@@ -992,7 +992,7 @@ func TestOpenAIToAnthropicStreamConverterTokenAccuracy(t *testing.T) {
 		// OpenAI sometimes emits a separate usage-only chunk after [DONE] chunk;
 		// in the buffered strategy usage arrives before [DONE], so tokens are always accurate.
 		w := newMockResponseWriter()
-		converter := NewOpenAIToAnthropicStreamConverter(w, logger, "test-req-ccc0")
+		converter := NewOpenAIToAnthropicStreamConverter(w, logger, "test-req-ccc0", "")
 
 		// usage is in the finish_reason chunk, then [DONE]
 		chunks := []string{
@@ -1028,7 +1028,7 @@ func TestOpenAIToAnthropicStreamConverterToolCalls(t *testing.T) {
 
 	t.Run("single tool call streaming", func(t *testing.T) {
 		w := newMockResponseWriter()
-		converter := NewOpenAIToAnthropicStreamConverter(w, logger, "test-req-tc10")
+		converter := NewOpenAIToAnthropicStreamConverter(w, logger, "test-req-tc10", "")
 
 		chunks := []string{
 			// 首块：tool call id + name
@@ -1059,7 +1059,7 @@ func TestOpenAIToAnthropicStreamConverterToolCalls(t *testing.T) {
 
 	t.Run("parallel tool calls preserve order", func(t *testing.T) {
 		w := newMockResponseWriter()
-		converter := NewOpenAIToAnthropicStreamConverter(w, logger, "test-req-par0")
+		converter := NewOpenAIToAnthropicStreamConverter(w, logger, "test-req-par0", "")
 
 		chunks := []string{
 			`data: {"id":"chatcmpl-par","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"func_a","arguments":"{}"}}]},"finish_reason":null}]}` + "\n\n",
@@ -1108,7 +1108,7 @@ func TestConvertAnthropicToOpenAIRequestWithTools(t *testing.T) {
 		}
 		body, _ := json.Marshal(anthropicReq)
 
-		converted, _, err := convertAnthropicToOpenAIRequest(body, logger, "req1")
+		converted, _, err := convertAnthropicToOpenAIRequest(body, logger, "req1", nil)
 		require.NoError(t, err)
 
 		var openaiReq map[string]interface{}
@@ -1150,7 +1150,7 @@ func TestConvertAnthropicToOpenAIRequestWithTools(t *testing.T) {
 		}
 		body, _ := json.Marshal(anthropicReq)
 
-		converted, _, err := convertAnthropicToOpenAIRequest(body, logger, "req2")
+		converted, _, err := convertAnthropicToOpenAIRequest(body, logger, "req2", nil)
 		require.NoError(t, err)
 
 		var openaiReq map[string]interface{}
@@ -1184,7 +1184,7 @@ func TestConvertAnthropicToOpenAIRequestWithTools(t *testing.T) {
 		}
 		body, _ := json.Marshal(anthropicReq)
 
-		converted, _, err := convertAnthropicToOpenAIRequest(body, logger, "req3")
+		converted, _, err := convertAnthropicToOpenAIRequest(body, logger, "req3", nil)
 		require.NoError(t, err)
 
 		var openaiReq map[string]interface{}
@@ -1218,7 +1218,7 @@ func TestConvertAnthropicToOpenAIRequestWithTools(t *testing.T) {
 		}
 		body, _ := json.Marshal(anthropicReq)
 
-		converted, _, err := convertAnthropicToOpenAIRequest(body, logger, "req4")
+		converted, _, err := convertAnthropicToOpenAIRequest(body, logger, "req4", nil)
 		require.NoError(t, err)
 
 		var openaiReq map[string]interface{}
@@ -1392,7 +1392,7 @@ func TestPrefillRejection(t *testing.T) {
 		}
 		body, _ := json.Marshal(anthropicReq)
 
-		_, _, err := convertAnthropicToOpenAIRequest(body, logger, "req-prefill")
+		_, _, err := convertAnthropicToOpenAIRequest(body, logger, "req-prefill", nil)
 		require.Error(t, err)
 		assert.ErrorIs(t, err, ErrPrefillNotSupported)
 	})
@@ -1409,7 +1409,7 @@ func TestPrefillRejection(t *testing.T) {
 		}
 		body, _ := json.Marshal(anthropicReq)
 
-		_, _, err := convertAnthropicToOpenAIRequest(body, logger, "req-normal")
+		_, _, err := convertAnthropicToOpenAIRequest(body, logger, "req-normal", nil)
 		require.NoError(t, err)
 	})
 
@@ -1423,7 +1423,7 @@ func TestPrefillRejection(t *testing.T) {
 		}
 		body, _ := json.Marshal(anthropicReq)
 
-		_, _, err := convertAnthropicToOpenAIRequest(body, logger, "req-single")
+		_, _, err := convertAnthropicToOpenAIRequest(body, logger, "req-single", nil)
 		require.NoError(t, err)
 	})
 }
@@ -1550,7 +1550,7 @@ func TestThinkingRejection(t *testing.T) {
 			},
 		}
 		body, _ := json.Marshal(anthropicReq)
-		_, _, err := convertAnthropicToOpenAIRequest(body, logger, "req-thinking")
+		_, _, err := convertAnthropicToOpenAIRequest(body, logger, "req-thinking", nil)
 		require.Error(t, err)
 		assert.ErrorIs(t, err, ErrThinkingNotSupported)
 	})
@@ -1565,7 +1565,7 @@ func TestThinkingRejection(t *testing.T) {
 			},
 		}
 		body, _ := json.Marshal(anthropicReq)
-		_, _, err := convertAnthropicToOpenAIRequest(body, logger, "req-thinking-nil")
+		_, _, err := convertAnthropicToOpenAIRequest(body, logger, "req-thinking-nil", nil)
 		require.NoError(t, err)
 	})
 
@@ -1578,7 +1578,7 @@ func TestThinkingRejection(t *testing.T) {
 			},
 		}
 		body, _ := json.Marshal(anthropicReq)
-		_, _, err := convertAnthropicToOpenAIRequest(body, logger, "req-no-thinking")
+		_, _, err := convertAnthropicToOpenAIRequest(body, logger, "req-no-thinking", nil)
 		require.NoError(t, err)
 	})
 }
@@ -1599,5 +1599,173 @@ func TestConvertMessageID(t *testing.T) {
 	t.Run("already msg_ prefix → msg_msg_...", func(t *testing.T) {
 		// 若上游已返回 msg_ 前缀（罕见），不做特殊处理，保持幂等规则一致
 		assert.Equal(t, "msg_msg_abc", convertMessageID("msg_abc"))
+	})
+}
+
+func TestMapModelName(t *testing.T) {
+	t.Run("nil mapping → original model", func(t *testing.T) {
+		assert.Equal(t, "claude-opus-4-6", mapModelName("claude-opus-4-6", nil))
+	})
+	t.Run("empty mapping → original model", func(t *testing.T) {
+		assert.Equal(t, "claude-opus-4-6", mapModelName("claude-opus-4-6", map[string]string{}))
+	})
+	t.Run("exact match → mapped name", func(t *testing.T) {
+		mapping := map[string]string{"claude-opus-4-6": "llama3.2"}
+		assert.Equal(t, "llama3.2", mapModelName("claude-opus-4-6", mapping))
+	})
+	t.Run("no match + wildcard → wildcard value", func(t *testing.T) {
+		mapping := map[string]string{"*": "llama3.2"}
+		assert.Equal(t, "llama3.2", mapModelName("claude-haiku-4-5", mapping))
+	})
+	t.Run("exact match preferred over wildcard", func(t *testing.T) {
+		mapping := map[string]string{
+			"claude-haiku-4-5": "gemma2",
+			"*":                "llama3.2",
+		}
+		assert.Equal(t, "gemma2", mapModelName("claude-haiku-4-5", mapping))
+		assert.Equal(t, "llama3.2", mapModelName("claude-opus-4-6", mapping))
+	})
+	t.Run("no match + no wildcard → original model", func(t *testing.T) {
+		mapping := map[string]string{"claude-haiku-4-5": "gemma2"}
+		assert.Equal(t, "claude-opus-4-6", mapModelName("claude-opus-4-6", mapping))
+	})
+}
+
+func TestConvertAnthropicToOpenAIRequest_ModelMapping(t *testing.T) {
+	logger := zap.NewNop()
+
+	t.Run("model name mapped via exact match", func(t *testing.T) {
+		anthropicReq := map[string]interface{}{
+			"model":      "claude-opus-4-6",
+			"max_tokens": 100,
+			"messages":   []interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		}
+		body, _ := json.Marshal(anthropicReq)
+		mapping := map[string]string{"claude-opus-4-6": "llama3.2:8b"}
+
+		converted, _, err := convertAnthropicToOpenAIRequest(body, logger, "test-map-1", mapping)
+		require.NoError(t, err)
+
+		var req map[string]interface{}
+		require.NoError(t, json.Unmarshal(converted, &req))
+		assert.Equal(t, "llama3.2:8b", req["model"])
+	})
+
+	t.Run("model name mapped via wildcard", func(t *testing.T) {
+		anthropicReq := map[string]interface{}{
+			"model":      "claude-haiku-4-5",
+			"max_tokens": 100,
+			"messages":   []interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		}
+		body, _ := json.Marshal(anthropicReq)
+		mapping := map[string]string{"*": "mistral"}
+
+		converted, _, err := convertAnthropicToOpenAIRequest(body, logger, "test-map-2", mapping)
+		require.NoError(t, err)
+
+		var req map[string]interface{}
+		require.NoError(t, json.Unmarshal(converted, &req))
+		assert.Equal(t, "mistral", req["model"])
+	})
+
+	t.Run("nil mapping → original model unchanged", func(t *testing.T) {
+		anthropicReq := map[string]interface{}{
+			"model":      "claude-opus-4-6",
+			"max_tokens": 100,
+			"messages":   []interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		}
+		body, _ := json.Marshal(anthropicReq)
+
+		converted, _, err := convertAnthropicToOpenAIRequest(body, logger, "test-map-3", nil)
+		require.NoError(t, err)
+
+		var req map[string]interface{}
+		require.NoError(t, json.Unmarshal(converted, &req))
+		assert.Equal(t, "claude-opus-4-6", req["model"])
+	})
+}
+
+func TestConvertOpenAIToAnthropicResponse_RequestedModel(t *testing.T) {
+	logger := zap.NewNop()
+
+	openaiResp := map[string]interface{}{
+		"id":    "chatcmpl-xyz",
+		"model": "llama3.2:8b", // Ollama 返回的本地模型名
+		"choices": []interface{}{
+			map[string]interface{}{
+				"index": 0,
+				"message": map[string]interface{}{
+					"role":    "assistant",
+					"content": "Hello!",
+				},
+				"finish_reason": "stop",
+			},
+		},
+		"usage": map[string]interface{}{
+			"prompt_tokens":     float64(10),
+			"completion_tokens": float64(5),
+		},
+	}
+	body, _ := json.Marshal(openaiResp)
+
+	t.Run("requestedModel overrides OpenAI model field", func(t *testing.T) {
+		converted, err := convertOpenAIToAnthropicResponse(body, logger, "test-rm-1", "claude-opus-4-6")
+		require.NoError(t, err)
+
+		var resp map[string]interface{}
+		require.NoError(t, json.Unmarshal(converted, &resp))
+		// 应返回原始 Anthropic 模型名，而非 Ollama 本地名
+		assert.Equal(t, "claude-opus-4-6", resp["model"])
+	})
+
+	t.Run("empty requestedModel → use OpenAI model field", func(t *testing.T) {
+		converted, err := convertOpenAIToAnthropicResponse(body, logger, "test-rm-2", "")
+		require.NoError(t, err)
+
+		var resp map[string]interface{}
+		require.NoError(t, json.Unmarshal(converted, &resp))
+		// 没有 requestedModel 时，使用 OpenAI 响应中的 model 字段
+		assert.Equal(t, "llama3.2:8b", resp["model"])
+	})
+}
+
+func TestOpenAIToAnthropicStreamConverter_Model(t *testing.T) {
+	logger := zap.NewNop()
+
+	t.Run("model field injected in message_start when provided", func(t *testing.T) {
+		w := newMockResponseWriter()
+		converter := NewOpenAIToAnthropicStreamConverter(w, logger, "test-model-stream1", "claude-opus-4-6")
+
+		chunks := []string{
+			`data: {"id":"chatcmpl-abc","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"Hi"},"finish_reason":null}]}`,
+			`data: {"id":"chatcmpl-abc","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2}}`,
+			`data: [DONE]`,
+		}
+		for _, chunk := range chunks {
+			_, err := converter.Write([]byte(chunk + "\n"))
+			require.NoError(t, err)
+		}
+
+		output := w.String()
+		// message_start 事件应包含 model 字段
+		assert.Contains(t, output, `"model":"claude-opus-4-6"`)
+	})
+
+	t.Run("no model field in message_start when empty", func(t *testing.T) {
+		w := newMockResponseWriter()
+		converter := NewOpenAIToAnthropicStreamConverter(w, logger, "test-model-stream2", "")
+
+		chunks := []string{
+			`data: {"id":"chatcmpl-abc","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"Hi"},"finish_reason":null}]}`,
+			`data: [DONE]`,
+		}
+		for _, chunk := range chunks {
+			_, err := converter.Write([]byte(chunk + "\n"))
+			require.NoError(t, err)
+		}
+
+		output := w.String()
+		// 没有 model 参数时，message_start 中不应有 model 字段（避免空字符串污染）
+		assert.NotContains(t, output, `"model":""`)
 	})
 }

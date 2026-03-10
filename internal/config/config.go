@@ -117,12 +117,13 @@ type LLMConfig struct {
 
 // LLMTarget 单个 LLM 上游节点
 type LLMTarget struct {
-	URL             string `yaml:"url"`               // e.g. "https://api.anthropic.com"
-	APIKey          string `yaml:"api_key"`           // 支持 ${ENV_VAR} 替换
-	Weight          int    `yaml:"weight"`            // 默认 1
-	Provider        string `yaml:"provider"`          // "anthropic"（默认）| "openai" | "ollama"
-	Name            string `yaml:"name"`              // 可选显示名称（空则使用 URL）
-	HealthCheckPath string `yaml:"health_check_path"` // 主动健康检查路径，空=仅被动检查
+	URL             string            `yaml:"url"`               // e.g. "https://api.anthropic.com"
+	APIKey          string            `yaml:"api_key"`           // 支持 ${ENV_VAR} 替换
+	Weight          int               `yaml:"weight"`            // 默认 1
+	Provider        string            `yaml:"provider"`          // "anthropic"（默认）| "openai" | "ollama"
+	Name            string            `yaml:"name"`              // 可选显示名称（空则使用 URL）
+	HealthCheckPath string            `yaml:"health_check_path"` // 主动健康检查路径，空=仅被动检查
+	ModelMapping    map[string]string `yaml:"model_mapping,omitempty"` // Anthropic 模型名 → Ollama/OpenAI 模型名映射；"*" 匹配所有未命中的模型
 }
 
 // DatabaseConfig SQLite 数据库配置

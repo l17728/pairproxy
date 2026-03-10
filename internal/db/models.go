@@ -112,6 +112,7 @@ type LLMTarget struct {
 	Name            string     // 显示名称
 	Weight          int        `gorm:"default:1"`            // 负载均衡权重
 	HealthCheckPath string     // 健康检查路径
+	ModelMappingJSON string    `gorm:"column:model_mapping;default:'{}'"` // JSON 序列化的 model_mapping（Anthropic→Ollama 模型名映射）
 	Source          string     `gorm:"default:'database'"`   // "config" | "database"
 	IsEditable      bool       `gorm:"default:true"`         // false for config-sourced
 	IsActive        bool       `gorm:"default:true"`

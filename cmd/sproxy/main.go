@@ -178,11 +178,12 @@ func runStart(cmd *cobra.Command, args []string) error {
 	llmTargets := make([]proxy.LLMTarget, 0, len(cfg.LLM.Targets))
 	for _, t := range cfg.LLM.Targets {
 		llmTargets = append(llmTargets, proxy.LLMTarget{
-			URL:      t.URL,
-			APIKey:   t.APIKey,
-			Provider: t.Provider,
-			Name:     t.Name,
-			Weight:   t.Weight,
+			URL:          t.URL,
+			APIKey:       t.APIKey,
+			Provider:     t.Provider,
+			Name:         t.Name,
+			Weight:       t.Weight,
+			ModelMapping: t.ModelMapping,
 		})
 		logger.Info("LLM target configured",
 			zap.String("url", t.URL),

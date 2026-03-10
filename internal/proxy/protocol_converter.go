@@ -37,12 +37,29 @@ func shouldConvertProtocol(requestPath, targetProvider string) bool {
 	return isAnthropicPath && isOpenAITarget
 }
 
+// mapModelName 将 Anthropic 模型名映射到目标提供商的本地模型名。
+// 优先精确匹配，其次通配符 "*"，均未命中则返回原名。
+// mapping 为 nil 或空时直接返回原名。
+func mapModelName(model string, mapping map[string]string) string {
+	if len(mapping) == 0 {
+		return model
+	}
+	if mapped, ok := mapping[model]; ok {
+		return mapped
+	}
+	if wildcard, ok := mapping["*"]; ok {
+		return wildcard
+	}
+	return model
+}
+
 // ─── 请求转换：Anthropic → OpenAI ──────────────────────────────────────────
 
 // convertAnthropicToOpenAIRequest 将 Anthropic Messages API 请求转换为 OpenAI Chat Completions 格式。
 // 支持：文本消息、system 字段、工具调用（tool_use/tool_result）、tools 定义、tool_choice。
+// modelMapping 可选，非 nil 时将 Anthropic 模型名转换为目标提供商的本地模型名。
 // 返回转换后的 body 和新的请求路径。
-func convertAnthropicToOpenAIRequest(body []byte, logger *zap.Logger, reqID string) ([]byte, string, error) {
+func convertAnthropicToOpenAIRequest(body []byte, logger *zap.Logger, reqID string, modelMapping map[string]string) ([]byte, string, error) {
 	const newPath = "/v1/chat/completions"
 	if len(body) == 0 {
 		return body, newPath, nil
@@ -69,7 +86,7 @@ func convertAnthropicToOpenAIRequest(body []byte, logger *zap.Logger, reqID stri
 
 	// 1. 基础字段
 	if model, ok := anthropicReq["model"].(string); ok {
-		openaiReq["model"] = model
+		openaiReq["model"] = mapModelName(model, modelMapping)
 	}
 	if maxTokens, ok := anthropicReq["max_tokens"].(float64); ok {
 		openaiReq["max_tokens"] = int(maxTokens)
@@ -474,7 +491,9 @@ func extractTextContent(content interface{}) string {
 
 // convertOpenAIToAnthropicResponse 将 OpenAI 非流式响应转换为 Anthropic 格式。
 // 支持文本响应和工具调用响应（tool_calls → tool_use 内容块）。
-func convertOpenAIToAnthropicResponse(body []byte, logger *zap.Logger, reqID string) ([]byte, error) {
+// requestedModel 为原始 Anthropic 请求中的模型名（如 "claude-opus-4-6"）；
+// 非空时覆盖 OpenAI 响应中的 model 字段（避免返回 Ollama 本地模型名）。
+func convertOpenAIToAnthropicResponse(body []byte, logger *zap.Logger, reqID string, requestedModel string) ([]byte, error) {
 	if len(body) == 0 {
 		return body, nil
 	}
@@ -488,11 +507,16 @@ func convertOpenAIToAnthropicResponse(body []byte, logger *zap.Logger, reqID str
 		return body, err
 	}
 
+	// model 字段：优先使用原始 Anthropic 模型名（避免返回 Ollama 本地模型名给客户端）
+	responseModel := openaiResp["model"]
+	if requestedModel != "" {
+		responseModel = requestedModel
+	}
 	anthropicResp := map[string]interface{}{
 		"id":            convertMessageID(openaiResp["id"]),
 		"type":          "message",
 		"role":          "assistant",
-		"model":         openaiResp["model"],
+		"model":         responseModel,
 		"stop_sequence": nil,
 	}
 
@@ -634,6 +658,7 @@ type OpenAIToAnthropicStreamConverter struct {
 	writer http.ResponseWriter
 	logger *zap.Logger
 	reqID  string
+	model  string // 原始 Anthropic 模型名（如 "claude-opus-4-6"），用于 message_start.message.model
 
 	// 缓冲状态（在 Write 调用中逐步填充）
 	messageID  string
@@ -651,11 +676,13 @@ type OpenAIToAnthropicStreamConverter struct {
 }
 
 // NewOpenAIToAnthropicStreamConverter 创建流转换器。
-func NewOpenAIToAnthropicStreamConverter(w http.ResponseWriter, logger *zap.Logger, reqID string) *OpenAIToAnthropicStreamConverter {
+// model 为原始 Anthropic 请求中的模型名（可为空，空时不覆盖 message_start 的 model 字段）。
+func NewOpenAIToAnthropicStreamConverter(w http.ResponseWriter, logger *zap.Logger, reqID string, model string) *OpenAIToAnthropicStreamConverter {
 	return &OpenAIToAnthropicStreamConverter{
 		writer:    w,
 		logger:    logger,
 		reqID:     reqID,
+		model:     model,
 		messageID: "msg_" + reqID[:8],
 		toolCalls: make(map[int]*toolCallBuffer),
 	}
@@ -790,22 +817,27 @@ func (c *OpenAIToAnthropicStreamConverter) flush() {
 	}
 
 	// 1. message_start（携带准确的 input_tokens）
-	c.writeEvent("message_start", map[string]interface{}{
-		"type": "message_start",
-		"message": map[string]interface{}{
-			"id":            c.messageID,
-			"type":          "message",
-			"role":          "assistant",
-			"content":       []interface{}{},
-			"stop_reason":   nil,
-			"stop_sequence": nil,
-			"usage": map[string]interface{}{
-				"input_tokens":                inputTokens,
-				"output_tokens":               1, // 占位值，真实值在 message_delta
-				"cache_read_input_tokens":     c.cachedTokens,
-				"cache_creation_input_tokens": 0,
-			},
+	messageStartMsg := map[string]interface{}{
+		"id":            c.messageID,
+		"type":          "message",
+		"role":          "assistant",
+		"content":       []interface{}{},
+		"stop_reason":   nil,
+		"stop_sequence": nil,
+		"usage": map[string]interface{}{
+			"input_tokens":                inputTokens,
+			"output_tokens":               1, // 占位值，真实值在 message_delta
+			"cache_read_input_tokens":     c.cachedTokens,
+			"cache_creation_input_tokens": 0,
 		},
+	}
+	// 若有原始 Anthropic 模型名，注入 model 字段（避免客户端看到 Ollama 本地模型名）
+	if c.model != "" {
+		messageStartMsg["model"] = c.model
+	}
+	c.writeEvent("message_start", map[string]interface{}{
+		"type":    "message_start",
+		"message": messageStartMsg,
 	})
 	c.logger.Debug("stream conversion: message_start sent",
 		zap.String("request_id", c.reqID),

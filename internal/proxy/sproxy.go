@@ -39,11 +39,12 @@ import (
 
 // LLMTarget 代表一个 LLM 后端（含 API Key 和 provider 类型）。
 type LLMTarget struct {
-	URL      string
-	APIKey   string
-	Provider string // "anthropic"（默认）| "openai" | "ollama"
-	Name     string // 可选显示名，空则用 URL
-	Weight   int    // 负载均衡权重（≥1）
+	URL          string
+	APIKey       string
+	Provider     string            // "anthropic"（默认）| "openai" | "ollama"
+	Name         string            // 可选显示名，空则用 URL
+	Weight       int               // 负载均衡权重（≥1）
+	ModelMapping map[string]string // Anthropic→Ollama 模型名映射（可选）
 }
 
 // LLMTargetStatus 向 Admin/Dashboard 暴露的 LLM 目标运行时状态。
@@ -274,16 +275,23 @@ func (sp *SProxy) syncConfigTargetsToDatabase(repo *db.LLMTargetRepo) error {
 		}
 
 		// UPSERT
+		modelMappingJSON := "{}"
+		if len(ct.ModelMapping) > 0 {
+			if jsonBytes, err := json.Marshal(ct.ModelMapping); err == nil {
+				modelMappingJSON = string(jsonBytes)
+			}
+		}
 		target := &db.LLMTarget{
-			URL:             ct.URL,
-			APIKeyID:        apiKeyID,
-			Provider:        ct.Provider,
-			Name:            ct.Name,
-			Weight:          ct.Weight,
-			HealthCheckPath: ct.HealthCheckPath,
-			Source:          "config",
-			IsEditable:      false,
-			IsActive:        true,
+			URL:              ct.URL,
+			APIKeyID:         apiKeyID,
+			Provider:         ct.Provider,
+			Name:             ct.Name,
+			Weight:           ct.Weight,
+			HealthCheckPath:  ct.HealthCheckPath,
+			ModelMappingJSON: modelMappingJSON,
+			Source:           "config",
+			IsEditable:       false,
+			IsActive:         true,
 		}
 
 		err = repo.Upsert(target)
@@ -350,6 +358,12 @@ func (sp *SProxy) loadAllTargets(repo *db.LLMTargetRepo) ([]config.LLMTarget, er
 			continue
 		}
 
+		// 反序列化 ModelMappingJSON
+		var modelMapping map[string]string
+		if dt.ModelMappingJSON != "" && dt.ModelMappingJSON != "{}" {
+			_ = json.Unmarshal([]byte(dt.ModelMappingJSON), &modelMapping)
+		}
+
 		targets = append(targets, config.LLMTarget{
 			URL:             dt.URL,
 			APIKey:          apiKey,
@@ -357,6 +371,7 @@ func (sp *SProxy) loadAllTargets(repo *db.LLMTargetRepo) ([]config.LLMTarget, er
 			Name:            dt.Name,
 			Weight:          dt.Weight,
 			HealthCheckPath: dt.HealthCheckPath,
+			ModelMapping:    modelMapping,
 		})
 	}
 
@@ -858,6 +873,17 @@ func (sp *SProxy) providerForURL(targetURL string) string {
 	return ""
 }
 
+// modelMappingForURL 根据 URL 查找对应 target 的模型名映射表。
+// 返回 nil 表示该 target 未配置模型映射（不进行名称转换）。
+func (sp *SProxy) modelMappingForURL(targetURL string) map[string]string {
+	for _, t := range sp.targets {
+		if t.URL == targetURL {
+			return t.ModelMapping
+		}
+	}
+	return nil
+}
+
 // candidatesByPath 按请求路径过滤匹配 provider 的 targets（legacy 路径使用）。
 func (sp *SProxy) candidatesByPath(path string) []LLMTarget {
 	preferred := preferredProvidersByPath(path)
@@ -1069,6 +1095,14 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 		targetProvider = "openai"
 	}
 
+	// 协议转换前提前提取 requestedModel（原始 Anthropic 模型名）：
+	// 转换后 bodyBytes 会变成 OpenAI 格式，模型名可能已被 mapping 替换，
+	// 在响应时需要用原始 Anthropic 模型名覆盖 OpenAI 响应的 model 字段。
+	requestedModel := extractModel(r)
+	if requestedModel == "" && len(bodyBytes) > 0 {
+		requestedModel = extractModelFromBody(bodyBytes)
+	}
+
 	// 协议转换：Anthropic → OpenAI（当请求为 Anthropic 格式但目标为 OpenAI/Ollama 时）
 	needsConversion := shouldConvertProtocol(r.URL.Path, targetProvider)
 	var convertedPath string
@@ -1084,7 +1118,8 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 
 		// 转换请求 body
 		if len(bodyBytes) > 0 {
-			converted, newPath, convErr := convertAnthropicToOpenAIRequest(bodyBytes, sp.logger, reqID)
+			modelMapping := sp.modelMappingForURL(firstInfo.URL)
+			converted, newPath, convErr := convertAnthropicToOpenAIRequest(bodyBytes, sp.logger, reqID, modelMapping)
 			if convErr == nil {
 				bodyBytes = converted
 				convertedPath = newPath
@@ -1137,10 +1172,8 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 
 	// 预填充 UsageRecord 模板（除 token 数/状态码/时长外的字段）
 	// model 优先从 X-PairProxy-Model 头取（cproxy 注入），其次从请求 body 取（OpenAI 格式客户端）
-	model := extractModel(r)
-	if model == "" && len(bodyBytes) > 0 {
-		model = extractModelFromBody(bodyBytes)
-	}
+	// 注意：requestedModel 在协议转换前已提取，含原始 Anthropic 模型名（非 mapped 名）
+	model := requestedModel
 	usageRecord := db.UsageRecord{
 		RequestID:   reqID,
 		UserID:      claims.UserID,
@@ -1197,7 +1230,8 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 	var finalWriter http.ResponseWriter = w
 	if needsConversion {
 		// 协议转换：在 TeeResponseWriter 之前插入流转换器
-		streamConverter := NewOpenAIToAnthropicStreamConverter(w, sp.logger, reqID)
+		// 传入 requestedModel（原始 Anthropic 模型名），以便流式响应 message_start 中的 model 字段正确反映
+		streamConverter := NewOpenAIToAnthropicStreamConverter(w, sp.logger, reqID, model)
 		finalWriter = streamConverter
 		sp.logger.Debug("stream converter inserted for protocol conversion",
 			zap.String("request_id", reqID),
@@ -1314,7 +1348,7 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 							zap.Int("status_code", resp.StatusCode),
 						)
 					} else {
-						converted, convErr := convertOpenAIToAnthropicResponse(body, sp.logger, reqID)
+						converted, convErr := convertOpenAIToAnthropicResponse(body, sp.logger, reqID, model)
 						if convErr == nil {
 							body = converted
 							sp.logger.Info("non-streaming response converted successfully",
