@@ -267,7 +267,7 @@ func TestConvertOpenAIToAnthropicResponse(t *testing.T) {
 		var anthropicResp map[string]interface{}
 		require.NoError(t, json.Unmarshal(converted, &anthropicResp))
 
-		assert.Equal(t, "chatcmpl-123", anthropicResp["id"])
+		assert.Equal(t, "msg_123", anthropicResp["id"])
 		assert.Equal(t, "message", anthropicResp["type"])
 		assert.Equal(t, "assistant", anthropicResp["role"])
 		assert.Equal(t, "gpt-4", anthropicResp["model"])
@@ -1580,5 +1580,24 @@ func TestThinkingRejection(t *testing.T) {
 		body, _ := json.Marshal(anthropicReq)
 		_, _, err := convertAnthropicToOpenAIRequest(body, logger, "req-no-thinking")
 		require.NoError(t, err)
+	})
+}
+
+func TestConvertMessageID(t *testing.T) {
+	t.Run("chatcmpl prefix → msg prefix", func(t *testing.T) {
+		assert.Equal(t, "msg_abc123", convertMessageID("chatcmpl-abc123"))
+	})
+	t.Run("other format → msg prefix prepended", func(t *testing.T) {
+		assert.Equal(t, "msg_xyz789", convertMessageID("xyz789"))
+	})
+	t.Run("empty string → msg_", func(t *testing.T) {
+		assert.Equal(t, "msg_", convertMessageID(""))
+	})
+	t.Run("nil → msg_", func(t *testing.T) {
+		assert.Equal(t, "msg_", convertMessageID(nil))
+	})
+	t.Run("already msg_ prefix → msg_msg_...", func(t *testing.T) {
+		// 若上游已返回 msg_ 前缀（罕见），不做特殊处理，保持幂等规则一致
+		assert.Equal(t, "msg_msg_abc", convertMessageID("msg_abc"))
 	})
 }

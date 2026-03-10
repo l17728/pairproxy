@@ -324,6 +324,16 @@ func processUserContent(content interface{}) []map[string]interface{} {
 
 // extractToolResultContent 从 tool_result 的 content 字段提取字符串内容。
 // content 可能是 string 或 []contentBlock。
+// convertMessageID 将 OpenAI 响应 id（如 chatcmpl-xxx）转换为 Anthropic 格式（msg_xxx）。
+// 规范 §3.1/3.2：chatcmpl- 前缀替换为 msg_；其他格式直接加 msg_ 前缀。
+func convertMessageID(id interface{}) string {
+	s, _ := id.(string)
+	if after, found := strings.CutPrefix(s, "chatcmpl-"); found {
+		return "msg_" + after
+	}
+	return "msg_" + s
+}
+
 func extractToolResultContent(content interface{}) string {
 	if content == nil {
 		return ""
@@ -479,7 +489,7 @@ func convertOpenAIToAnthropicResponse(body []byte, logger *zap.Logger, reqID str
 	}
 
 	anthropicResp := map[string]interface{}{
-		"id":            openaiResp["id"],
+		"id":            convertMessageID(openaiResp["id"]),
 		"type":          "message",
 		"role":          "assistant",
 		"model":         openaiResp["model"],
