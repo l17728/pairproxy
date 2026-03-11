@@ -630,6 +630,8 @@ func convertFinishReason(openaiReason string) string {
 		return "max_tokens"
 	case "tool_calls", "function_call":
 		return "tool_use"
+	case "content_filter":
+		return "end_turn"
 	default:
 		return openaiReason
 	}
@@ -1006,10 +1008,14 @@ func (c *OpenAIToAnthropicStreamConverter) handleDone() {
 		})
 	}
 
-	// message_delta：准确 output_tokens（在 [DONE] 时已知）
+	// message_delta：准确 output_tokens 和 input_tokens（在 [DONE] 时已知）
 	stopReason := convertFinishReason(c.finishReason)
 	if stopReason == "" {
 		stopReason = "end_turn"
+	}
+	inputTokens := c.promptTokens - c.cachedTokens
+	if inputTokens < 0 {
+		inputTokens = 0
 	}
 	c.writeEvent("message_delta", map[string]interface{}{
 		"type": "message_delta",
@@ -1018,7 +1024,10 @@ func (c *OpenAIToAnthropicStreamConverter) handleDone() {
 			"stop_sequence": nil,
 		},
 		"usage": map[string]interface{}{
-			"output_tokens": c.completionTokens,
+			"output_tokens":               c.completionTokens,
+			"input_tokens":                inputTokens,
+			"cache_read_input_tokens":     c.cachedTokens,
+			"cache_creation_input_tokens": 0,
 		},
 	})
 
@@ -1027,10 +1036,6 @@ func (c *OpenAIToAnthropicStreamConverter) handleDone() {
 		"type": "message_stop",
 	})
 
-	inputTokens := c.promptTokens - c.cachedTokens
-	if inputTokens < 0 {
-		inputTokens = 0
-	}
 	c.logger.Debug("stream conversion: completed (progressive)",
 		zap.String("request_id", c.reqID),
 		zap.String("stop_reason", stopReason),

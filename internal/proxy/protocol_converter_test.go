@@ -373,7 +373,7 @@ func TestConvertFinishReason(t *testing.T) {
 	}{
 		{"stop", "end_turn"},
 		{"length", "max_tokens"},
-		{"content_filter", "content_filter"},
+		{"content_filter", "end_turn"},
 		{"unknown", "unknown"},
 	}
 
@@ -970,6 +970,11 @@ func TestOpenAIToAnthropicStreamConverterTokenAccuracy(t *testing.T) {
 		assert.Contains(t, output, `"input_tokens":0`)
 		// output_tokens は message_delta に正確な値で含まれる
 		assert.Contains(t, output, `"output_tokens":10`)
+		// message_delta には正確な input_tokens（= prompt_tokens - cached_tokens = 100 - 80 = 20）
+		assert.Contains(t, output, `"input_tokens":20`)
+		// cache_read_input_tokens と cache_creation_input_tokens も message_delta に含まれる
+		assert.Contains(t, output, `"cache_read_input_tokens":80`)
+		assert.Contains(t, output, `"cache_creation_input_tokens":0`)
 		// content が即時に送信されること
 		assert.Contains(t, output, `"text":"Hi"`)
 	})
