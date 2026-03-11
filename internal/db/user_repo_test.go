@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest"
 )
 
 func TestUserRepo_GetActiveUsers(t *testing.T) {
@@ -83,4 +84,35 @@ func TestUserRepo_GetActiveUsers_Empty(t *testing.T) {
 	users, err := userRepo.GetActiveUsers(30)
 	require.NoError(t, err)
 	assert.Empty(t, users)
+}
+
+func TestUserRepo_ListActive(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	gdb, err := Open(logger, ":memory:")
+	require.NoError(t, err)
+	require.NoError(t, Migrate(logger, gdb))
+
+	repo := NewUserRepo(gdb, logger)
+
+	// 创建两个活跃用户和一个禁用用户
+	u1 := &User{Username: "active1", PasswordHash: "h1", IsActive: true}
+	u2 := &User{Username: "active2", PasswordHash: "h2", IsActive: true}
+	u3 := &User{Username: "disabled3", PasswordHash: "h3"}
+	require.NoError(t, repo.Create(u1))
+	require.NoError(t, repo.Create(u2))
+	require.NoError(t, repo.Create(u3))
+	// IsActive 默认 true，手动禁用 u3
+	require.NoError(t, repo.SetActive(u3.ID, false))
+
+	users, err := repo.ListActive()
+	require.NoError(t, err)
+
+	names := make(map[string]bool)
+	for _, u := range users {
+		names[u.Username] = true
+		assert.True(t, u.IsActive, "ListActive should only return active users")
+	}
+	assert.True(t, names["active1"])
+	assert.True(t, names["active2"])
+	assert.False(t, names["disabled3"], "disabled user must not appear")
 }

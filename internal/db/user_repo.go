@@ -334,6 +334,17 @@ func (r *UserRepo) GetActiveUsers(days int) ([]User, error) {
 	return users, nil
 }
 
+// ListActive 返回所有 is_active=true 的用户列表，用于 API Key 验证遍历。
+func (r *UserRepo) ListActive() ([]User, error) {
+	var users []User
+	if err := r.db.Where("is_active = ?", true).Find(&users).Error; err != nil {
+		r.logger.Error("failed to list active users", zap.Error(err))
+		return nil, fmt.Errorf("list active users: %w", err)
+	}
+	r.logger.Debug("listed active users", zap.Int("count", len(users)))
+	return users, nil
+}
+
 // List 列出所有分组
 func (r *GroupRepo) List() ([]Group, error) {
 	var groups []Group
