@@ -13,6 +13,7 @@ type UserEntry struct {
 	ID       string
 	Username string
 	IsActive bool
+	GroupID  *string // 所属分组 ID（可为 nil）
 }
 
 // IsValidFormat 检查 Key 是否满足格式要求（前缀、总长度、字符集）。
