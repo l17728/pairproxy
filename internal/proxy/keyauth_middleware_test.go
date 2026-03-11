@@ -36,7 +36,8 @@ func TestKeyAuthMiddleware_OpenAI_BearerFormat(t *testing.T) {
 	users := &fakeUserLookup{users: []keygen.UserEntry{
 		{ID: "u1", Username: "alice", IsActive: true},
 	}}
-	cache, _ := keygen.NewKeyCache(10, time.Minute)
+	cache, err := keygen.NewKeyCache(10, time.Minute)
+	require.NoError(t, err)
 	logger := zap.NewNop()
 
 	var gotClaims *auth.JWTClaims
@@ -62,7 +63,8 @@ func TestKeyAuthMiddleware_Anthropic_XApiKeyFormat(t *testing.T) {
 	users := &fakeUserLookup{users: []keygen.UserEntry{
 		{ID: "u1", Username: "alice", IsActive: true},
 	}}
-	cache, _ := keygen.NewKeyCache(10, time.Minute)
+	cache, err := keygen.NewKeyCache(10, time.Minute)
+	require.NoError(t, err)
 
 	var gotClaims *auth.JWTClaims
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -83,7 +85,8 @@ func TestKeyAuthMiddleware_Anthropic_XApiKeyFormat(t *testing.T) {
 
 func TestKeyAuthMiddleware_MissingAuth(t *testing.T) {
 	users := &fakeUserLookup{}
-	cache, _ := keygen.NewKeyCache(10, time.Minute)
+	cache, err := keygen.NewKeyCache(10, time.Minute)
+	require.NoError(t, err)
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) })
 	mw := proxy.NewKeyAuthMiddleware(zap.NewNop(), users, cache, next)
 
@@ -95,7 +98,8 @@ func TestKeyAuthMiddleware_MissingAuth(t *testing.T) {
 
 func TestKeyAuthMiddleware_InvalidFormat(t *testing.T) {
 	users := &fakeUserLookup{}
-	cache, _ := keygen.NewKeyCache(10, time.Minute)
+	cache, err := keygen.NewKeyCache(10, time.Minute)
+	require.NoError(t, err)
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) })
 	mw := proxy.NewKeyAuthMiddleware(zap.NewNop(), users, cache, next)
 
@@ -113,7 +117,8 @@ func TestKeyAuthMiddleware_InvalidUser(t *testing.T) {
 	users := &fakeUserLookup{users: []keygen.UserEntry{
 		{ID: "u2", Username: "qqqqqqqqqqqqqqqqqqqq", IsActive: true},
 	}}
-	cache, _ := keygen.NewKeyCache(10, time.Minute)
+	cache, err := keygen.NewKeyCache(10, time.Minute)
+	require.NoError(t, err)
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) })
 	mw := proxy.NewKeyAuthMiddleware(zap.NewNop(), users, cache, next)
 
@@ -127,7 +132,8 @@ func TestKeyAuthMiddleware_InvalidUser(t *testing.T) {
 func TestKeyAuthMiddleware_CacheHit(t *testing.T) {
 	key := makeAliceKey(t)
 	users := &fakeUserLookup{users: []keygen.UserEntry{}}
-	cache, _ := keygen.NewKeyCache(10, time.Minute)
+	cache, err := keygen.NewKeyCache(10, time.Minute)
+	require.NoError(t, err)
 	cache.Set(key, &keygen.CachedUser{UserID: "u1", Username: "alice"})
 
 	var gotClaims *auth.JWTClaims
@@ -152,7 +158,8 @@ func TestKeyAuthMiddleware_GroupID(t *testing.T) {
 	users := &fakeUserLookup{users: []keygen.UserEntry{
 		{ID: "u1", Username: "alice", IsActive: true, GroupID: &gid},
 	}}
-	cache, _ := keygen.NewKeyCache(10, time.Minute)
+	cache, err := keygen.NewKeyCache(10, time.Minute)
+	require.NoError(t, err)
 
 	var gotClaims *auth.JWTClaims
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

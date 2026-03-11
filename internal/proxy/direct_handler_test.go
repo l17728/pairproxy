@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 
 	"github.com/l17728/pairproxy/internal/keygen"
@@ -34,7 +35,8 @@ func (m *mockSProxy) ServeDirect(w http.ResponseWriter, r *http.Request) {
 func TestDirectHandler_AnthropicPathRewrite(t *testing.T) {
 	mock := &mockSProxy{response: "ok"}
 	aliceKey, _ := keygen.GenerateKey("alice")
-	cache, _ := keygen.NewKeyCache(10, time.Minute)
+	cache, err := keygen.NewKeyCache(10, time.Minute)
+	require.NoError(t, err)
 	cache.Set(aliceKey, &keygen.CachedUser{UserID: "u1", Username: "alice"})
 
 	users := &fakeUserLookup{users: []keygen.UserEntry{
@@ -58,7 +60,8 @@ func TestDirectHandler_AnthropicPathRewrite(t *testing.T) {
 func TestDirectHandler_OpenAIPathUnchanged(t *testing.T) {
 	mock := &mockSProxy{response: "ok"}
 	aliceKey, _ := keygen.GenerateKey("alice")
-	cache, _ := keygen.NewKeyCache(10, time.Minute)
+	cache, err := keygen.NewKeyCache(10, time.Minute)
+	require.NoError(t, err)
 	cache.Set(aliceKey, &keygen.CachedUser{UserID: "u1", Username: "alice"})
 
 	users := &fakeUserLookup{users: []keygen.UserEntry{
@@ -80,7 +83,8 @@ func TestDirectHandler_OpenAIPathUnchanged(t *testing.T) {
 func TestDirectHandler_HandlerBuiltOnce(t *testing.T) {
 	mock := &mockSProxy{}
 	users := &fakeUserLookup{}
-	cache, _ := keygen.NewKeyCache(10, time.Minute)
+	cache, err := keygen.NewKeyCache(10, time.Minute)
+	require.NoError(t, err)
 	dh := proxy.NewDirectProxyHandler(zap.NewNop(), mock, users, cache)
 
 	// HandlerOpenAI/HandlerAnthropic 返回指针类型，可通过 assert.Same 验证同一实例

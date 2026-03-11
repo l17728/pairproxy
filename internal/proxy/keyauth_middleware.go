@@ -27,6 +27,8 @@ type ActiveUserLister interface {
 // 下游 serveProxy 可无感知地复用。
 //
 // 中间件链：cache.Get → (miss) ListActive + ValidateAndGetUser → cache.Set → 注入 claims → next
+// TODO: 当用户被禁用时（admin disable 操作），应调用 cache.InvalidateUser(username)
+// 以立即失效缓存条目。当前实现在 TTL 期间内仍允许被禁用用户通过。
 func NewKeyAuthMiddleware(
 	logger *zap.Logger,
 	users ActiveUserLister,

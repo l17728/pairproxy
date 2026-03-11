@@ -1382,7 +1382,7 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 			if !isStreaming {
 				// 非 streaming：读取完整 body，解析 token，然后重新放回（ReverseProxy 需要）
 				body, readErr := io.ReadAll(resp.Body)
-				resp.Body.Close()
+				_ = resp.Body.Close()
 
 				if readErr != nil {
 					sp.logger.Warn("failed to read non-streaming body",
@@ -1540,7 +1540,8 @@ func extractModelFromBody(body []byte) string {
 // ServeDirect 处理直连模式（API Key 认证）的代理请求。
 //
 // 前提：请求 context 中已由 KeyAuthMiddleware 注入 *auth.JWTClaims。
-// 与 serveProxy 的唯一区别：Director 中会额外删除 x-api-key 认证头。
+// ServeDirect 是直连模式（API Key 认证）的入口，直接委托给 serveProxy。
+// x-api-key 认证头的清理已在 serveProxy 的 Director 中统一处理（对所有调用路径生效）。
 // 路径重写（/anthropic/* → /v1/*）由 DirectProxyHandler 在调用前完成。
 func (sp *SProxy) ServeDirect(w http.ResponseWriter, r *http.Request) {
 	sp.logger.Debug("serving direct proxy request",
