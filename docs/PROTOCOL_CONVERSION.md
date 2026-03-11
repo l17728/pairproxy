@@ -1,7 +1,7 @@
 # Protocol Conversion: Anthropic ↔ OpenAI
 
-**版本**: v2.6.0
-**日期**: 2026-03-09
+**版本**: v2.8.0
+**日期**: 2026-03-11
 **状态**: Implemented
 
 ---
@@ -318,10 +318,12 @@ go test ./internal/proxy -run "Protocol|Converter" -v
 
 **覆盖场景**:
 - 检测逻辑（5 个测试）
-- 请求转换（6 个测试）
-- 响应转换（3 个测试）
+- 请求转换（8 个测试，含图片块、model_mapping）
+- 响应转换（4 个测试，含 chatcmpl- 前缀替换）
 - 流式转换（3 个测试）
 - 完整转换流程（1 个测试）
+- model_mapping（5 个测试）
+- prefill/thinking 拒绝（1 个测试）
 
 ### 手动测试
 
@@ -349,9 +351,17 @@ tail -f sproxy.log | grep "protocol conversion"
 ### 当前限制
 
 1. **单向转换**: 仅支持 Anthropic → OpenAI，不支持反向
-2. **Content 类型**: 仅提取 `type: "text"` 的 content blocks
-3. **工具调用**: 不支持 function calling / tool use 转换
-4. **图片**: 不支持 vision / image content 转换
+2. **工具调用**: 不支持 function calling / tool use 转换
+
+### v2.8.0 新增支持
+
+- ✅ **图片内容块**: Anthropic base64 image → OpenAI image_url 格式
+- ✅ **错误格式转换**: OpenAI 错误响应 → Anthropic 格式
+- ✅ **ID 前缀替换**: `chatcmpl-` → `msg_`
+- ✅ **model_mapping 配置**: 支持精确匹配 + 通配符 `*` 回退
+- ✅ **prefill 拒绝**: assistant turn 末尾 prefill → HTTP 400（OpenAI/Ollama 不支持）
+- ✅ **thinking 参数拒绝**: thinking block 请求 → HTTP 400
+- ✅ **强制 LLM 绑定**: 协议转换请求必须有 user/group 绑定，否则 HTTP 403
 
 ### 兼容性
 
@@ -411,8 +421,7 @@ tail -f sproxy.log | grep "protocol conversion"
 
 1. **双向转换**: 支持 OpenAI → Anthropic
 2. **工具调用转换**: 支持 function calling 格式转换
-3. **Vision 支持**: 支持图片 content 转换
-4. **配置化**: 允许禁用自动转换，手动指定转换规则
+3. **配置化**: 允许禁用自动转换，手动指定转换规则
 
 ### 性能优化
 
@@ -427,7 +436,7 @@ tail -f sproxy.log | grep "protocol conversion"
 - [Anthropic Messages API 文档](https://docs.anthropic.com/claude/reference/messages_post)
 - [OpenAI Chat Completions API 文档](https://platform.openai.com/docs/api-reference/chat)
 - [Ollama API 文档](https://github.com/ollama/ollama/blob/main/docs/api.md)
-- PairProxy 内部设计文档: `docs/archive/2026-03-05-openai-compat-design.md`
+- PairProxy 源码: `internal/proxy/protocol_converter.go`
 
 ---
 

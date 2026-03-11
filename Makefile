@@ -17,8 +17,9 @@
 # --------------------------------------------------------------------------
 
 MODULE  := github.com/l17728/pairproxy
-BINDIR  := bin
-DISTDIR := dist
+BINDIR   := bin
+DISTDIR  := dist
+RELDIR   := release
 
 # 二进制名称（Windows 下由交叉编译目标自动添加 .exe）
 CPROXY  := cproxy
@@ -70,6 +71,17 @@ $(BINDIR)/$(SPROXY): $(shell find cmd/sproxy internal -name '*.go' 2>/dev/null) 
 
 $(BINDIR):
 	mkdir -p $(BINDIR)
+
+## build-dev: 构建全部四个二进制（含 mockllm/mockagent）到 release/，供本地测试使用
+build-dev: $(RELDIR)
+	$(GO) build -ldflags "$(LDFLAGS)" -o $(RELDIR)/$(SPROXY) ./cmd/sproxy
+	$(GO) build -ldflags "$(LDFLAGS)" -o $(RELDIR)/$(CPROXY) ./cmd/cproxy
+	$(GO) build -o $(RELDIR)/mockllm ./cmd/mockllm
+	$(GO) build -o $(RELDIR)/mockagent ./cmd/mockagent
+	@echo "Dev binaries in $(RELDIR)/"
+
+$(RELDIR):
+	mkdir -p $(RELDIR)
 
 # --------------------------------------------------------------------------
 # 测试
