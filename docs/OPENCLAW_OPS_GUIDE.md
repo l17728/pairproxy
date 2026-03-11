@@ -1,7 +1,7 @@
 # PairProxy OpenClaw 自动化运维手册
 
-**版本**: v2.0
-**适用系统**: PairProxy v2.8.0+
+**版本**: v2.1
+**适用系统**: PairProxy v2.9.0+
 **更新日期**: 2026-03-11
 
 ---
@@ -29,6 +29,7 @@
 | 协议转换（v2.6.0+） | 转换错误率、不支持的请求拒绝数 | 5 分钟 |
 | 集群节点 | 心跳状态、用量同步 | 2 分钟 |
 | 告警流（v2.8.0+） | SSE 端点可达性、WARN/ERROR 日志积压 | 5 分钟 |
+| Direct Proxy（v2.9.0+） | `/keygen/` 端点可达性、Key 认证成功率 | 5 分钟 |
 
 ---
 
@@ -857,10 +858,11 @@ openclaw history --task health_check --limit 10
 
 参考 `docs/TROUBLESHOOTING.md` 和 `docs/FAULT_TOLERANCE_ANALYSIS.md`。
 
-新功能（v2.7.0/v2.8.0）相关排查：
-- LLM Target 管理问题：参考 `docs/manual.md` §11 和 `docs/CLUSTER_DESIGN.md`
-- 协议转换问题：参考 `docs/manual.md` §16（协议转换章节）
-- 告警页面问题：检查 `internal/eventlog` 包日志；确认 admin JWT 有效
+新功能相关排查：
+- LLM Target 管理问题（v2.7.0+）：参考 `docs/manual.md` §11 和 `docs/CLUSTER_DESIGN.md`
+- 协议转换问题（v2.6.0+）：参考 `docs/manual.md` §16（协议转换章节）
+- 告警页面问题（v2.8.0+）：检查 `internal/eventlog` 包日志；确认 admin JWT 有效
+- Direct Proxy / Key 认证问题（v2.9.0+）：检查用户是否 active；访问 `/keygen/` 重新生成 Key；查看 `keyauth_middleware` 日志
 
 ---
 
@@ -872,7 +874,7 @@ openclaw history --task health_check --limit 10
 
 ### 9.2 相关文档
 
-- 用户手册: `docs/manual.md`（含 LLM Target 管理、协议转换、批量导入章节）
+- 用户手册: `docs/manual.md`（含 LLM Target 管理、协议转换、批量导入、Direct Proxy 章节）
 - 故障排查: `docs/TROUBLESHOOTING.md`
 - 故障容错分析: `docs/FAULT_TOLERANCE_ANALYSIS.md`
 - 集群设计: `docs/CLUSTER_DESIGN.md`
@@ -886,6 +888,6 @@ openclaw history --task health_check --limit 10
 
 ---
 
-**文档版本**: 2.0
+**文档版本**: 2.1
 **最后更新**: 2026-03-11
 **维护者**: PairProxy Team

@@ -1,7 +1,7 @@
 # PairProxy 测试报告
 
 **生成时间**: 2026-03-11
-**测试版本**: v2.8.0 (测试覆盖增强 + 协议转换进阶)
+**测试版本**: v2.9.0 (Direct Proxy · 协议转换完整实现 · 测试覆盖审计)
 **测试环境**: Windows 11, Go 1.23
 
 ---
@@ -10,15 +10,16 @@
 
 ### ✅ 所有测试类型已完成
 
-| 测试类型 | 状态 | 测试数 | 通过 | 失败 | 说明 |
-|---------|------|--------|------|------|------|
-| 单元测试 (UT) | ✅ PASS | 1,142+ | 1,142+ | 0 | 21个包全量单元测试（含 v2.8.0 新功能） |
-| 集成测试 | ✅ PASS | 8 | 8 | 0 | integration_by_GLM5_test.go |
-| E2E测试 (httptest) | ✅ PASS | 82 | 82 | 0 | 含用户流量查看8个 + LLM Target 7个新E2E |
-| E2E测试 (integration) | ✅ PASS | 68 | 68 | 0 | 真实进程集成测试 |
-| 协议转换测试 | ✅ PASS | 31 | 31 | 0 | protocol_converter_test.go（含新边界用例） |
+| 测试类型 | 状态 | 测试数 | 通过 | 跳过 | 失败 | 说明 |
+|---------|------|--------|------|------|------|------|
+| 单元测试 (UT) | ✅ PASS | 1,275 | 1,274 | 1 | 0 | 24个包全量单元测试（含 v2.9.0 新包） |
+| 子测试 (subtests) | ✅ PASS | 492 | 492 | 0 | 0 | t.Run 表驱动子测试 |
+| 集成测试 | ✅ PASS | 8 | 8 | 0 | 0 | integration_by_GLM5_test.go |
+| E2E测试 (httptest) | ✅ PASS | 90+ | 90+ | 0 | 0 | 含 Direct Proxy E2E + 用户流量 + LLM Target |
+| E2E测试 (integration) | ✅ PASS | 4 | 4 | 0 | 0 | TestFullChainWithMockProcesses 真实进程测试 |
+| 协议转换测试 | ✅ PASS | 35+ | 35+ | 0 | 0 | 含 content_filter→end_turn、流式 input_tokens |
 
-**总计**: 1,331+ 测试用例，全部通过（包含2600+子测试执行）
+**总计**: 1,767 RUN 条目（1,275 顶层测试 + 492 子测试），全部通过
 
 ---
 
@@ -29,22 +30,24 @@
 go test ./...
 ```
 
-### 测试覆盖的包 (21个)
+### 测试覆盖的包 (24个)
 - ✅ github.com/l17728/pairproxy/internal/alert
-- ✅ github.com/l17728/pairproxy/internal/api
+- ✅ github.com/l17728/pairproxy/internal/api        （含 KeygenHandler v2.9.0）
 - ✅ github.com/l17728/pairproxy/internal/auth
 - ✅ github.com/l17728/pairproxy/internal/cluster
 - ✅ github.com/l17728/pairproxy/internal/config
 - ✅ github.com/l17728/pairproxy/internal/dashboard
 - ✅ github.com/l17728/pairproxy/internal/db
+- ✅ github.com/l17728/pairproxy/internal/eventlog   （v2.8.0 新增）
+- ✅ github.com/l17728/pairproxy/internal/keygen     （v2.9.0 新增）
 - ✅ github.com/l17728/pairproxy/internal/lb
 - ✅ github.com/l17728/pairproxy/internal/metrics
 - ✅ github.com/l17728/pairproxy/internal/otel
 - ✅ github.com/l17728/pairproxy/internal/preflight
-- ✅ github.com/l17728/pairproxy/internal/proxy     （含协议转换 v2.6.0）
+- ✅ github.com/l17728/pairproxy/internal/proxy      （含协议转换 v2.6.0+、KeyAuthMiddleware、DirectProxyHandler v2.9.0）
 - ✅ github.com/l17728/pairproxy/internal/quota
 - ✅ github.com/l17728/pairproxy/internal/tap
-- ✅ github.com/l17728/pairproxy/internal/track     （v2.4.0 新增）
+- ✅ github.com/l17728/pairproxy/internal/track      （v2.4.0 新增）
 - ✅ github.com/l17728/pairproxy/internal/version
 - ✅ github.com/l17728/pairproxy/cmd/cproxy
 - ✅ github.com/l17728/pairproxy/cmd/sproxy
@@ -77,7 +80,18 @@ go test ./...
 - OpenAI API兼容层
 - OpenAI provider 路径推断修复（v2.4.0）
 - 流式响应处理
-- **协议自动转换（v2.6.0新增，v2.8.0增强）**
+- **协议自动转换（v2.6.0新增，v2.9.0补全：content_filter→end_turn、流式 input_tokens）**
+- **KeyAuthMiddleware（v2.9.0新增）**：sk-pp- API Key 双头格式（x-api-key/Bearer）认证、LRU 缓存
+- **DirectProxyHandler（v2.9.0新增）**：预构建中间件链，无需 cproxy 直连
+
+#### API Key 生成模块 (internal/keygen)（v2.9.0 新增）
+- GenerateKey — 嵌入用户名指纹的 API Key 生成
+- ValidateAndGetUser — 最长匹配用户名指纹校验
+- KeyCache — LRU+TTL 缓存，防止高频 DB 查询
+- IsValidFormat / ExtractAlphanumeric / ContainsAllCharsWithCount — 格式验证工具函数
+
+#### 事件日志模块 (internal/eventlog)（v2.8.0 新增）
+- SSE Hub 实时推送 WARN/ERROR 日志流
   - Anthropic ↔ OpenAI 双向转换
   - 自动检测（请求路径 + 目标 provider）
   - System 消息处理
@@ -586,11 +600,12 @@ mockagent → cproxy(:8080) → sproxy(:9000) → mockllm(:11434)
 
 ✅ **所有测试用例已全部执行并通过**
 
-- 单元测试: 1,142+ 测试，全部通过（21个包）
+- 顶层测试函数: 1,275（含 1 个 Unix 权限测试在 Windows 下跳过）
+- 子测试 (t.Run): 492
+- **总 RUN 条目: 1,767**，全部通过（24个包）
 - 集成测试: 8 测试，全部通过
-- E2E测试: 82+ 测试，全部通过（含用户流量查看8个 + 专家评审边界用例）
-- 真实进程测试: 4 子测试，全部通过
-- 完整链路测试: 50 请求，全部通过
+- E2E测试 (httptest): 90+ 测试，全部通过
+- E2E测试 (真实进程, -tags=integration): 4 子测试，全部通过
 
 **v2.4.0 新增测试**:
 - `internal/track` 包：15个单元测试（Tracker + CaptureSession）
@@ -658,6 +673,22 @@ mockagent → cproxy(:8080) → sproxy(:9000) → mockllm(:11434)
   - ✅ TestLLMTargetE2E_ConfigSourceReadOnly - 配置来源只读
   - ✅ TestLLMTargetE2E_EnableDisable - 启用/禁用功能
   - ✅ TestLLMTargetE2E_FullLifecycle - 完整生命周期
+
+**v2.9.0 新增测试（Direct Proxy · 协议转换补全 · 日志/测试覆盖审计）**:
+- `internal/keygen/` 包：完整测试套件（GenerateKey、ValidateAndGetUser、KeyCache、格式验证）
+- `internal/proxy/keyauth_middleware_test.go`：新增错误路径覆盖
+  - ✅ `TestKeyAuthMiddleware_ListActiveError` — ListActive() 报错 → HTTP 500
+  - ✅ `TestKeyAuthMiddleware_KeyCollision` — 多用户指纹碰撞 → HTTP 401
+- `internal/api/keygen_handler_test.go`：新增边界用例
+  - ✅ `TestKeygenLogin_MissingFields` — 空用户名/密码 → HTTP 400
+  - ✅ `TestKeygenLogin_InvalidJSON` — 非法 JSON body → HTTP 400
+  - ✅ `TestKeygenLogin_UserNotFound` — 不存在用户 → HTTP 401
+  - ✅ `TestKeygenRegenerate_MissingAuthHeader` — 缺失 Authorization → HTTP 401
+- `internal/proxy/protocol_converter_test.go`：新增协议转换补全测试
+  - ✅ `TestConvertFinishReason` 含 content_filter→end_turn 分支
+  - ✅ `TestOpenAIToAnthropicStreamConverterTokenAccuracy` 含 input_tokens/cache_read_input_tokens 断言
+- `test/e2e/fullchain_with_processes_test.go`：修复真实进程集成测试
+  - ✅ `TestFullChainWithMockProcesses/concurrent_requests` — 补齐 LLM binding，10并发全部通过
 
 **测试质量**: 优秀
 **代码稳定性**: 高

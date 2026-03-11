@@ -7,14 +7,18 @@
 > 企业级 Claude Code 透明代理 — 统一管控 LLM API Key，精确追踪 token 用量，零侵入接入。
 
 ```
-┌─────────────┐   HTTP/SSE    ┌───────────────────────────┐   HTTPS   ┌──────────────────┐
-│ Claude Code │──────────────▶│  cproxy  127.0.0.1:8080   │──────────▶│  sproxy  :9000   │──▶ Anthropic API
-│ (code agent)│               │  注入用户 JWT              │           │  验证身份 · 配额  │
-└─────────────┘               └───────────────────────────┘           │  统计用量 · 转发  │
-                                                                       └──────────────────┘
+┌─────────────┐   HTTP/SSE    ┌───────────────────────────┐
+│ Claude Code │──────────────▶│  cproxy  127.0.0.1:8080   │──┐
+│ (code agent)│               │  注入用户 JWT              │  │  JWT
+└─────────────┘               └───────────────────────────┘  │
+                                                               ▼
+┌─────────────┐  sk-pp- Key   ┌──────────────────────────────────────┐
+│ 任意 client │──────────────▶│  sproxy  :9000                       │──▶ Anthropic / OpenAI / Ollama
+│ (直连模式)  │   /v1/ 或      │  验证身份 · 配额 · 统计用量 · 转发   │
+└─────────────┘  /anthropic/  └──────────────────────────────────────┘
 ```
 
-**两个组件，解决一个问题**：多人共用 LLM API Key 时，谁用了多少、超没超额、钱花哪了——一目了然。
+**两种接入方式**：`cproxy` 透明代理（无感知）或 `sk-pp-` API Key 直连（无需本地进程）——多人共用 LLM API Key 时，谁用了多少、超没超额、钱花哪了——一目了然。
 
 ---
 
@@ -50,6 +54,7 @@
 | **告警页面** | Dashboard 实时 WARN/ERROR 日志查看器，通过 SSE 推送，无需刷新 |
 | **批量导入** | `sproxy admin import <file>` 从模板文件批量创建分组/用户，支持 `--dry-run` 预览和 WebUI 操作 |
 | **协议转换进阶** | 图片内容块转换（Anthropic→OpenAI）、OpenAI 错误响应转 Anthropic 格式、model_mapping 配置、prefill/thinking 拒绝（HTTP 400） |
+| **Direct Proxy（v2.9.0）** | `sk-pp-` API Key 直连，无需 cproxy；访问 `/keygen/` 自助生成 Key；同时支持 OpenAI (`/v1/`) 和 Anthropic (`/anthropic/`) 两种头格式 |
 
 ---
 
@@ -551,14 +556,16 @@ pairproxy/
 │   └── sproxy/main.go        # sproxy CLI 入口 + admin 子命令
 ├── internal/
 │   ├── auth/                 # JWT 管理、bcrypt、本地 token 文件
-│   ├── proxy/                # cproxy/sproxy 核心 HTTP 处理器 + 中间件
-│   ├── tap/                  # TeeResponseWriter + Anthropic SSE 解析器
+│   ├── proxy/                # cproxy/sproxy 核心 HTTP 处理器 + 中间件 + 协议转换
+│   ├── keygen/               # sk-pp- API Key 生成、验证、LRU 缓存（v2.9.0）
+│   ├── tap/                  # TeeResponseWriter + Anthropic/OpenAI SSE 解析器
 │   ├── lb/                   # Balancer 接口、加权随机、健康检查
 │   ├── cluster/              # 路由表、PeerRegistry、Reporter
 │   ├── quota/                # 配额检查、速率限制、中间件
 │   ├── db/                   # SQLite + GORM 模型、UserRepo、UsageRepo
-│   ├── api/                  # AuthHandler、AdminHandler、ClusterHandler
+│   ├── api/                  # AuthHandler、AdminHandler、ClusterHandler、KeygenHandler
 │   ├── dashboard/            # Web Dashboard（Go 模板 + embed）
+│   ├── eventlog/             # SSE 告警日志 Hub（v2.8.0）
 │   ├── metrics/              # Prometheus 格式 /metrics 端点
 │   ├── alert/                # Webhook 告警通知器
 │   ├── track/                # 对话内容追踪（按用户隔离的 JSON 文件记录）

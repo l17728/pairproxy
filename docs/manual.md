@@ -1,6 +1,6 @@
 # PairProxy 用户手册
 
-**版本 v2.8.0**
+**版本 v2.9.0**
 
 ---
 
@@ -3495,5 +3495,106 @@ curl http://localhost:9000/health
 - **无数据库变更**，直接替换二进制即可
 - 首次启动后自动创建 `<db_dir>/track/` 目录（对话跟踪存储）
 - 新增 `sproxy admin track` 系列命令，见 [§17](#17-用户对话内容跟踪)
+
+### v2.9.0 升级说明
+
+- **无数据库变更**，直接替换二进制即可
+- 新增 `/keygen/` WebUI 端点，无需额外配置即可使用
+- 新增 `/anthropic/` 和 `/v1/` 直连路由（混合模式），与旧版 cproxy 路由完全兼容
+- 协议转换补全：`content_filter` finish_reason 现在正确映射为 `end_turn`；流式 `message_delta` 携带准确 `input_tokens`
+
+---
+
+## 20. Direct Proxy — sk-pp- API Key 直连（v2.9.0）
+
+> **适用场景**：不想在本地运行 cproxy 进程，直接用 API Key 访问 sproxy。
+
+### 20.1 概述
+
+v2.9.0 引入 **Direct Proxy** 模式：用户通过 `sk-pp-` 前缀的 API Key 直接访问 sproxy，无需本地 cproxy 进程。sproxy 根据 Key 内嵌的用户名指纹识别用户身份，享受与 cproxy 模式完全相同的配额控制和用量统计。
+
+**接入路径**：
+
+| 路径 | 头格式 | 兼容客户端 |
+|------|--------|-----------|
+| `/v1/messages`、`/v1/chat/completions` 等 | `Authorization: Bearer sk-pp-...` | Claude Code、OpenAI SDK、curl |
+| `/anthropic/v1/messages` 等 | `x-api-key: sk-pp-...` | Anthropic SDK、curl |
+
+### 20.2 获取 API Key
+
+#### 方式一：自助 WebUI（推荐）
+
+1. 浏览器访问 `http://<sproxy-host>:9000/keygen/`
+2. 输入用户名和密码登录
+3. 页面显示您的 API Key 及 Claude Code / OpenCode 配置片段
+4. 点击「复制」或「重新生成」管理 Key
+
+#### 方式二：REST API
+
+```bash
+# 登录获取 Key 和 session token
+curl -X POST http://localhost:9000/keygen/api/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"alice","password":"Password123"}'
+
+# 响应
+{
+  "username": "alice",
+  "key": "sk-pp-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "token": "<session-jwt>",
+  "expires_in": 3600
+}
+
+# 用 session token 重新生成 Key（旧 Key 立即失效）
+curl -X POST http://localhost:9000/keygen/api/regenerate \
+  -H "Authorization: Bearer <session-jwt>"
+```
+
+### 20.3 配置客户端
+
+#### Claude Code
+
+```bash
+export ANTHROPIC_API_KEY="sk-pp-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+export ANTHROPIC_BASE_URL="http://<sproxy-host>:9000"
+claude "Hello"
+```
+
+#### OpenCode / 兼容 OpenAI 格式的客户端
+
+```bash
+export OPENAI_API_KEY="sk-pp-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+export OPENAI_BASE_URL="http://<sproxy-host>:9000/v1"
+```
+
+#### curl 直接调用
+
+```bash
+# Anthropic 格式
+curl http://localhost:9000/v1/messages \
+  -H "Authorization: Bearer sk-pp-..." \
+  -H "Content-Type: application/json" \
+  -d '{"model":"claude-opus-4-5","max_tokens":1024,"messages":[{"role":"user","content":"Hi"}]}'
+
+# OpenAI 格式（自动协议转换到 Anthropic）
+curl http://localhost:9000/v1/chat/completions \
+  -H "Authorization: Bearer sk-pp-..." \
+  -H "Content-Type: application/json" \
+  -d '{"model":"claude-opus-4-5","messages":[{"role":"user","content":"Hi"}]}'
+```
+
+### 20.4 API Key 安全说明
+
+- **Key 不存储在服务端**：sproxy 通过解析 Key 内嵌的用户名指纹识别用户，无需数据库查询（有 LRU 缓存）
+- **重新生成立即生效**：旧 Key 因指纹不匹配而立即失效，无需通知服务端
+- **Key 格式**：`sk-pp-` 前缀 + 48 位字母数字随机串（含用户名字符指纹）
+- **保密要求**：请像保管密码一样保管您的 Key；怀疑泄漏时，通过 `/keygen/` WebUI 重新生成
+
+### 20.5 管理员注意事项
+
+- Direct Proxy 模式使用与 cproxy 相同的配额和用量统计，**无需额外配置**
+- 用户必须是活跃状态（`is_active=true`）才能使用 Key
+- 禁用用户（`sproxy admin user disable <name>`）后，其 Key 立即失效
+- 用量记录在同一 `usage_logs` 表，Dashboard 和统计命令均可查看
 
 ---
