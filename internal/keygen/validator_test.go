@@ -1,6 +1,7 @@
 package keygen_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -26,7 +27,7 @@ func TestIsValidFormat_TooShort(t *testing.T) {
 }
 
 func TestIsValidFormat_TooLong(t *testing.T) {
-	assert.False(t, keygen.IsValidFormat("sk-pp-" + "a" + string(make([]byte, 48)) + "X"))
+	assert.False(t, keygen.IsValidFormat("sk-pp-"+strings.Repeat("a", 49))) // 6+49=55 chars
 }
 
 func TestIsValidFormat_InvalidChars(t *testing.T) {

@@ -41,6 +41,10 @@ func IsValidFormat(key string) bool {
 //  3. 选择匹配的最长用户名（最多字母数字字符数）
 //  4. 若相同长度有多个用户匹配，返回 collision error
 //
+// 前提：调用方应确保 users 中的所有用户名均已通过 ValidateUsername 验证，
+// 以避免字母数字字符极少的用户名（如 "----ab"）被意外匹配。
+// 短用户名的碰撞问题属于已知设计限制，后续可通过修改 Key 生成算法解决。
+//
 // 返回 (nil, nil) 表示无匹配用户。
 func ValidateAndGetUser(key string, users []UserEntry) (*UserEntry, error) {
 	if !IsValidFormat(key) {

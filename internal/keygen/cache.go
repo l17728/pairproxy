@@ -44,11 +44,14 @@ func (c *KeyCache) Get(key string) *CachedUser {
 		return nil
 	}
 	if c.ttl > 0 && time.Since(entry.CachedAt) > c.ttl {
-		// TTL 过期：主动删除
+		// 升级为写锁前重新验证，防止 TOCTOU：另一个 goroutine 可能在
+		// RUnlock 之后、Lock 之前写入新值
 		c.mu.Lock()
-		c.inner.Remove(key)
+		if fresh, ok := c.inner.Peek(key); ok && time.Since(fresh.CachedAt) > c.ttl {
+			c.inner.Remove(key)
+			zap.L().Debug("api key cache TTL expired", zap.String("username", entry.Username))
+		}
 		c.mu.Unlock()
-		zap.L().Debug("api key cache TTL expired", zap.String("username", entry.Username))
 		return nil
 	}
 	return entry
