@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -143,6 +144,71 @@ func TestKeygenRegenerate_Unauthorized(t *testing.T) {
 	rr := httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)
 	assert.Equal(t, 401, rr.Code)
+}
+
+func TestKeygenLogin_MissingFields(t *testing.T) {
+	h, _ := setupKeygenTest(t)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	// 缺少密码
+	body := `{"username":"alice","password":""}`
+	req := httptest.NewRequest(http.MethodPost, "/keygen/api/login", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusBadRequest, rr.Code)
+	assert.Contains(t, rr.Body.String(), "missing_fields")
+
+	// 缺少用户名
+	body = `{"username":"","password":"pass"}`
+	req = httptest.NewRequest(http.MethodPost, "/keygen/api/login", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusBadRequest, rr.Code)
+	assert.Contains(t, rr.Body.String(), "missing_fields")
+}
+
+func TestKeygenLogin_InvalidJSON(t *testing.T) {
+	h, _ := setupKeygenTest(t)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/keygen/api/login", strings.NewReader("not-json"))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusBadRequest, rr.Code)
+	assert.Contains(t, rr.Body.String(), "invalid_request")
+}
+
+func TestKeygenLogin_UserNotFound(t *testing.T) {
+	h, _ := setupKeygenTest(t)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	// "nobody" 不在测试数据库中
+	body := `{"username":"nobody","password":"anypass"}`
+	req := httptest.NewRequest(http.MethodPost, "/keygen/api/login", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusUnauthorized, rr.Code)
+	assert.Contains(t, rr.Body.String(), "invalid_credentials")
+}
+
+func TestKeygenRegenerate_MissingAuthHeader(t *testing.T) {
+	h, _ := setupKeygenTest(t)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/keygen/api/regenerate", nil)
+	// 不设置 Authorization 头
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusUnauthorized, rr.Code)
+	assert.Contains(t, rr.Body.String(), "missing_token")
 }
 
 func TestKeygenStaticPage(t *testing.T) {

@@ -55,6 +55,20 @@ func TestValidateAndGetUser_NoMatch(t *testing.T) {
 	assert.Nil(t, u, "invalid format key should not match any user")
 }
 
+func TestValidateAndGetUser_ValidFormatNoMatch(t *testing.T) {
+	// 生成 alice 的合法格式 key
+	key, err := keygen.GenerateKey("alice")
+	require.NoError(t, err)
+
+	// 用户列表中只有 20 个 q 的用户名，其字母数字字符不可能出现在 alice 的 key 中
+	users := []keygen.UserEntry{
+		{ID: "u1", Username: "qqqqqqqqqqqqqqqqqqqq", IsActive: true}, // 20 q's — no overlap with alice's chars
+	}
+	u, err := keygen.ValidateAndGetUser(key, users)
+	assert.NoError(t, err)
+	assert.Nil(t, u) // valid format, no match in fingerprint-matching loop
+}
+
 func TestValidateAndGetUser_InactiveSkipped(t *testing.T) {
 	key, err := keygen.GenerateKey("alice")
 	require.NoError(t, err)

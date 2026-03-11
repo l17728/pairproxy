@@ -1,8 +1,10 @@
 package proxy_test
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -150,6 +152,57 @@ func TestKeyAuthMiddleware_CacheHit(t *testing.T) {
 	assert.Equal(t, 200, rr.Code)
 	require.NotNil(t, gotClaims)
 	assert.Equal(t, "alice", gotClaims.Username)
+}
+
+// errUserLookup 实现 ActiveUserLister 接口，始终返回错误（测试用）
+type errUserLookup struct{ err error }
+
+func (e *errUserLookup) ListActive() ([]keygen.UserEntry, error) {
+	return nil, e.err
+}
+
+func TestKeyAuthMiddleware_ListActiveError(t *testing.T) {
+	cache, err := keygen.NewKeyCache(10, time.Minute)
+	require.NoError(t, err)
+
+	users := &errUserLookup{err: fmt.Errorf("db connection lost")}
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := proxy.NewKeyAuthMiddleware(zap.NewNop(), users, cache, next)
+
+	// 提供合法格式的 key，使其通过格式校验后触发 ListActive
+	key := "sk-pp-" + strings.Repeat("a", 48)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	req.Header.Set("Authorization", "Bearer "+key)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+func TestKeyAuthMiddleware_KeyCollision(t *testing.T) {
+	cache, err := keygen.NewKeyCache(10, time.Minute)
+	require.NoError(t, err)
+
+	// "abcd" 和 "dcba" 的字母数字字符集完全相同（各 1 个 a/b/c/d）→ 碰撞
+	users := &fakeUserLookup{users: []keygen.UserEntry{
+		{ID: "u1", Username: "abcd", IsActive: true},
+		{ID: "u2", Username: "dcba", IsActive: true},
+	}}
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := proxy.NewKeyAuthMiddleware(zap.NewNop(), users, cache, next)
+
+	// 包含 a,b,c,d 的合法格式 key（6+48=54 字符）
+	key := "sk-pp-abcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcd"
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	req.Header.Set("Authorization", "Bearer "+key)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
 }
 
 func TestKeyAuthMiddleware_GroupID(t *testing.T) {
