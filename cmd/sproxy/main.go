@@ -28,6 +28,7 @@ import (
 	"github.com/l17728/pairproxy/internal/alert"
 	"github.com/l17728/pairproxy/internal/api"
 	"github.com/l17728/pairproxy/internal/auth"
+	"github.com/l17728/pairproxy/internal/keygen"
 	"github.com/l17728/pairproxy/internal/cluster"
 	"github.com/l17728/pairproxy/internal/config"
 	"github.com/l17728/pairproxy/internal/dashboard"
@@ -689,6 +690,70 @@ func runStart(cmd *cobra.Command, args []string) error {
 	if cfg.Telemetry.Enabled {
 		proxyHandler = wrapOtelHTTP(proxyHandler, "pairproxy.sproxy")
 	}
+
+	// -----------------------------------------------------------------------
+	// 直连模式（API Key 认证，无需 cproxy 客户端）
+	// -----------------------------------------------------------------------
+
+	// 构建 API Key 缓存（5分钟 TTL，最多 5000 条）
+	apiKeyCache, keyCacheErr := keygen.NewKeyCache(5000, 5*time.Minute)
+	if keyCacheErr != nil {
+		logger.Warn("failed to create api key cache, proceeding without cache",
+			zap.Error(keyCacheErr))
+	}
+
+	// 构建用户查询适配器和直连处理器（在此预构建 handler）
+	dbUserLister := proxy.NewDBUserLister(userRepo)
+	directHandler := proxy.NewDirectProxyHandler(logger, sp, dbUserLister, apiKeyCache)
+	openAIDirectHandler := directHandler.HandlerOpenAI()
+	anthropicDirectHandler := directHandler.HandlerAnthropic()
+
+	logger.Info("direct proxy handlers built",
+		zap.String("openai_path", "/v1/ (Bearer sk-pp-...)"),
+		zap.String("anthropic_path", "/anthropic/ (x-api-key: sk-pp-...)"),
+	)
+
+	// Anthropic 协议直连：/anthropic/*
+	mux.Handle("/anthropic/", anthropicDirectHandler)
+	logger.Info("direct proxy registered", zap.String("path", "/anthropic/"), zap.String("auth", "x-api-key"))
+
+	// 混合路由：/v1/* 同时支持 cproxy 模式和直连模式
+	mux.HandleFunc("/v1/", func(w http.ResponseWriter, r *http.Request) {
+		// cproxy 模式：JWT 认证头
+		if r.Header.Get("X-PairProxy-Auth") != "" {
+			proxyHandler.ServeHTTP(w, r)
+			return
+		}
+		// 直连模式：sk-pp- API Key（OpenAI 格式）
+		authVal := r.Header.Get("Authorization")
+		if strings.HasPrefix(authVal, "Bearer sk-pp-") {
+			openAIDirectHandler.ServeHTTP(w, r)
+			return
+		}
+		// Authorization: Bearer <JWT>（cproxy 兼容写法）
+		if strings.HasPrefix(authVal, "Bearer ") {
+			proxyHandler.ServeHTTP(w, r)
+			return
+		}
+		// 无有效认证头
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error":   "missing_auth",
+			"message": "X-PairProxy-Auth (cproxy) or Authorization: Bearer sk-pp-... (direct) required",
+		})
+		logger.Warn("v1 route: no valid auth header",
+			zap.String("path", r.URL.Path),
+			zap.String("remote_addr", r.RemoteAddr),
+		)
+	})
+	logger.Info("hybrid route registered", zap.String("path", "/v1/"), zap.String("modes", "cproxy+direct"))
+
+	// Key 生成 WebUI（用户自助服务）
+	keygenAPIHandler := api.NewKeygenHandler(logger, userRepo, jwtMgr)
+	keygenAPIHandler.RegisterRoutes(mux)
+	logger.Info("keygen WebUI registered at /keygen/")
+
 	mux.Handle("/", proxyHandler)
 
 	addr := cfg.Listen.Addr()
