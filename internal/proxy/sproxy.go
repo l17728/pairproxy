@@ -1321,6 +1321,8 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 			// F-5: 优先使用 DB 中的动态 API Key，未找到则回退到配置文件中的静态 Key
 			req.Header.Del("X-PairProxy-Auth")
 			req.Header.Del("Authorization") // 清理客户端的 Bearer JWT，避免泄漏给上游
+			// 清理直连模式的 Anthropic 认证头（防止泄露给上游）
+			req.Header.Del("x-api-key")
 			apiKey := firstInfo.APIKey
 			if sp.apiKeyResolver != nil {
 				if k, ok := sp.apiKeyResolver(claims.UserID); ok {
@@ -1533,4 +1535,17 @@ func extractModelFromBody(body []byte) string {
 		return req.Model
 	}
 	return ""
+}
+
+// ServeDirect 处理直连模式（API Key 认证）的代理请求。
+//
+// 前提：请求 context 中已由 KeyAuthMiddleware 注入 *auth.JWTClaims。
+// 与 serveProxy 的唯一区别：Director 中会额外删除 x-api-key 认证头。
+// 路径重写（/anthropic/* → /v1/*）由 DirectProxyHandler 在调用前完成。
+func (sp *SProxy) ServeDirect(w http.ResponseWriter, r *http.Request) {
+	sp.logger.Debug("serving direct proxy request",
+		zap.String("path", r.URL.Path),
+		zap.String("method", r.Method),
+	)
+	sp.serveProxy(w, r)
 }
