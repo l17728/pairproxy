@@ -107,6 +107,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /dashboard/groups/{id}/quota", h.requireSession(http.HandlerFunc(h.handleSetQuota)))
 	mux.Handle("POST /dashboard/groups/{id}/delete", h.requireSession(http.HandlerFunc(h.handleDeleteGroup)))
 	mux.Handle("GET /dashboard/logs", h.requireSession(http.HandlerFunc(h.handleLogsPage)))
+	mux.Handle("POST /dashboard/logs/purge-all", h.requireSession(http.HandlerFunc(h.handleLogsPurgeAll)))
 	mux.Handle("GET /dashboard/audit", h.requireSession(http.HandlerFunc(h.handleAuditPage)))
 	mux.Handle("GET /dashboard/my-usage", h.requireSession(http.HandlerFunc(h.handleMyUsagePage)))
 
@@ -693,6 +694,30 @@ func (h *Handler) handleLogsPage(w http.ResponseWriter, r *http.Request) {
 		Limit:          limit,
 		UserMap:        userMap,
 	})
+}
+
+// handleLogsPurgeAll POST /dashboard/logs/purge-all
+// 清空所有使用日志。需要在表单中提交 confirm=OK 作为二次确认。
+func (h *Handler) handleLogsPurgeAll(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Redirect(w, r, "/dashboard/logs?error=invalid+form", http.StatusSeeOther)
+		return
+	}
+	if r.FormValue("confirm") != "OK" {
+		http.Redirect(w, r, "/dashboard/logs?error=请输入+OK+以确认清空", http.StatusSeeOther)
+		return
+	}
+
+	n, err := h.usageRepo.DeleteBefore(time.Now().Add(time.Second))
+	if err != nil {
+		h.logger.Error("purge all logs failed", zap.Error(err))
+		http.Redirect(w, r, "/dashboard/logs?error="+err.Error(), http.StatusSeeOther)
+		return
+	}
+
+	_ = h.auditRepo.Create("admin", "logs.purge_all", "usage_logs", fmt.Sprintf("deleted %d records", n))
+	h.logger.Info("all usage logs purged via dashboard", zap.Int64("deleted", n))
+	http.Redirect(w, r, "/dashboard/logs?flash=日志已清空，共删除"+fmt.Sprintf("%d", n)+"条记录", http.StatusSeeOther)
 }
 
 // ---------------------------------------------------------------------------

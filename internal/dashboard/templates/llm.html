@@ -151,7 +151,15 @@
           <td class="px-4 py-2">
             {{if .IsEditable}}
             <div class="flex gap-2">
-              <button onclick="editTarget('{{.ID}}', '{{.URL}}', '{{.Provider}}', '{{.Name}}', {{.Weight}}, '{{.HealthCheckPath}}', '{{.APIKeyID}}')"
+              <button type="button"
+                      onclick="editTarget(this)"
+                      data-id="{{.ID}}"
+                      data-url="{{.URL}}"
+                      data-provider="{{.Provider}}"
+                      data-name="{{.Name}}"
+                      data-weight="{{.Weight}}"
+                      data-health-check-path="{{.HealthCheckPath}}"
+                      data-api-key-id="{{.APIKeyID}}"
                       class="text-indigo-600 hover:text-indigo-800 text-xs">编辑</button>
               <form method="POST" action="/dashboard/llm/targets/{{.ID}}/delete" class="inline">
                 <button type="submit" onclick="return confirm('确认删除此目标？')"
@@ -159,7 +167,13 @@
               </form>
             </div>
             {{else}}
-            <button onclick="viewTargetDetails('{{.URL}}', '{{.Provider}}', '{{.Name}}', {{.Weight}}, '{{.HealthCheckPath}}')"
+            <button type="button"
+                    onclick="viewTargetDetails(this)"
+                    data-url="{{.URL}}"
+                    data-provider="{{.Provider}}"
+                    data-name="{{.Name}}"
+                    data-weight="{{.Weight}}"
+                    data-health-check-path="{{.HealthCheckPath}}"
                     class="text-gray-600 hover:text-gray-800 text-xs">查看详情</button>
             {{end}}
           </td>
@@ -265,7 +279,7 @@
       <thead class="bg-gray-50">
         <tr>
           <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">类型</th>
-          <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">用户/分组 ID</th>
+          <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">用户/分组</th>
           <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">目标 URL</th>
           <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">创建时间</th>
           <th class="px-4 py-2"></th>
@@ -275,12 +289,14 @@
         {{range .Bindings}}
         <tr>
           <td class="px-4 py-2">{{if .UserID}}用户{{else}}分组{{end}}</td>
-          <td class="px-4 py-2 font-mono text-xs">{{if .UserID}}{{deref .UserID}}{{else}}{{deref .GroupID}}{{end}}</td>
+          <td class="px-4 py-2 text-xs">
+            {{if .UserID}}{{username .UserID $.UserIDToName}}{{else if .GroupID}}{{username .GroupID $.GroupIDToName}}{{end}}
+          </td>
           <td class="px-4 py-2 font-mono text-xs">{{.TargetURL}}</td>
           <td class="px-4 py-2 text-xs text-gray-500">{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
           <td class="px-4 py-2">
             <form method="POST" action="/dashboard/llm/bindings/{{.ID}}/delete">
-              <button type="submit" class="text-red-600 hover:text-red-800 text-xs">删除</button>
+              <button type="submit" class="text-red-600 hover:text-red-800 text-xs">解绑</button>
             </form>
           </td>
         </tr>
@@ -292,7 +308,8 @@
   </div>
 </section>
 
-<!-- 添加绑定 -->
+<!-- 添加绑定（仅当存在未绑定的用户或分组时显示） -->
+{{if or .Users .Groups}}
 <section>
   <h2 class="text-base font-semibold text-gray-700 mb-3">添加绑定</h2>
   <form method="POST" action="/dashboard/llm/bindings" class="bg-white p-4 rounded shadow space-y-3 max-w-lg">
@@ -323,7 +340,7 @@
     <div>
       <label class="block text-sm font-medium text-gray-700 mb-1">目标 URL</label>
       <select name="target_url" class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm">
-        {{range .Targets}}
+        {{range .AllTargets}}
         <option value="{{.URL}}">{{if .Name}}{{.Name}} ({{.URL}}){{else}}{{.URL}}{{end}}</option>
         {{end}}
       </select>
@@ -333,6 +350,7 @@
     </button>
   </form>
 </section>
+{{end}}
 
 <script>
 function toggleBindType(val) {
@@ -345,15 +363,16 @@ function toggleAddTargetForm() {
   form.classList.toggle('hidden');
 }
 
-function editTarget(id, url, provider, name, weight, healthCheckPath, apiKeyID) {
-  document.getElementById('edit_id').value = id;
-  document.getElementById('edit_url').value = url;
-  document.getElementById('edit_provider').value = provider || 'anthropic';
-  document.getElementById('edit_name').value = name || '';
-  document.getElementById('edit_weight').value = weight || 1;
-  document.getElementById('edit_health_check_path').value = healthCheckPath || '';
-  document.getElementById('edit_api_key_id').value = apiKeyID || '';
-  document.getElementById('editTargetForm').action = '/dashboard/llm/targets/' + id + '/update';
+function editTarget(btn) {
+  var d = btn.dataset;
+  document.getElementById('edit_id').value = d.id || '';
+  document.getElementById('edit_url').value = d.url || '';
+  document.getElementById('edit_provider').value = d.provider || 'anthropic';
+  document.getElementById('edit_name').value = d.name || '';
+  document.getElementById('edit_weight').value = d.weight || 1;
+  document.getElementById('edit_health_check_path').value = d.healthCheckPath || '';
+  document.getElementById('edit_api_key_id').value = d.apiKeyId || '';
+  document.getElementById('editTargetForm').action = '/dashboard/llm/targets/' + d.id + '/update';
   document.getElementById('editTargetModal').classList.remove('hidden');
 }
 
@@ -361,12 +380,13 @@ function closeEditModal() {
   document.getElementById('editTargetModal').classList.add('hidden');
 }
 
-function viewTargetDetails(url, provider, name, weight, healthCheckPath) {
-  document.getElementById('view_url').textContent = url;
-  document.getElementById('view_provider').textContent = provider || 'anthropic';
-  document.getElementById('view_name').textContent = name || '（无）';
-  document.getElementById('view_weight').textContent = weight || 1;
-  document.getElementById('view_health_check_path').textContent = healthCheckPath || '（无）';
+function viewTargetDetails(btn) {
+  var d = btn.dataset;
+  document.getElementById('view_url').textContent = d.url || '';
+  document.getElementById('view_provider').textContent = d.provider || 'anthropic';
+  document.getElementById('view_name').textContent = d.name || '（无）';
+  document.getElementById('view_weight').textContent = d.weight || 1;
+  document.getElementById('view_health_check_path').textContent = d.healthCheckPath || '（无）';
   document.getElementById('viewTargetModal').classList.remove('hidden');
 }
 

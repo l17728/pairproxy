@@ -14,14 +14,16 @@ import (
 // llmPageData LLM 管理页数据
 type llmPageData struct {
 	baseData
-	Targets     []proxy.LLMTargetStatus
-	AllTargets  []llmTargetWithMeta // 合并后的目标列表（含 Source/IsEditable）
-	Bindings    []db.LLMBinding
-	BoundCount  map[string]int // target URL → 绑定数量
-	Users       []db.User
-	Groups      []db.Group
-	APIKeys     []db.APIKey
-	DrainStatus proxy.DrainStatus // 排水状态
+	Targets      []proxy.LLMTargetStatus
+	AllTargets   []llmTargetWithMeta // 合并后的目标列表（含 Source/IsEditable）
+	Bindings     []db.LLMBinding
+	BoundCount   map[string]int    // target URL → 绑定数量
+	UserIDToName map[string]string // user ID → username（用于绑定列表显示）
+	GroupIDToName map[string]string // group ID → group name
+	Users        []db.User
+	Groups       []db.Group
+	APIKeys      []db.APIKey
+	DrainStatus  proxy.DrainStatus // 排水状态
 }
 
 // llmTargetWithMeta 扩展的目标信息（用于 WebUI 显示）
@@ -102,14 +104,39 @@ func (h *Handler) handleLLMPage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 获取用户和分组列表
+	// 构建已绑定的 user/group ID 集合（用于过滤添加绑定下拉框）
+	boundUserIDs := make(map[string]bool)
+	boundGroupIDs := make(map[string]bool)
+	for _, b := range data.Bindings {
+		if b.UserID != nil {
+			boundUserIDs[*b.UserID] = true
+		}
+		if b.GroupID != nil {
+			boundGroupIDs[*b.GroupID] = true
+		}
+	}
+
+	// 获取用户和分组列表，并构建 ID→名称映射（用于绑定列表显示）
+	// Users/Groups 仅保留未绑定的，用于"添加绑定"下拉框
+	data.UserIDToName = make(map[string]string)
+	data.GroupIDToName = make(map[string]string)
 	if h.userRepo != nil {
-		users, _ := h.userRepo.ListByGroup("")
-		data.Users = users
+		allUsers, _ := h.userRepo.ListByGroup("")
+		for _, u := range allUsers {
+			data.UserIDToName[u.ID] = u.Username
+			if !boundUserIDs[u.ID] {
+				data.Users = append(data.Users, u)
+			}
+		}
 	}
 	if h.groupRepo != nil {
-		groups, _ := h.groupRepo.List()
-		data.Groups = groups
+		allGroups, _ := h.groupRepo.List()
+		for _, g := range allGroups {
+			data.GroupIDToName[g.ID] = g.Name
+			if !boundGroupIDs[g.ID] {
+				data.Groups = append(data.Groups, g)
+			}
+		}
 	}
 
 	// 获取 API Keys

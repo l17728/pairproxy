@@ -86,6 +86,8 @@ func AuthMiddleware(logger *zap.Logger, jwtMgr *auth.Manager, next http.Handler)
 		if token == "" {
 			logger.Warn("missing authentication header",
 				zap.String("request_id", reqID),
+				zap.String("path", r.URL.Path),
+				zap.String("method", r.Method),
 				zap.String("remote_addr", r.RemoteAddr),
 			)
 			writeJSONError(w, http.StatusUnauthorized, "missing_auth_header", "X-PairProxy-Auth or Authorization: Bearer header is required")

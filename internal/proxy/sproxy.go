@@ -1194,12 +1194,6 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 				)
 				writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", convErr.Error())
 				return
-			} else if errors.Is(convErr, ErrThinkingNotSupported) {
-				sp.logger.Warn("protocol conversion rejected: thinking not supported",
-					zap.String("request_id", reqID),
-				)
-				writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", convErr.Error())
-				return
 			} else {
 				sp.logger.Warn("protocol conversion failed, forwarding original request",
 					zap.String("request_id", reqID),

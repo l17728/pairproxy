@@ -1553,7 +1553,7 @@ func TestConvertOpenAIErrorResponse(t *testing.T) {
 func TestThinkingRejection(t *testing.T) {
 	logger := zap.NewNop()
 
-	t.Run("thinking field present → ErrThinkingNotSupported", func(t *testing.T) {
+	t.Run("thinking field present → stripped silently, no error", func(t *testing.T) {
 		anthropicReq := map[string]interface{}{
 			"model":      "claude-3-5-sonnet-20241022",
 			"max_tokens": 1024,
@@ -1563,9 +1563,11 @@ func TestThinkingRejection(t *testing.T) {
 			},
 		}
 		body, _ := json.Marshal(anthropicReq)
-		_, _, err := convertAnthropicToOpenAIRequest(body, logger, "req-thinking", nil)
-		require.Error(t, err)
-		assert.ErrorIs(t, err, ErrThinkingNotSupported)
+		converted, _, err := convertAnthropicToOpenAIRequest(body, logger, "req-thinking", nil)
+		require.NoError(t, err)
+		var result map[string]interface{}
+		require.NoError(t, json.Unmarshal(converted, &result))
+		assert.NotContains(t, result, "thinking", "thinking parameter should be stripped from converted request")
 	})
 
 	t.Run("thinking field nil → no error", func(t *testing.T) {

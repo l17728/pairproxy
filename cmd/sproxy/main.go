@@ -754,6 +754,16 @@ func runStart(cmd *cobra.Command, args []string) error {
 	keygenAPIHandler.RegisterRoutes(mux)
 	logger.Info("keygen WebUI registered at /keygen/")
 
+	// 拦截浏览器自动发起的静态资源请求（favicon、robots.txt），
+	// 避免它们落入 proxyHandler 的 AuthMiddleware 产生"missing authentication header"告警。
+	mux.HandleFunc("GET /favicon.ico", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	mux.HandleFunc("GET /robots.txt", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("User-agent: *\nDisallow: /\n"))
+	})
+
 	mux.Handle("/", proxyHandler)
 
 	addr := cfg.Listen.Addr()
