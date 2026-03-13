@@ -1,0 +1,97 @@
+{{template "layout" .}}
+{{define "content"}}
+<div class="flex items-center justify-between mb-6">
+  <h1 class="text-2xl font-bold text-gray-900">模型路由</h1>
+  <span class="text-sm text-gray-500">所有 LLM Target 声明的可路由模型</span>
+</div>
+
+{{if .DefaultModel}}
+<div class="mb-4 flex items-center gap-2 px-4 py-3 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-800">
+  <svg class="w-4 h-4 text-blue-500 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+    <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd"/>
+  </svg>
+  <span>全局默认模型 <code class="font-mono bg-blue-100 px-1 rounded">{{.DefaultModel}}</code>（auto 模式无绑定时使用）</span>
+</div>
+{{else}}
+<div class="mb-4 flex items-center gap-2 px-4 py-3 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-600">
+  <svg class="w-4 h-4 text-gray-400 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+    <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd"/>
+  </svg>
+  <span>未配置全局默认模型（<code class="font-mono bg-gray-100 px-1 rounded">llm.default_model</code>）</span>
+</div>
+{{end}}
+
+{{if .Models}}
+<div class="bg-white rounded-lg shadow overflow-hidden">
+  <table class="min-w-full divide-y divide-gray-200">
+    <thead class="bg-gray-50">
+      <tr>
+        <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">模型 ID</th>
+        <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">别名</th>
+        <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Target</th>
+        <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">上游名称</th>
+        <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">默认</th>
+        <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">来源</th>
+      </tr>
+    </thead>
+    <tbody class="bg-white divide-y divide-gray-200">
+      {{range .Models}}
+      <tr class="hover:bg-gray-50">
+        <td class="px-4 py-3">
+          <code class="text-sm font-mono text-indigo-700">{{.ModelID}}</code>
+        </td>
+        <td class="px-4 py-3 text-sm text-gray-600">
+          {{if .AliasesDisplay}}
+            {{range .AliasesDisplay}}<span class="inline-block bg-gray-100 text-gray-700 text-xs px-1.5 py-0.5 rounded mr-1 font-mono">{{.}}</span>{{end}}
+          {{else}}
+            <span class="text-gray-400">—</span>
+          {{end}}
+        </td>
+        <td class="px-4 py-3 text-sm text-gray-700">
+          <span class="font-medium">{{.TargetName}}</span>
+          <div class="text-xs text-gray-400 truncate max-w-xs">{{.TargetURL}}</div>
+        </td>
+        <td class="px-4 py-3 text-sm">
+          {{if .UpstreamName}}
+            <code class="text-xs font-mono text-gray-600">{{.UpstreamName}}</code>
+          {{else}}
+            <span class="text-gray-400 text-xs">（同模型 ID）</span>
+          {{end}}
+        </td>
+        <td class="px-4 py-3 text-sm">
+          {{if .IsDefault}}
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">✓ 默认</span>
+          {{else}}
+            <span class="text-gray-400">—</span>
+          {{end}}
+        </td>
+        <td class="px-4 py-3 text-sm">
+          {{if eq .Source "config"}}
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">配置文件</span>
+          {{else}}
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800">数据库</span>
+          {{end}}
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{else}}
+<div class="bg-white rounded-lg shadow p-12 text-center">
+  <svg class="mx-auto h-12 w-12 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z"/>
+  </svg>
+  <h3 class="mt-4 text-lg font-medium text-gray-900">尚未声明任何模型</h3>
+  <p class="mt-2 text-sm text-gray-500">在 <code class="font-mono bg-gray-100 px-1 rounded">sproxy.yaml</code> 的 <code class="font-mono bg-gray-100 px-1 rounded">llm.targets[*].models</code> 字段添加模型声明，重启后生效。</p>
+  <pre class="mt-4 mx-auto max-w-lg text-left text-xs bg-gray-50 border border-gray-200 rounded p-3 text-gray-700 overflow-x-auto">llm:
+  targets:
+    - url: "https://api.anthropic.com"
+      provider: "anthropic"
+      models:
+        - id: "claude-opus-4-5"
+          default: true
+        - id: "claude-sonnet-4-5"</pre>
+</div>
+{{end}}
+{{end}}

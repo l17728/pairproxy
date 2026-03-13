@@ -36,10 +36,12 @@ type Handler struct {
 	tokenRepo         *db.RefreshTokenRepo           // 可选，token 吊销
 	adminPasswordHash string
 	tokenTTL          time.Duration
-	llmBindingRepo    *db.LLMBindingRepo             // 可选，LLM 绑定管理
-	llmTargetRepo     *db.LLMTargetRepo              // 可选，LLM 目标管理
-	apiKeyRepo        *db.APIKeyRepo                 // 可选，API Key 管理
-	llmHealthFn       func() []proxy.LLMTargetStatus // 可选，查询 LLM 健康状态
+	llmBindingRepo       *db.LLMBindingRepo             // 可选，LLM 绑定管理
+	llmTargetRepo        *db.LLMTargetRepo              // 可选，LLM 目标管理
+	llmTargetModelRepo   *db.LLMTargetModelRepo         // 可选，模型条目管理（模型路由）
+	apiKeyRepo           *db.APIKeyRepo                 // 可选，API Key 管理
+	llmHealthFn          func() []proxy.LLMTargetStatus // 可选，查询 LLM 健康状态
+	defaultModel         string                         // 可选，全局默认模型（用于 models 页面展示）
 	drainFn           func() error                   // 可选，进入排水模式
 	undrainFn         func() error                   // 可选，退出排水模式
 	drainStatusFn     func() proxy.DrainStatus       // 可选，查询排水状态
@@ -110,6 +112,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /dashboard/logs/purge-all", h.requireSession(http.HandlerFunc(h.handleLogsPurgeAll)))
 	mux.Handle("GET /dashboard/audit", h.requireSession(http.HandlerFunc(h.handleAuditPage)))
 	mux.Handle("GET /dashboard/my-usage", h.requireSession(http.HandlerFunc(h.handleMyUsagePage)))
+
+	// 模型路由页面（可选，需设置 llmTargetModelRepo）
+	mux.Handle("GET /dashboard/models", h.requireSession(http.HandlerFunc(h.handleModelsPage)))
 
 	// LLM 管理（可选，需设置 llmBindingRepo）
 	mux.Handle("GET /dashboard/llm", h.requireSession(http.HandlerFunc(h.handleLLMPage)))

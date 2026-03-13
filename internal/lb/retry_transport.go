@@ -14,8 +14,9 @@ import (
 
 // LLMTargetInfo 携带 RetryTransport 执行单次请求所需的最小 target 信息。
 type LLMTargetInfo struct {
-	URL    string // 完整 URL，如 "https://api.anthropic.com"
-	APIKey string // Bearer token，用于 Authorization 头
+	URL           string // 完整 URL，如 "https://api.anthropic.com"
+	APIKey        string // Bearer token，用于 Authorization 头
+	OverrideModel string // 模型路由指定的上游实际模型名（非空时优先于 model_mapping 替换请求中的 model 字段）
 }
 
 // RetryTransport 是带重试的 LLM 上游 http.RoundTripper。

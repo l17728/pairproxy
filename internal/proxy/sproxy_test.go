@@ -524,7 +524,7 @@ func TestSProxyRejectsRequestWhenBoundTargetUnhealthy(t *testing.T) {
 	})
 
 	// 直接测试 pickLLMTarget 在 tried 包含 boundURL 时返回 ErrBoundTargetUnavailable
-	_, err := sp.pickLLMTarget("/v1/messages", "user1", "", []string{boundURL})
+	_, err := sp.pickLLMTarget("/v1/messages", "user1", "", "", []string{boundURL})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

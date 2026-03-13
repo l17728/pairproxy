@@ -87,10 +87,12 @@ type SProxy struct {
 	drainStarted time.Time     // 排水开始时间
 
 	// LLM 均衡 + 绑定（可选）
-	llmBalancer     *lb.WeightedRandomBalancer                       // 加权随机负载均衡
-	llmHC           *lb.HealthChecker                                // 健康检查（被动熔断 + 自动恢复）
-	bindingResolver func(userID, groupID string) (string, bool)      // 用户/分组 → target URL
-	maxRetries      int                                               // RetryTransport 最大重试次数
+	llmBalancer          *lb.WeightedRandomBalancer                                           // 加权随机负载均衡
+	llmHC                *lb.HealthChecker                                                    // 健康检查（被动熔断 + 自动恢复）
+	bindingResolver      func(userID, groupID string) (string, bool)                          // 用户/分组 → target URL
+	modelResolver        func(modelID string) (targetURL, upstreamName string, found bool)    // model ID → target URL + upstream name
+	autoModelResolver    func(userID, groupID string) (modelID string, found bool)            // auto 模式：为用户选择默认模型
+	maxRetries           int                                                                   // RetryTransport 最大重试次数
 
 	debugLogger atomic.Pointer[zap.Logger] // 可选，非 nil 时将转发内容写入独立 debug 文件
 	notifier    *alert.Notifier             // 可选，非 nil 时发送 high_load/load_recovered 告警
@@ -183,6 +185,20 @@ func (sp *SProxy) SetLLMHealthChecker(bal *lb.WeightedRandomBalancer, hc *lb.Hea
 // 未设置 bindingResolver 时（如单元测试），回退到负载均衡自动选取。
 func (sp *SProxy) SetBindingResolver(fn func(userID, groupID string) (string, bool)) {
 	sp.bindingResolver = fn
+}
+
+// SetModelResolver 设置模型路由解析器（可选）。
+// fn 根据 modelID 返回应路由到的 target URL 和上游实际模型名。
+// 优先级低于用户/分组绑定，高于加权随机负载均衡。
+func (sp *SProxy) SetModelResolver(fn func(modelID string) (targetURL, upstreamName string, found bool)) {
+	sp.modelResolver = fn
+}
+
+// SetAutoModelResolver 设置 auto 模式默认模型解析器（可选）。
+// fn 根据用户/分组信息选择默认模型 ID；model="" 或 "auto" 时触发。
+// 若 found=false，请求继续但不替换 model 字段。
+func (sp *SProxy) SetAutoModelResolver(fn func(userID, groupID string) (modelID string, found bool)) {
+	sp.autoModelResolver = fn
 }
 
 // SetMaxRetries 设置 RetryTransport 的最大重试次数（默认 2）。
@@ -740,13 +756,14 @@ func (sp *SProxy) HealthHandler() http.HandlerFunc {
 	}
 }
 
-// pickLLMTarget 选择下一个 LLM target，支持用户/分组绑定和负载均衡。
+// pickLLMTarget 选择下一个 LLM target，支持用户/分组绑定、模型路由和负载均衡。
 //
 // 选择优先级：
 //  1. 用户/分组绑定（bindingResolver）→ 若绑定 target 健康且未尝试过
-//  2. 加权随机负载均衡（llmBalancer）→ 过滤已尝试 + 不健康 + provider 不匹配
-//  3. 回退简单轮询（无均衡器时）
-func (sp *SProxy) pickLLMTarget(path, userID, groupID string, tried []string) (*lb.LLMTargetInfo, error) {
+//  2. 【模型路由】modelResolver → 根据请求 model 字段找对应 target
+//  3. 加权随机负载均衡（llmBalancer）→ 过滤已尝试 + 不健康 + provider 不匹配
+//  4. 回退简单轮询（无均衡器时）
+func (sp *SProxy) pickLLMTarget(path, userID, groupID, modelID string, tried []string) (*lb.LLMTargetInfo, error) {
 	triedSet := make(map[string]bool, len(tried))
 	for _, u := range tried {
 		triedSet[u] = true
@@ -794,12 +811,33 @@ func (sp *SProxy) pickLLMTarget(path, userID, groupID string, tried []string) (*
 		return nil, ErrBoundTargetUnavailable
 	}
 
-	// 2. 加权随机均衡（支持 tried 过滤 + provider 过滤）
+	// 2. 模型路由（无用户/分组绑定时，根据 model 字段路由到对应 target）
+	if sp.modelResolver != nil && modelID != "" {
+		if targetURL, upstreamName, found := sp.modelResolver(modelID); found && !triedSet[targetURL] {
+			info := sp.llmTargetInfoForURL(targetURL)
+			if info != nil {
+				info.OverrideModel = upstreamName
+				sp.logger.Debug("model-based routing: selected target",
+					zap.String("model_id", modelID),
+					zap.String("target_url", targetURL),
+					zap.String("upstream_name", upstreamName),
+					zap.String("user_id", userID),
+				)
+				return info, nil
+			}
+			sp.logger.Warn("model-based routing: target not found in active targets, falling through",
+				zap.String("model_id", modelID),
+				zap.String("target_url", targetURL),
+			)
+		}
+	}
+
+	// 3. 加权随机均衡（支持 tried 过滤 + provider 过滤）
 	if sp.llmBalancer != nil {
 		return sp.weightedPickExcluding(path, triedSet)
 	}
 
-	// 3. 回退：简单轮询（未配置均衡器时）
+	// 4. 回退：简单轮询（未配置均衡器时）
 	candidates := sp.candidatesByPath(path)
 	if len(candidates) == 0 {
 		candidates = sp.targets
@@ -948,7 +986,7 @@ func preferredProvidersByPath(path string) map[string]bool {
 }
 
 // buildRetryTransport 构建 RetryTransport（当 llmBalancer 已配置时）。
-func (sp *SProxy) buildRetryTransport(userID, groupID string) http.RoundTripper {
+func (sp *SProxy) buildRetryTransport(userID, groupID, modelID string) http.RoundTripper {
 	if sp.llmBalancer == nil {
 		return sp.transport
 	}
@@ -960,7 +998,7 @@ func (sp *SProxy) buildRetryTransport(userID, groupID string) http.RoundTripper 
 		Inner:      sp.transport,
 		MaxRetries: maxRetries,
 		PickNext: func(path string, tried []string) (*lb.LLMTargetInfo, error) {
-			return sp.pickLLMTarget(path, userID, groupID, tried)
+			return sp.pickLLMTarget(path, userID, groupID, modelID, tried)
 		},
 		OnSuccess: func(targetURL string) {
 			if sp.llmHC != nil {
@@ -1104,7 +1142,33 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 
-	firstInfo, pickErr := sp.pickLLMTarget(r.URL.Path, claims.UserID, claims.GroupID, nil)
+	// 提前提取 model ID（用于模型路由选择 target）
+	routingModelID := extractModel(r)
+	if routingModelID == "" && len(bodyBytes) > 0 {
+		routingModelID = extractModelFromBody(bodyBytes)
+	}
+
+	// auto 模式：model="" 或 "auto" 时，通过 autoModelResolver 选择默认模型
+	if (routingModelID == "" || routingModelID == "auto") && sp.autoModelResolver != nil {
+		if autoModel, found := sp.autoModelResolver(claims.UserID, claims.GroupID); found {
+			sp.logger.Debug("auto model selected",
+				zap.String("request_id", reqID),
+				zap.String("user_id", claims.UserID),
+				zap.String("selected_model", autoModel),
+			)
+			routingModelID = autoModel
+			// 将选定的模型注入请求 body（让上游收到正确的 model 字段）
+			if len(bodyBytes) > 0 {
+				if replaced, replErr := replaceModelInBody(bodyBytes, autoModel); replErr == nil {
+					bodyBytes = replaced
+					r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+					r.ContentLength = int64(len(bodyBytes))
+				}
+			}
+		}
+	}
+
+	firstInfo, pickErr := sp.pickLLMTarget(r.URL.Path, claims.UserID, claims.GroupID, routingModelID, nil)
 	if pickErr != nil {
 		switch {
 		case errors.Is(pickErr, ErrNoLLMBinding):
@@ -1174,7 +1238,16 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 
 		// 转换请求 body
 		if len(bodyBytes) > 0 {
+			// OverrideModel 优先级高于 model_mapping：模型路由指定的上游名直接覆盖整个 mapping
 			modelMapping := sp.modelMappingForURL(firstInfo.URL)
+			if firstInfo.OverrideModel != "" {
+				// 用 "*" 通配符覆盖所有模型名（等效于无条件替换）
+				modelMapping = map[string]string{"*": firstInfo.OverrideModel}
+				sp.logger.Debug("using OverrideModel from model routing",
+					zap.String("request_id", reqID),
+					zap.String("override_model", firstInfo.OverrideModel),
+				)
+			}
 			converted, newPath, convErr := convertAnthropicToOpenAIRequest(bodyBytes, sp.logger, reqID, modelMapping)
 			if convErr == nil {
 				bodyBytes = converted
@@ -1206,6 +1279,19 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 				zap.String("request_id", reqID),
 			)
 			needsConversion = false
+		}
+	}
+
+	// 模型路由 OverrideModel：无协议转换时直接替换请求 body 中的 model 字段
+	if !needsConversion && firstInfo.OverrideModel != "" && len(bodyBytes) > 0 {
+		if replaced, replErr := replaceModelInBody(bodyBytes, firstInfo.OverrideModel); replErr == nil {
+			bodyBytes = replaced
+			r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+			r.ContentLength = int64(len(bodyBytes))
+			sp.logger.Debug("model field overridden in request body (no conversion path)",
+				zap.String("request_id", reqID),
+				zap.String("override_model", firstInfo.OverrideModel),
+			)
 		}
 	}
 
@@ -1291,7 +1377,7 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 	tw := tap.NewTeeResponseWriter(finalWriter, sp.logger, sp.writer, usageRecord, targetProvider, startTime, onChunk)
 
 	// 构建 transport（配置均衡器时使用 RetryTransport；否则使用基础 transport）
-	transport := sp.buildRetryTransport(claims.UserID, claims.GroupID)
+	transport := sp.buildRetryTransport(claims.UserID, claims.GroupID, routingModelID)
 
 	proxy := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
@@ -1529,6 +1615,21 @@ func extractModelFromBody(body []byte) string {
 		return req.Model
 	}
 	return ""
+}
+
+// replaceModelInBody 将 JSON body 中的 model 字段替换为 newModel。
+// 用于模型路由 OverrideModel：无协议转换时直接修改 Anthropic 格式请求的 model 字段。
+func replaceModelInBody(body []byte, newModel string) ([]byte, error) {
+	var req map[string]interface{}
+	if err := json.Unmarshal(body, &req); err != nil {
+		return body, err
+	}
+	req["model"] = newModel
+	out, err := json.Marshal(req)
+	if err != nil {
+		return body, err
+	}
+	return out, nil
 }
 
 // ServeDirect 处理直连模式（API Key 认证）的代理请求。

@@ -120,6 +120,20 @@ type LLMTarget struct {
 	UpdatedAt       time.Time
 }
 
+// LLMTargetModel 记录每个 LLM Target 所支持的模型条目（用于模型路由和发现）
+type LLMTargetModel struct {
+	ID           string    `gorm:"primarykey"`
+	TargetURL    string    `gorm:"not null;index"`
+	ModelID      string    `gorm:"not null"`                      // 对外暴露的模型名
+	AliasesJSON  string    `gorm:"not null;default:'[]'"`         // JSON 数组，存储别名列表
+	IsDefault    bool      `gorm:"not null;default:false"`        // 是否为该 target 的默认模型
+	UpstreamName string    `gorm:"not null;default:''"`           // 上游实际模型名（空=使用 ModelID）
+	Source       string    `gorm:"not null;default:'config'"`     // "config" | "database"
+	IsActive     bool      `gorm:"not null;default:true"`
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
 // TableName 方法（可选，用于显式指定表名）
 func (Group) TableName() string           { return "groups" }
 func (User) TableName() string            { return "users" }
@@ -131,3 +145,4 @@ func (APIKey) TableName() string          { return "api_keys" }
 func (APIKeyAssignment) TableName() string { return "api_key_assignments" }
 func (LLMBinding) TableName() string      { return "llm_bindings" }
 func (LLMTarget) TableName() string       { return "llm_targets" }
+func (LLMTargetModel) TableName() string  { return "llm_target_models" }

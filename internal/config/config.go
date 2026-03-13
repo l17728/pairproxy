@@ -106,6 +106,14 @@ type CProxyAuth struct {
 	RefreshThreshold time.Duration `yaml:"refresh_threshold"` // 默认 30m
 }
 
+// ModelEntry 单个 LLM Target 下声明的模型条目
+type ModelEntry struct {
+	ID           string   `yaml:"id"`                      // 对外暴露的模型名（客户端请求时使用）
+	Aliases      []string `yaml:"aliases,omitempty"`       // 别名列表（客户端也可用别名请求）
+	Default      bool     `yaml:"default,omitempty"`       // 是否为该 target 的默认模型
+	UpstreamName string   `yaml:"upstream_name,omitempty"` // 转发给上游时的实际模型名（为空则与 ID 相同）
+}
+
 // LLMConfig s-proxy 上游 LLM 配置
 type LLMConfig struct {
 	LBStrategy     string        `yaml:"lb_strategy"`     // "round_robin"
@@ -113,6 +121,7 @@ type LLMConfig struct {
 	MaxRetries     int           `yaml:"max_retries"`     // 上游失败时最大重试次数（不含首次），默认 2；0=不重试
 	RecoveryDelay  time.Duration `yaml:"recovery_delay"`  // 熔断后自动恢复延迟，默认 60s；0=禁用自动恢复
 	Targets        []LLMTarget   `yaml:"targets"`
+	DefaultModel   string        `yaml:"default_model,omitempty"` // 全局默认模型（auto 模式或客户端不指定模型时使用）
 }
 
 // LLMTarget 单个 LLM 上游节点
@@ -124,6 +133,7 @@ type LLMTarget struct {
 	Name            string            `yaml:"name"`              // 可选显示名称（空则使用 URL）
 	HealthCheckPath string            `yaml:"health_check_path"` // 主动健康检查路径，空=仅被动检查
 	ModelMapping    map[string]string `yaml:"model_mapping,omitempty"` // Anthropic 模型名 → Ollama/OpenAI 模型名映射；"*" 匹配所有未命中的模型
+	Models          []ModelEntry      `yaml:"models,omitempty"`        // 该 target 支持的模型清单（用于模型路由和发现）
 }
 
 // DatabaseConfig SQLite 数据库配置

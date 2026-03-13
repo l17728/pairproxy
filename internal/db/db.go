@@ -136,6 +136,7 @@ func Migrate(logger *zap.Logger, db *gorm.DB) error {
 		&APIKeyAssignment{}, // F-5: API Key 分配
 		&LLMBinding{},       // LLM 绑定管理
 		&LLMTarget{},        // LLM 目标动态管理
+		&LLMTargetModel{},   // LLM 目标模型条目（模型路由和发现）
 	}
 
 	for _, model := range models {

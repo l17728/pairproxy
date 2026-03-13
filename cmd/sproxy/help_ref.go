@@ -772,7 +772,34 @@ Natural language: "import users from file", "bulk create users", "dry-run import
 
 ---
 
-## 15. Other Top-level Commands
+## 15. Model Routing (sproxy admin model)
+
+Manage per-target model entries for model-based routing.
+
+**Routing priority**: user binding > group binding > model routing > weighted random LB
+
+| Flag | Description |
+|------|-------------|
+| ` + bq + `--target <url>` + bq + ` | LLM Target URL (required for add/remove) |
+| ` + bq + `--id <model>` + bq + ` | Model ID exposed to clients (required for add/remove) |
+| ` + bq + `--upstream <name>` + bq + ` | Actual model name sent upstream (default: same as ID) |
+| ` + bq + `--alias <alias>` + bq + ` | Alias name (can be specified multiple times) |
+| ` + bq + `--default` + bq + ` | Mark as the default model for this target |
+
+Examples:
+  sproxy admin model list
+  sproxy admin model add --target "http://localhost:11434" --id "llama3.2" --default
+  sproxy admin model add --target "http://localhost:11434" --id "claude-haiku-4-5" --upstream "llama3.2:1b"
+  sproxy admin model remove --target "http://localhost:11434" --id "llama3.2"
+  sproxy admin model default
+  sproxy admin model sync
+
+Natural language: "list model routes", "add model to target", "remove model entry",
+"what models are available", "show default model", "sync models from config"
+
+---
+
+## 16. Other Top-level Commands
 
 ### hash-password
 
@@ -853,5 +880,10 @@ Natural language: "start server", "start sproxy", "run the proxy"
 | Clear alice's conversation records | sproxy admin track clear alice |
 | Import groups/users from file | sproxy admin import users.txt |
 | Preview import without writing | sproxy admin import --dry-run users.txt |
+| List all model route entries | sproxy admin model list |
+| Add model entry to target | sproxy admin model add --target <url> --id <model> --upstream <name> |
+| Remove model entry from target | sproxy admin model remove --target <url> --id <model> |
+| View global default model | sproxy admin model default |
+| Sync models from config file | sproxy admin model sync |
 | Hash a new admin password | sproxy hash-password |
 `

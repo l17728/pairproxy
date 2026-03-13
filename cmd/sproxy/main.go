@@ -579,6 +579,96 @@ func runStart(cmd *cobra.Command, args []string) error {
 	llmTargetRepo := db.NewLLMTargetRepo(database, logger)
 	logger.Info("LLM target repo configured")
 
+	// LLM Target 模型条目仓库 + 模型路由解析器
+	llmTargetModelRepo := db.NewLLMTargetModelRepo(database, logger)
+	// 从配置文件同步模型声明到数据库
+	for _, t := range cfg.LLM.Targets {
+		if len(t.Models) > 0 {
+			if syncErr := llmTargetModelRepo.UpsertFromConfig(t.URL, t.Models); syncErr != nil {
+				logger.Warn("failed to sync model entries from config",
+					zap.String("target_url", t.URL),
+					zap.Error(syncErr),
+				)
+			} else {
+				logger.Info("synced model entries from config",
+					zap.String("target_url", t.URL),
+					zap.Int("count", len(t.Models)),
+				)
+			}
+		}
+	}
+	sp.SetModelResolver(func(modelID string) (string, string, bool) {
+		targetURL, upstreamName, found, err := llmTargetModelRepo.FindTargetForModel(modelID)
+		if err != nil {
+			logger.Warn("model resolver lookup failed",
+				zap.String("model_id", modelID),
+				zap.Error(err),
+			)
+			return "", "", false
+		}
+		return targetURL, upstreamName, found
+	})
+	logger.Info("model resolver configured (model-based routing enabled)")
+
+	// auto 模式默认模型解析器
+	sp.SetAutoModelResolver(func(userID, groupID string) (string, bool) {
+		// 1. 用户/分组绑定 target 的默认模型
+		if boundURL, found, _ := llmBindingRepo.FindForUser(userID, groupID); found {
+			if modelID, _, ok, _ := llmTargetModelRepo.GetDefaultModelForTarget(boundURL); ok {
+				logger.Debug("auto model: using bound target default",
+					zap.String("user_id", userID),
+					zap.String("bound_url", boundURL),
+					zap.String("model_id", modelID),
+				)
+				return modelID, true
+			}
+		}
+		// 2. 全局 default_model 配置
+		if cfg.LLM.DefaultModel != "" {
+			logger.Debug("auto model: using global default_model",
+				zap.String("user_id", userID),
+				zap.String("model_id", cfg.LLM.DefaultModel),
+			)
+			return cfg.LLM.DefaultModel, true
+		}
+		// 3. 所有活跃 target 中权重最高 target 的默认模型
+		if allModels, listErr := llmTargetModelRepo.ListAll(); listErr == nil {
+			allTargets, targErr := llmTargetRepo.ListAll()
+			if targErr == nil {
+				// 按 target weight 排序，找最高权重 target 中的 is_default 模型
+				bestWeight := -1
+				var bestModelID string
+				for _, t := range allTargets {
+					if !t.IsActive {
+						continue
+					}
+					if t.Weight > bestWeight {
+						// 检查该 target 是否有默认模型
+						for _, m := range allModels {
+							if m.TargetURL == t.URL && m.IsDefault && m.IsActive {
+								bestWeight = t.Weight
+								bestModelID = m.ModelID
+								break
+							}
+						}
+					}
+				}
+				if bestModelID != "" {
+					logger.Debug("auto model: using highest-weight target default",
+						zap.String("user_id", userID),
+						zap.String("model_id", bestModelID),
+					)
+					return bestModelID, true
+				}
+			}
+		}
+		logger.Warn("auto model: no default model found, model field unchanged",
+			zap.String("user_id", userID),
+		)
+		return "", false
+	})
+	logger.Info("auto model resolver configured")
+
 	// 排水控制函数
 	adminHandler.SetDrainFunctions(sp.Drain, sp.Undrain, sp.GetDrainStatus)
 	logger.Info("drain control functions configured")
@@ -666,6 +756,8 @@ func runStart(cmd *cobra.Command, args []string) error {
 		)
 		dashHandler.SetLLMDeps(llmBindingRepo, sp.LLMTargetStatuses)
 		dashHandler.SetLLMTargetRepo(llmTargetRepo)
+		dashHandler.SetLLMTargetModelRepo(llmTargetModelRepo)
+		dashHandler.SetDefaultModel(cfg.LLM.DefaultModel)
 		dashHandler.SetAPIKeyRepo(apiKeyRepo)
 		dashHandler.SetTokenRepo(tokenRepo)
 		dashHandler.SetDrainFunctions(sp.Drain, sp.Undrain, sp.GetDrainStatus)
@@ -716,6 +808,27 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// Anthropic 协议直连：/anthropic/*
 	mux.Handle("/anthropic/", anthropicDirectHandler)
 	logger.Info("direct proxy registered", zap.String("path", "/anthropic/"), zap.String("auth", "x-api-key"))
+
+	// GET /v1/models — OpenAI 兼容模型发现端点（需在 /v1/ 通配符之前注册）
+	modelsHandler := api.NewModelsHandler(logger, llmTargetModelRepo, llmTargetRepo)
+	// 使用与 /v1/ 相同的认证包装：两种 auth 头均可，但不强制 cproxy
+	mux.HandleFunc("GET /v1/models", func(w http.ResponseWriter, r *http.Request) {
+		// 接受 JWT（cproxy 模式）或 sk-pp- API Key（直连模式）
+		if r.Header.Get("X-PairProxy-Auth") == "" {
+			authVal := r.Header.Get("Authorization")
+			if !strings.HasPrefix(authVal, "Bearer ") {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				_ = json.NewEncoder(w).Encode(map[string]string{
+					"error":   "missing_auth",
+					"message": "Authorization header required",
+				})
+				return
+			}
+		}
+		modelsHandler.ServeHTTP(w, r)
+	})
+	logger.Info("models discovery endpoint registered", zap.String("path", "GET /v1/models"))
 
 	// 混合路由：/v1/* 同时支持 cproxy 模式和直连模式
 	mux.HandleFunc("/v1/", func(w http.ResponseWriter, r *http.Request) {
@@ -920,7 +1033,7 @@ var adminConfigFlag string
 
 func init() {
 	adminCmd.PersistentFlags().StringVar(&adminConfigFlag, "config", "", "path to sproxy.yaml (default: sproxy.yaml)")
-	adminCmd.AddCommand(adminUserCmd, adminGroupCmd, adminStatsCmd, adminTokenCmd, adminBackupCmd, adminRestoreCmd, adminLogsCmd, adminExportCmd, adminApikeyCmd, adminLLMCmd, adminQuotaCmd, adminAuditCmd, adminDrainCmd, adminTrackCmd, adminImportCmd)
+	adminCmd.AddCommand(adminUserCmd, adminGroupCmd, adminStatsCmd, adminTokenCmd, adminBackupCmd, adminRestoreCmd, adminLogsCmd, adminExportCmd, adminApikeyCmd, adminLLMCmd, adminQuotaCmd, adminAuditCmd, adminDrainCmd, adminTrackCmd, adminImportCmd, adminModelCmd)
 }
 
 // closeGormDB 优雅关闭 GORM 数据库连接，释放文件锁和文件描述符。
