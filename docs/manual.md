@@ -1,6 +1,6 @@
 # PairProxy 用户手册
 
-**版本 v2.9.1**
+**版本 v2.9.2**
 
 ---
 
@@ -3686,3 +3686,43 @@ tar -xzf pairproxy-linux-amd64.tar.gz
 ```
 
 ---
+
+## 22. v2.9.2 更新说明（Patch）
+
+v2.9.2 是针对 v2.9.1 的 Bug Fix 小版本，无破坏性变更，直接替换二进制即可升级。
+
+### 22.1 Bug 修复
+
+#### 22.1.1 Dashboard「我的用量」页图表无限下推
+
+**问题**：在「用户流量查看」（`/dashboard/my-usage`）页面，选择用户后，用量历史柱状图会不断向下撑大页面，无法正常显示。
+
+**根本原因**：Chart.js 配置了 `responsive: true` + `maintainAspectRatio: false` 时，图表高度取决于父容器高度。原来的写法把 `height="200"` 直接写在 `<canvas>` 标签上，Chart.js 不以此作为约束，而是去量父容器——而父容器没有固定高度，于是图表撑大父容器，父容器再撑大图表，形成无限循环。
+
+**修复**：用固定高度的 `<div style="position: relative; height: 200px;">` 包裹 `<canvas>`，给 Chart.js 一个固定的尺寸参考点，与 Overview 页面图表的实现方式保持一致。
+
+**影响范围**：仅影响管理员使用的「用户流量查看」页面，功能行为（数据、交互）完全不变。
+
+### 22.2 升级方法
+
+v2.9.2 与 v2.9.1 数据库 Schema 完全兼容，无需迁移：
+
+```bash
+# 1. 备份数据库（推荐）
+./sproxy admin backup --output pairproxy_before_v292.db.bak
+
+# 2. 停止服务
+pkill sproxy   # Linux/macOS
+# 或 Windows: taskkill /F /IM sproxy.exe
+
+# 3. 替换二进制
+curl -LO https://github.com/l17728/pairproxy/releases/download/v2.9.2/pairproxy-linux-amd64.tar.gz
+tar -xzf pairproxy-linux-amd64.tar.gz
+
+# 4. 重新启动
+./sproxy start --config sproxy.yaml
+
+# 5. 验证版本
+./sproxy version
+# 应输出：sproxy v2.9.2
+```

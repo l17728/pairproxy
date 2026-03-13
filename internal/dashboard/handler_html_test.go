@@ -294,6 +294,91 @@ func TestNavLayout_ScriptPositionAfterNav(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// my-usage.html — 图表容器高度修复回归测试
+// ---------------------------------------------------------------------------
+
+// myUsagePage 返回 /dashboard/my-usage 的完整 HTML body（管理员视角）。
+func myUsagePage(t *testing.T) string {
+	t.Helper()
+	env := newDashEnv(t)
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/my-usage", nil)
+	req.AddCookie(env.adminCookie(t))
+	rr := httptest.NewRecorder()
+	env.mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("my-usage page status = %d, want 200", rr.Code)
+	}
+	return rr.Body.String()
+}
+
+// TestMyUsagePage_ChartCanvasHasWrapperDiv 验证用量历史图表的 <canvas> 被包在
+// 带有固定高度的 <div style="position: relative; height: 200px;"> 容器内。
+// 背景：Chart.js responsive=true + maintainAspectRatio=false 下，若 <canvas>
+// 没有固定高度的父容器，图表会不断读取并撑大父容器，导致无限下推。
+func TestMyUsagePage_ChartCanvasHasWrapperDiv(t *testing.T) {
+	body := myUsagePage(t)
+
+	if !strings.Contains(body, `position: relative; height: 200px`) {
+		t.Error("usageHistoryChart canvas should be wrapped in a div with 'position: relative; height: 200px' to prevent Chart.js infinite growth")
+	}
+}
+
+// TestMyUsagePage_ChartCanvasNoInlineHeight 验证 <canvas id="usageHistoryChart">
+// 元素本身不再有 height 属性（高度应由父容器 div 控制，而非 canvas 元素属性）。
+func TestMyUsagePage_ChartCanvasNoInlineHeight(t *testing.T) {
+	body := myUsagePage(t)
+
+	// 在 canvas 标签区域检查是否还有 height= 属性
+	canvasStart := strings.Index(body, `id="usageHistoryChart"`)
+	if canvasStart == -1 {
+		t.Fatal(`canvas id="usageHistoryChart" not found in HTML`)
+	}
+	// 往前找到 <canvas 起始位置
+	openTag := body[strings.LastIndex(body[:canvasStart], "<canvas"):canvasStart+30]
+	if strings.Contains(openTag, `height=`) {
+		t.Error(`<canvas id="usageHistoryChart"> should NOT have a height= attribute — height must be controlled by the parent wrapper div`)
+	}
+}
+
+// TestMyUsagePage_CanvasInsideWrapperDiv 验证 <canvas> 在 wrapper div 之内：
+// wrapper div 的起始位置必须早于 canvas 标签。
+func TestMyUsagePage_CanvasInsideWrapperDiv(t *testing.T) {
+	body := myUsagePage(t)
+
+	wrapperIdx := strings.Index(body, `position: relative; height: 200px`)
+	canvasIdx := strings.Index(body, `id="usageHistoryChart"`)
+
+	if wrapperIdx == -1 {
+		t.Fatal("wrapper div with 'position: relative; height: 200px' not found")
+	}
+	if canvasIdx == -1 {
+		t.Fatal(`canvas id="usageHistoryChart" not found`)
+	}
+	if wrapperIdx > canvasIdx {
+		t.Error("wrapper div must appear BEFORE canvas in HTML — canvas must be nested inside the wrapper")
+	}
+}
+
+// TestMyUsagePage_OverviewChartsAlsoHaveWrapperDiv 验证 overview 页面的图表也使用了
+// 相同的 wrapper div 修复（回归保护：防止概览页的修复被误还原）。
+func TestMyUsagePage_OverviewChartsAlsoHaveWrapperDiv(t *testing.T) {
+	env := newDashEnv(t)
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/overview", nil)
+	req.AddCookie(env.adminCookie(t))
+	rr := httptest.NewRecorder()
+	env.mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("overview page status = %d, want 200", rr.Code)
+	}
+	body := rr.Body.String()
+
+	count := strings.Count(body, `position: relative; height: 200px`)
+	if count < 2 {
+		t.Errorf("overview page should have at least 2 chart wrapper divs with 'position: relative; height: 200px', got %d", count)
+	}
+}
+
 // TestNavLayout_MultiplePages_ConsistentNav 验证多个不同页面都渲染了完整的
 // 导航高亮脚本（确保 layout.html 的改动被所有页面继承）。
 func TestNavLayout_MultiplePages_ConsistentNav(t *testing.T) {
