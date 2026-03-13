@@ -63,3 +63,6 @@ test-output-*.log
 
 # Session/debug text files
 2026-*-*.txt
+
+# Git worktrees
+.worktrees/
