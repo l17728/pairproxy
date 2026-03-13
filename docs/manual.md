@@ -1,6 +1,6 @@
 # PairProxy 用户手册
 
-**版本 v2.9.2**
+**版本 v2.9.3**
 
 ---
 
@@ -3725,4 +3725,77 @@ tar -xzf pairproxy-linux-amd64.tar.gz
 # 5. 验证版本
 ./sproxy version
 # 应输出：sproxy v2.9.2
+```
+
+---
+
+## §23 v2.9.3 更新说明
+
+**版本**: v2.9.3 — 安全加固 patch
+
+### 23.1 安全修复：Direct Proxy 禁用用户缓存未失效
+
+**问题描述**
+
+当管理员通过 `sproxy admin user disable <username>` 禁用某用户后，
+若该用户的 `sk-pp-` API Key 仍在内存缓存（LRU KeyCache）中，
+则在缓存 TTL（默认 1 小时）到期前，该用户仍可通过 Direct Proxy 正常访问。
+
+**修复方案**
+
+在每次缓存命中后，新增对 `IsUserActive` 的二次数据库校验（单次按主键索引查询，开销极低）：
+
+- 用户仍活跃：正常放行
+- 用户已被禁用：立即返回 `HTTP 401 account_disabled`，并驱逐缓存条目
+- 数据库查询失败：返回 `HTTP 500 internal_error`（fail-closed 原则）
+
+**效果**: 用户禁用后，下一次请求立即被拒绝，不再等待 TTL 自然过期。
+
+### 23.2 安全修复：API Key 混淆存储
+
+**问题描述**
+
+上游 LLM Provider API Key（Anthropic `sk-ant-*`、OpenAI `sk-*` 等）
+以明文形式存储在 SQLite 数据库的 `api_keys.encrypted_value` 字段，
+获得数据库文件读取权限的攻击者可直接读取真实密钥。
+
+**混淆算法**
+
+对 API Key 的 body 部分（最后一个 `-` 之后的字符串）执行首尾字符交换：
+
+```
+sk-ant-api03-ABCDEFGH  →  sk-ant-api03-HBCDEFGA
+sk-pp-abcdefghijklmn   →  sk-pp-nbcdefghijklma
+ollama                 →  allamo  (无破折号时交换整体首尾)
+```
+
+- **对称操作**：加解密使用同一函数，无密钥依赖
+- **自动迁移**：服务重启时已有的明文记录自动应用混淆并更新
+
+**安全说明**
+
+混淆不是加密，不能防御能够读写数据库的攻击者。
+其价值在于防止被动数据泄露（数据库备份外泄、日志截屏等场景）。
+如需更强保护，建议对数据库文件本身进行加密。
+
+### 23.3 升级指南
+
+```bash
+# 1. 停止服务
+pkill sproxy  # Linux/macOS
+# Windows: 停止 Windows 服务
+
+# 2. 备份数据库（重要）
+./sproxy admin backup --output pairproxy_pre_v2.9.3.db.bak
+
+# 3. 替换二进制
+# 下载 v2.9.3 sproxy 并替换
+
+# 4. 启动服务
+./sproxy start
+# 服务启动时自动迁移现有 API Key 至混淆格式
+
+# 5. 验证版本
+./sproxy version
+# 应输出：sproxy v2.9.3
 ```
