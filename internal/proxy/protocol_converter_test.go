@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -2384,4 +2385,145 @@ func TestProtocolConversion_ParallelToolCalls(t *testing.T) {
 	assert.Contains(t, output, `"name":"func_b"`)
 	// func_a (index 0) 必须先于 func_b (index 1) 出现
 	assert.Less(t, strings.Index(output, `"name":"func_a"`), strings.Index(output, `"name":"func_b"`))
+}
+
+func TestConvertAnthropicToOpenAIResponseReverse(t *testing.T) {
+	logger := zap.NewNop()
+
+	t.Run("text response", func(t *testing.T) {
+		input := `{
+            "id": "msg_abc123",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-opus-4-6",
+            "content": [{"type": "text", "text": "Hello, world!"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 10, "output_tokens": 5}
+        }`
+		out, err := convertAnthropicToOpenAIResponseReverse([]byte(input), logger, "req1", "gpt-4o")
+		require.NoError(t, err)
+		var got map[string]interface{}
+		require.NoError(t, json.Unmarshal(out, &got))
+		assert.Equal(t, "chatcmpl-abc123", got["id"])
+		assert.Equal(t, "chat.completion", got["object"])
+		assert.Equal(t, "gpt-4o", got["model"]) // requestedModel overrides
+		choices := got["choices"].([]interface{})
+		assert.Len(t, choices, 1)
+		ch := choices[0].(map[string]interface{})
+		assert.Equal(t, "stop", ch["finish_reason"])
+		msg := ch["message"].(map[string]interface{})
+		assert.Equal(t, "assistant", msg["role"])
+		assert.Equal(t, "Hello, world!", msg["content"])
+		usage := got["usage"].(map[string]interface{})
+		assert.Equal(t, float64(10), usage["prompt_tokens"])
+		assert.Equal(t, float64(5), usage["completion_tokens"])
+		assert.Equal(t, float64(15), usage["total_tokens"])
+	})
+
+	t.Run("tool use response", func(t *testing.T) {
+		input := `{
+            "id": "msg_tool1",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-opus-4-6",
+            "content": [
+                {"type": "tool_use", "id": "toolu_1", "name": "search", "input": {"q": "go lang"}}
+            ],
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": 20, "output_tokens": 10}
+        }`
+		out, err := convertAnthropicToOpenAIResponseReverse([]byte(input), logger, "req2", "")
+		require.NoError(t, err)
+		var got map[string]interface{}
+		require.NoError(t, json.Unmarshal(out, &got))
+		choices := got["choices"].([]interface{})
+		ch := choices[0].(map[string]interface{})
+		assert.Equal(t, "tool_calls", ch["finish_reason"])
+		msg := ch["message"].(map[string]interface{})
+		assert.Nil(t, msg["content"]) // no text content
+		toolCalls := msg["tool_calls"].([]interface{})
+		assert.Len(t, toolCalls, 1)
+		tc := toolCalls[0].(map[string]interface{})
+		assert.Equal(t, "toolu_1", tc["id"])
+		assert.Equal(t, "function", tc["type"])
+		assert.Nil(t, tc["index"], "non-streaming tool_calls must NOT include index field")
+		fn := tc["function"].(map[string]interface{})
+		assert.Equal(t, "search", fn["name"])
+		// arguments is a JSON string
+		var args map[string]interface{}
+		require.NoError(t, json.Unmarshal([]byte(fn["arguments"].(string)), &args))
+		assert.Equal(t, "go lang", args["q"])
+	})
+
+	t.Run("stop_reason mapping — all variants", func(t *testing.T) {
+		cases := []struct{ anthropic, openai string }{
+			{"end_turn", "stop"},
+			{"max_tokens", "length"},
+			{"tool_use", "tool_calls"},
+			{"stop_sequence", "stop"},
+			{"unknown_reason", "unknown_reason"},
+		}
+		for _, c := range cases {
+			input := fmt.Sprintf(`{"id":"msg_x","type":"message","role":"assistant","model":"claude","content":[{"type":"text","text":"hi"}],"stop_reason":%q,"usage":{"input_tokens":1,"output_tokens":1}}`, c.anthropic)
+			out, err := convertAnthropicToOpenAIResponseReverse([]byte(input), logger, "reqX", "")
+			require.NoError(t, err, "stop_reason=%s", c.anthropic)
+			var got map[string]interface{}
+			require.NoError(t, json.Unmarshal(out, &got))
+			ch := got["choices"].([]interface{})[0].(map[string]interface{})
+			assert.Equal(t, c.openai, ch["finish_reason"], "stop_reason=%s", c.anthropic)
+		}
+	})
+
+	t.Run("requestedModel propagated", func(t *testing.T) {
+		input := `{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-4-6","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`
+		out, err := convertAnthropicToOpenAIResponseReverse([]byte(input), logger, "req3", "my-model")
+		require.NoError(t, err)
+		var got map[string]interface{}
+		require.NoError(t, json.Unmarshal(out, &got))
+		assert.Equal(t, "my-model", got["model"])
+	})
+
+	t.Run("cache_read_input_tokens mapped", func(t *testing.T) {
+		input := `{"id":"msg_c","type":"message","role":"assistant","model":"claude","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":3}}`
+		out, err := convertAnthropicToOpenAIResponseReverse([]byte(input), logger, "req4", "")
+		require.NoError(t, err)
+		var got map[string]interface{}
+		require.NoError(t, json.Unmarshal(out, &got))
+		usage := got["usage"].(map[string]interface{})
+		details := usage["prompt_tokens_details"].(map[string]interface{})
+		assert.Equal(t, float64(3), details["cached_tokens"])
+	})
+
+	t.Run("empty body returns error", func(t *testing.T) {
+		_, err := convertAnthropicToOpenAIResponseReverse([]byte{}, logger, "req5", "")
+		assert.Error(t, err)
+	})
+}
+
+func TestConvertAnthropicErrorResponseToOpenAI(t *testing.T) {
+	logger := zap.NewNop()
+
+	t.Run("valid Anthropic error", func(t *testing.T) {
+		input := `{"type":"error","error":{"type":"authentication_error","message":"Invalid API key"}}`
+		out := convertAnthropicErrorResponseToOpenAI([]byte(input), logger, "req1")
+		var got map[string]interface{}
+		require.NoError(t, json.Unmarshal(out, &got))
+		// No top-level "type" key
+		assert.Nil(t, got["type"])
+		errObj := got["error"].(map[string]interface{})
+		assert.Equal(t, "authentication_error", errObj["type"])
+		assert.Equal(t, "Invalid API key", errObj["message"])
+	})
+
+	t.Run("non-Anthropic format returned unchanged", func(t *testing.T) {
+		input := `{"message":"something else"}`
+		out := convertAnthropicErrorResponseToOpenAI([]byte(input), logger, "req2")
+		assert.Equal(t, input, string(out))
+	})
+
+	t.Run("malformed JSON returned unchanged", func(t *testing.T) {
+		input := `{invalid`
+		out := convertAnthropicErrorResponseToOpenAI([]byte(input), logger, "req3")
+		assert.Equal(t, input, string(out))
+	})
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 )
@@ -1424,4 +1425,190 @@ func convertOpenAIAssistantMessage(msg map[string]interface{}) map[string]interf
 	}
 
 	return map[string]interface{}{"role": "assistant", "content": blocks}
+}
+
+// convertAnthropicToOpenAIResponseReverse はAnthropicのMessages APIレスポンスをOpenAIのChat Completions形式に変換する。
+// requestedModel は元のOpenAIリクエストのmodel名。空でなければレスポンスのmodel フィールドに使用する。
+func convertAnthropicToOpenAIResponseReverse(body []byte, logger *zap.Logger, reqID string, requestedModel string) ([]byte, error) {
+	if len(body) == 0 {
+		return nil, fmt.Errorf("empty response body")
+	}
+
+	var anthropicResp map[string]interface{}
+	if err := json.Unmarshal(body, &anthropicResp); err != nil {
+		logger.Warn("failed to parse Anthropic response for reverse conversion",
+			zap.String("request_id", reqID),
+			zap.Error(err),
+		)
+		return nil, err
+	}
+
+	// ID: msg_xxx → chatcmpl-xxx
+	rawID, _ := anthropicResp["id"].(string)
+	openaiID := convertMessageIDReverse(rawID)
+
+	// model
+	model := requestedModel
+	if model == "" {
+		model, _ = anthropicResp["model"].(string)
+	}
+
+	// content → message
+	var textParts []string
+	var toolCalls []interface{}
+	if content, ok := anthropicResp["content"].([]interface{}); ok {
+		for _, block := range content {
+			bm, ok := block.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			switch bm["type"] {
+			case "text":
+				if t, ok := bm["text"].(string); ok {
+					textParts = append(textParts, t)
+				}
+			case "tool_use":
+				argsBytes, _ := json.Marshal(bm["input"])
+				// NOTE: non-streaming responses do NOT include "index" on tool_calls items
+				// (only streaming deltas use "index"). Omit it here.
+				toolCalls = append(toolCalls, map[string]interface{}{
+					"id":   bm["id"],
+					"type": "function",
+					"function": map[string]interface{}{
+						"name":      bm["name"],
+						"arguments": string(argsBytes),
+					},
+				})
+			}
+		}
+	}
+
+	message := map[string]interface{}{"role": "assistant"}
+	if len(textParts) > 0 {
+		message["content"] = strings.Join(textParts, "\n")
+	}
+	if len(toolCalls) > 0 {
+		message["tool_calls"] = toolCalls
+	}
+
+	// stop_reason → finish_reason
+	stopReason, _ := anthropicResp["stop_reason"].(string)
+	finishReason := convertStopReasonToFinishReason(stopReason)
+
+	// usage
+	usage := map[string]interface{}{}
+	promptTokens := 0
+	completionTokens := 0
+	if u, ok := anthropicResp["usage"].(map[string]interface{}); ok {
+		if v, ok := u["input_tokens"].(float64); ok {
+			promptTokens = int(v)
+		}
+		if v, ok := u["output_tokens"].(float64); ok {
+			completionTokens = int(v)
+		}
+		// Map cache_read_input_tokens unconditionally when present (spec maps it without omit-if-zero condition)
+		if cached, ok := u["cache_read_input_tokens"].(float64); ok {
+			usage["prompt_tokens_details"] = map[string]interface{}{
+				"cached_tokens": cached,
+			}
+		}
+	}
+	usage["prompt_tokens"] = promptTokens
+	usage["completion_tokens"] = completionTokens
+	usage["total_tokens"] = promptTokens + completionTokens
+
+	// "created" is not listed in the spec's minimal envelope example but is a mandatory field
+	// in the real OpenAI Chat Completions API response. OpenAI client libraries (openai-python,
+	// openai-go, LangChain, etc.) read this field and may fail or warn without it.
+	// The spec's envelope is illustrative, not exhaustive; adding "created" for full compatibility.
+	openaiResp := map[string]interface{}{
+		"id":      openaiID,
+		"object":  "chat.completion",
+		"created": time.Now().Unix(),
+		"model":   model,
+		"choices": []interface{}{
+			map[string]interface{}{
+				"index":         0,
+				"message":       message,
+				"finish_reason": finishReason,
+			},
+		},
+		"usage": usage,
+	}
+
+	converted, err := json.Marshal(openaiResp)
+	if err != nil {
+		logger.Warn("failed to marshal OpenAI response",
+			zap.String("request_id", reqID),
+			zap.Error(err),
+		)
+		return nil, err
+	}
+	logger.Debug("Anthropic response converted to OpenAI format",
+		zap.String("request_id", reqID),
+		zap.Int("converted_size", len(converted)),
+	)
+	return converted, nil
+}
+
+// convertMessageIDReverse は msg_xxx を chatcmpl-xxx に変換する。
+func convertMessageIDReverse(id string) string {
+	if after, found := strings.CutPrefix(id, "msg_"); found {
+		return "chatcmpl-" + after
+	}
+	return "chatcmpl-" + id
+}
+
+// convertStopReasonToFinishReason は Anthropic stop_reason を OpenAI finish_reason に変換する。
+func convertStopReasonToFinishReason(stopReason string) string {
+	switch stopReason {
+	case "end_turn", "stop_sequence":
+		return "stop"
+	case "max_tokens":
+		return "length"
+	case "tool_use":
+		return "tool_calls"
+	default:
+		return stopReason
+	}
+}
+
+// convertAnthropicErrorResponseToOpenAI は Anthropic 形式のエラーレスポンスを OpenAI 形式に変換する。
+// Anthropic 形式でない場合は原本を返す。
+func convertAnthropicErrorResponseToOpenAI(body []byte, logger *zap.Logger, reqID string) []byte {
+	var anthropicErr struct {
+		Type  string `json:"type"`
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &anthropicErr); err != nil || anthropicErr.Error.Message == "" {
+		return body
+	}
+
+	errType := anthropicErr.Error.Type
+	if errType == "" {
+		errType = "api_error"
+	}
+
+	resp := map[string]interface{}{
+		"error": map[string]interface{}{
+			"type":    errType,
+			"message": anthropicErr.Error.Message,
+		},
+	}
+	converted, err := json.Marshal(resp)
+	if err != nil {
+		logger.Warn("failed to marshal OpenAI error response",
+			zap.String("request_id", reqID),
+			zap.Error(err),
+		)
+		return body
+	}
+	logger.Debug("Anthropic error converted to OpenAI format",
+		zap.String("request_id", reqID),
+		zap.String("error_type", errType),
+	)
+	return converted
 }
