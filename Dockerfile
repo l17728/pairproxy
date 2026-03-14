@@ -18,7 +18,7 @@
 # ------------------------------------------------------------------------------
 # Stage 1: builder
 # ------------------------------------------------------------------------------
-FROM golang:1.25-alpine AS builder
+FROM golang:1.24-alpine AS builder
 
 # 安装 git（go mod download 可能需要）
 RUN apk add --no-cache git
@@ -44,9 +44,9 @@ ARG BUILT=unknown
 # -s -w 去除符号表和调试信息，缩小二进制体积
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -ldflags="-s -w \
-      -X github.com/pairproxy/pairproxy/internal/version.Version=${VERSION} \
-      -X github.com/pairproxy/pairproxy/internal/version.Commit=${COMMIT} \
-      -X github.com/pairproxy/pairproxy/internal/version.BuiltAt=${BUILT}" \
+      -X github.com/l17728/pairproxy/internal/version.Version=${VERSION} \
+      -X github.com/l17728/pairproxy/internal/version.Commit=${COMMIT} \
+      -X github.com/l17728/pairproxy/internal/version.BuiltAt=${BUILT}" \
     -trimpath \
     -o /out/${BINARY} \
     ./cmd/${BINARY}
