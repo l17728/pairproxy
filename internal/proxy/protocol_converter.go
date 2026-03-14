@@ -1612,3 +1612,244 @@ func convertAnthropicErrorResponseToOpenAI(body []byte, logger *zap.Logger, reqI
 	)
 	return converted
 }
+
+// ─── OtoA Streaming Converter ─────────────────────────────────────────────────
+
+// AnthropicToOpenAIStreamConverter はAnthropicのSSEストリームをOpenAI SSEチャンクに変換する。
+// http.ResponseWriter と http.Flusher を実装する。
+// TeeResponseWriterがこのconverterをラップし、rawなAnthropicバイトをトークンパーサーに渡す。
+type AnthropicToOpenAIStreamConverter struct {
+	w       http.ResponseWriter
+	logger  *zap.Logger
+	reqID   string
+	model   string // OpenAI model name requested by client
+	created int64  // captured at construction
+
+	messageID    string
+	inputTokens  int
+	outputTokens int
+
+	// tool call tracking: anthropic block index → openai tool_calls index
+	// Note: nextToolIdx is an implementation detail not listed in the spec but is required
+	// for toolCallIndex to function correctly (it tracks the next OpenAI index to assign).
+	toolCallIndex map[int]int
+	nextToolIdx   int
+}
+
+// NewAnthropicToOpenAIStreamConverter はAnthropicToOpenAIStreamConverterを作成する。
+func NewAnthropicToOpenAIStreamConverter(w http.ResponseWriter, logger *zap.Logger, reqID string, model string) *AnthropicToOpenAIStreamConverter {
+	return &AnthropicToOpenAIStreamConverter{
+		w:             w,
+		logger:        logger,
+		reqID:         reqID,
+		model:         model,
+		created:       time.Now().Unix(),
+		toolCallIndex: make(map[int]int),
+	}
+}
+
+// Header 実装 http.ResponseWriter。
+func (c *AnthropicToOpenAIStreamConverter) Header() http.Header {
+	return c.w.Header()
+}
+
+// WriteHeader 実装 http.ResponseWriter。
+func (c *AnthropicToOpenAIStreamConverter) WriteHeader(statusCode int) {
+	c.w.WriteHeader(statusCode)
+}
+
+// Flush 実装 http.Flusher — デリゲートして内部ライターにフラッシュする。
+func (c *AnthropicToOpenAIStreamConverter) Flush() {
+	if f, ok := c.w.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Write はAnthropicのSSEチャンクを受け取り、OpenAI SSEチャンクに変換して出力する。
+// 既知の制限: `Write()` 呼び出し間をまたぐ SSE イベントのバッファリングは行わない。
+// これは既存の `OpenAIToAnthropicStreamConverter` (AtoO 方向) と同じ設計方針であり、
+// 上流 HTTP/2 または HTTP/1.1 フレーミングが各 SSE イベントを完整なチャンクとして
+// 渡すことが実測上確認されている（各 "data: ...\n\n" が1回の Write で届く）。
+// この仮定が崩れる環境では、バッファリング実装への切り替えが必要になる場合がある。
+func (c *AnthropicToOpenAIStreamConverter) Write(chunk []byte) (int, error) {
+	lines := bytes.Split(chunk, []byte("\n"))
+	var eventType string
+	var dataLine string
+
+	for _, line := range lines {
+		line = bytes.TrimRight(line, "\r")
+		if bytes.HasPrefix(line, []byte("event:")) {
+			eventType = strings.TrimSpace(string(bytes.TrimPrefix(line, []byte("event:"))))
+		} else if bytes.HasPrefix(line, []byte("data:")) {
+			dataLine = strings.TrimSpace(string(bytes.TrimPrefix(line, []byte("data:"))))
+		} else if len(bytes.TrimSpace(line)) == 0 && dataLine != "" {
+			// End of event: process it
+			c.handleEvent(eventType, dataLine)
+			eventType = ""
+			dataLine = ""
+		}
+	}
+	// If chunk ended without blank line
+	if dataLine != "" {
+		c.handleEvent(eventType, dataLine)
+	}
+	return len(chunk), nil
+}
+
+func (c *AnthropicToOpenAIStreamConverter) handleEvent(eventType, data string) {
+	var ev map[string]interface{}
+	if err := json.Unmarshal([]byte(data), &ev); err != nil {
+		return
+	}
+
+	evType, _ := ev["type"].(string)
+	switch evType {
+	case "message_start":
+		msg, _ := ev["message"].(map[string]interface{})
+		if msg != nil {
+			rawID, _ := msg["id"].(string)
+			c.messageID = convertMessageIDReverse(rawID)
+			if usage, ok := msg["usage"].(map[string]interface{}); ok {
+				c.inputTokens = int(floatToInt(usage["input_tokens"]))
+			}
+		}
+		// Emit first chunk: role=assistant
+		c.emitChunk(map[string]interface{}{
+			"delta":         map[string]interface{}{"role": "assistant", "content": ""},
+			"index":         0,
+			"finish_reason": nil,
+		}, nil)
+
+	case "content_block_start":
+		blockIdx := int(floatToInt(ev["index"]))
+		cb, _ := ev["content_block"].(map[string]interface{})
+		if cb == nil {
+			return
+		}
+		switch cb["type"] {
+		case "tool_use":
+			toolIdx := c.nextToolIdx
+			c.toolCallIndex[blockIdx] = toolIdx
+			c.nextToolIdx++
+			name, _ := cb["name"].(string)
+			id, _ := cb["id"].(string)
+			c.emitChunk(map[string]interface{}{
+				"delta": map[string]interface{}{
+					"tool_calls": []interface{}{
+						map[string]interface{}{
+							"index": toolIdx,
+							"id":    id,
+							"type":  "function",
+							"function": map[string]interface{}{
+								"name":      name,
+								"arguments": "",
+							},
+						},
+					},
+				},
+				"index": 0,
+			}, nil)
+		}
+		// text: no output
+
+	case "content_block_delta":
+		blockIdx := int(floatToInt(ev["index"]))
+		delta, _ := ev["delta"].(map[string]interface{})
+		if delta == nil {
+			return
+		}
+		switch delta["type"] {
+		case "text_delta":
+			text, _ := delta["text"].(string)
+			c.emitChunk(map[string]interface{}{
+				"delta":         map[string]interface{}{"content": text},
+				"index":         0,
+				"finish_reason": nil,
+			}, nil)
+		case "input_json_delta":
+			partial, _ := delta["partial_json"].(string)
+			toolIdx, ok := c.toolCallIndex[blockIdx]
+			if !ok {
+				return
+			}
+			c.emitChunk(map[string]interface{}{
+				"delta": map[string]interface{}{
+					"tool_calls": []interface{}{
+						map[string]interface{}{
+							"index": toolIdx,
+							"function": map[string]interface{}{
+								"arguments": partial,
+							},
+						},
+					},
+				},
+				"index": 0,
+			}, nil)
+		}
+
+	case "message_delta":
+		delta, _ := ev["delta"].(map[string]interface{})
+		stopReason := ""
+		if delta != nil {
+			stopReason, _ = delta["stop_reason"].(string)
+		}
+		if usage, ok := ev["usage"].(map[string]interface{}); ok {
+			c.outputTokens = int(floatToInt(usage["output_tokens"]))
+		}
+		finishReason := convertStopReasonToFinishReason(stopReason)
+		usageObj := map[string]interface{}{
+			"prompt_tokens":     c.inputTokens,
+			"completion_tokens": c.outputTokens,
+			"total_tokens":      c.inputTokens + c.outputTokens,
+		}
+		c.emitChunk(map[string]interface{}{
+			"delta":         map[string]interface{}{},
+			"finish_reason": finishReason,
+			"index":         0,
+		}, usageObj)
+
+	case "message_stop":
+		c.emitDone()
+	}
+}
+
+// emitChunk はOpenAI SSEチャンクを書き込む。usageはオプション（nilなら省略）。
+func (c *AnthropicToOpenAIStreamConverter) emitChunk(choice map[string]interface{}, usage map[string]interface{}) {
+	envelope := map[string]interface{}{
+		"id":      c.messageID,
+		"object":  "chat.completion.chunk",
+		"created": c.created,
+		"model":   c.model,
+		"choices": []interface{}{choice},
+	}
+	if usage != nil {
+		envelope["usage"] = usage
+	}
+	data, err := json.Marshal(envelope)
+	if err != nil {
+		c.logger.Warn("failed to marshal OpenAI SSE chunk",
+			zap.String("request_id", c.reqID),
+			zap.Error(err),
+		)
+		return
+	}
+	line := "data: " + string(data) + "\n\n"
+	if _, err := c.w.Write([]byte(line)); err != nil {
+		c.logger.Debug("write error for SSE chunk",
+			zap.String("request_id", c.reqID),
+			zap.Error(err),
+		)
+	}
+	c.Flush()
+}
+
+// emitDone はOpenAI SSE終了シグナルを送信する。
+func (c *AnthropicToOpenAIStreamConverter) emitDone() {
+	if _, err := c.w.Write([]byte("data: [DONE]\n\n")); err != nil {
+		c.logger.Debug("write error for [DONE]",
+			zap.String("request_id", c.reqID),
+			zap.Error(err),
+		)
+	}
+	c.Flush()
+}

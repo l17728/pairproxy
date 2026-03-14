@@ -2537,3 +2537,160 @@ func TestConvertAnthropicErrorResponseToOpenAI(t *testing.T) {
 		assert.Equal(t, input, string(out))
 	})
 }
+
+// mockFlusher wraps mockResponseWriter and implements http.Flusher
+type mockFlusher struct {
+	*mockResponseWriter
+	flushCount int
+}
+
+func (m *mockFlusher) Flush() {
+	m.flushCount++
+}
+
+func TestAnthropicToOpenAIStreamConverter(t *testing.T) {
+	logger := zap.NewNop()
+
+	feedEvents := func(conv *AnthropicToOpenAIStreamConverter, events []string) {
+		for _, ev := range events {
+			_, err := conv.Write([]byte(ev))
+			require.NoError(t, err)
+		}
+	}
+
+	t.Run("text streaming", func(t *testing.T) {
+		mf := &mockFlusher{mockResponseWriter: newMockResponseWriter()}
+		conv := NewAnthropicToOpenAIStreamConverter(mf, logger, "req1", "gpt-4o")
+
+		events := []string{
+			"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_abc\",\"model\":\"claude-opus-4-6\",\"usage\":{\"input_tokens\":10}}}\n\n",
+			"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+			"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\n",
+			"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" world\"}}\n\n",
+			"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+			"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n\n",
+			"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+		}
+		feedEvents(conv, events)
+
+		output := mf.String()
+		// Should contain data: {...} chunks and [DONE]
+		assert.Contains(t, output, "chat.completion.chunk")
+		assert.Contains(t, output, "gpt-4o")
+		assert.Contains(t, output, "Hello")
+		assert.Contains(t, output, " world")
+		assert.Contains(t, output, `"finish_reason":"stop"`)
+		assert.Contains(t, output, `data: [DONE]`)
+		// Check message_start chunk sets role and has finish_reason:null (not omitted, not "stop")
+		assert.Contains(t, output, `"role":"assistant"`)
+		assert.Contains(t, output, `"finish_reason":null`)
+		// Check chatcmpl ID (from msg_abc)
+		assert.Contains(t, output, "chatcmpl-abc")
+		// Flusher called
+		assert.Greater(t, mf.flushCount, 0)
+	})
+
+	t.Run("tool use streaming", func(t *testing.T) {
+		mf := &mockFlusher{mockResponseWriter: newMockResponseWriter()}
+		conv := NewAnthropicToOpenAIStreamConverter(mf, logger, "req2", "gpt-4o")
+
+		events := []string{
+			"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_tool\",\"model\":\"claude\",\"usage\":{\"input_tokens\":15}}}\n\n",
+			"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"search\",\"input\":{}}}\n\n",
+			"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"q\\\":\"}}\n\n",
+			"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"go\\\"}\"  }}\n\n",
+			"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+			"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":8}}\n\n",
+			"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+		}
+		feedEvents(conv, events)
+
+		output := mf.String()
+		assert.Contains(t, output, "tool_calls")
+		assert.Contains(t, output, "toolu_1")
+		assert.Contains(t, output, "search")
+		assert.Contains(t, output, `"finish_reason":"tool_calls"`)
+		assert.Contains(t, output, `data: [DONE]`)
+	})
+
+	t.Run("finish_reason mapping", func(t *testing.T) {
+		cases := []struct{ anthropic, openai string }{
+			{"end_turn", "stop"},
+			{"max_tokens", "length"},
+			{"tool_use", "tool_calls"},
+			{"stop_sequence", "stop"},
+		}
+		for _, c := range cases {
+			mf := &mockFlusher{mockResponseWriter: newMockResponseWriter()}
+			conv := NewAnthropicToOpenAIStreamConverter(mf, logger, "req", "m")
+			events := []string{
+				"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_x\",\"usage\":{\"input_tokens\":1}}}\n\n",
+				fmt.Sprintf("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":%q},\"usage\":{\"output_tokens\":1}}\n\n", c.anthropic),
+				"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+			}
+			feedEvents(conv, events)
+			assert.Contains(t, mf.String(), fmt.Sprintf(`"finish_reason":%q`, c.openai), "anthropic=%s", c.anthropic)
+		}
+	})
+
+	t.Run("usage in final chunk", func(t *testing.T) {
+		mf := &mockFlusher{mockResponseWriter: newMockResponseWriter()}
+		conv := NewAnthropicToOpenAIStreamConverter(mf, logger, "req3", "gpt-4o")
+
+		events := []string{
+			"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_u\",\"usage\":{\"input_tokens\":10}}}\n\n",
+			"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":20}}\n\n",
+			"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+		}
+		feedEvents(conv, events)
+
+		output := mf.String()
+		// Final chunk should have usage
+		assert.Contains(t, output, `"prompt_tokens":10`)
+		assert.Contains(t, output, `"completion_tokens":20`)
+		assert.Contains(t, output, `"total_tokens":30`)
+	})
+
+	t.Run("final chunk has empty delta", func(t *testing.T) {
+		// Spec: message_delta emits final chunk with delta={} (empty object)
+		mf := &mockFlusher{mockResponseWriter: newMockResponseWriter()}
+		conv := NewAnthropicToOpenAIStreamConverter(mf, logger, "req5", "gpt-4o")
+		events := []string{
+			"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_d\",\"usage\":{\"input_tokens\":5}}}\n\n",
+			"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":3}}\n\n",
+			"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+		}
+		feedEvents(conv, events)
+		output := mf.String()
+		// The final data chunk (before [DONE]) should contain "delta":{} (empty object)
+		assert.Contains(t, output, `"delta":{}`)
+		assert.Contains(t, output, `"finish_reason":"stop"`)
+	})
+
+	t.Run("empty response (only message_stop)", func(t *testing.T) {
+		// Empty streaming response: message_start then immediately message_stop, no content events.
+		// Spec testing section lists "Empty response" as a required case.
+		mf := &mockFlusher{mockResponseWriter: newMockResponseWriter()}
+		conv := NewAnthropicToOpenAIStreamConverter(mf, logger, "req6", "gpt-4o")
+		events := []string{
+			"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_e\",\"usage\":{\"input_tokens\":1}}}\n\n",
+			"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+		}
+		feedEvents(conv, events)
+		output := mf.String()
+		// Should produce initial role chunk (with content:"") and [DONE], no crash
+		assert.Contains(t, output, `"role":"assistant"`)
+		assert.Contains(t, output, `data: [DONE]`)
+		// No message_delta was emitted, so no finish_reason chunk appears
+		// (no finish_reason:"stop" or finish_reason:"length" etc.)
+		assert.NotContains(t, output, `"finish_reason":"stop"`)
+		assert.NotContains(t, output, `"finish_reason":"length"`)
+	})
+
+	t.Run("Flush delegates to inner writer", func(t *testing.T) {
+		mf := &mockFlusher{mockResponseWriter: newMockResponseWriter()}
+		conv := NewAnthropicToOpenAIStreamConverter(mf, logger, "req7", "gpt-4o")
+		conv.Flush()
+		assert.Equal(t, 1, mf.flushCount)
+	})
+}
