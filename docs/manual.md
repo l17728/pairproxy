@@ -1,6 +1,6 @@
 # PairProxy 用户手册
 
-**版本 v2.9.3**
+**版本 v2.9.4**
 
 ---
 
@@ -3799,3 +3799,55 @@ pkill sproxy  # Linux/macOS
 ./sproxy version
 # 应输出：sproxy v2.9.3
 ```
+
+## §24 v2.9.4 更新说明
+
+**版本**: v2.9.4 — Dockerfile 修复 patch
+
+### 24.1 修复：Docker 镜像版本号始终显示 `dev`
+
+**问题描述**
+
+通过 Docker 镜像部署时，`./sproxy version` 输出的版本号始终为 `dev`，
+无法通过版本号确认镜像是否为预期版本。
+
+**根因**
+
+`Dockerfile` 中 `-ldflags` 使用了错误的模块路径：
+
+```dockerfile
+# 错误（修复前）
+-X github.com/pairproxy/pairproxy/internal/version.Version=${VERSION}
+
+# 正确（修复后）
+-X github.com/l17728/pairproxy/internal/version.Version=${VERSION}
+```
+
+Go 编译器在 `-X` 指定的包路径不存在时**静默跳过**，不报任何错误，
+导致 `version.Version`、`version.Commit`、`version.BuiltAt` 三个变量
+均保持默认值（`dev` / `unknown` / `unknown`）。
+
+二进制发布包（`make release`）和 CLI 版本号不受影响，仅 Docker 镜像受影响。
+
+### 24.2 修复：builder 基础镜像版本不存在
+
+`Dockerfile` 使用的 `golang:1.25-alpine` 在 Docker Hub 上不存在（Go 最新稳定版为 1.24.x），
+导致本地 `docker build` 会因 pull 失败而报错。已更正为 `golang:1.24-alpine`。
+
+### 24.3 升级指南
+
+此版本无数据库变更，直接替换镜像即可：
+
+```bash
+# 拉取最新镜像
+docker pull ghcr.io/l17728/pairproxy:v2.9.4
+
+# 或更新 docker-compose.yml 中的镜像 tag 后重启
+docker compose up -d
+
+# 验证版本
+docker run --rm ghcr.io/l17728/pairproxy:v2.9.4 version
+# 应输出：sproxy v2.9.4 (...)
+```
+
+非 Docker 部署用户无需升级，v2.9.3 二进制版本号完全正确。

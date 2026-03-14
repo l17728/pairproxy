@@ -1,7 +1,7 @@
 # PairProxy 测试报告
 
-**生成时间**: 2026-03-13
-**测试版本**: v2.9.3 (安全加固 · 禁用用户缓存失效 · API Key 混淆存储)
+**生成时间**: 2026-03-14
+**测试版本**: v2.9.4 (Dockerfile 修复 · Docker 版本号注入 · builder 基础镜像更正)
 **测试环境**: Windows 11, Go 1.23
 
 ---
@@ -708,6 +708,10 @@ mockagent → cproxy(:8080) → sproxy(:9000) → mockllm(:11434)
   - ✅ `TestSwapFirstLast_Symmetric` — 对称性验证
   - ✅ `TestObfuscateKey` (6子测试) — 保留前缀的混淆行为
   - ✅ `TestObfuscateKey_Symmetric` — 对称性验证
+
+**v2.9.4 变更（Dockerfile 修复）**:
+- 无新增测试（纯构建配置修复，不涉及 Go 代码逻辑变更）
+- 修复内容：Dockerfile ldflags 模块路径错误（`github.com/pairproxy/pairproxy` → `github.com/l17728/pairproxy`）；builder 基础镜像 `golang:1.25-alpine` → `golang:1.24-alpine`
 
 **测试质量**: 优秀
 **代码稳定性**: 高
