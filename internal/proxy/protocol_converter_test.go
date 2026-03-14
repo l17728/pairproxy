@@ -94,6 +94,14 @@ func TestDetectConversionDirection(t *testing.T) {
 	}
 }
 
+func TestOtoARequestConversionFailurePath(t *testing.T) {
+	// Malformed JSON must return error (not degrade silently).
+	// This verifies the contract relied on by Step 5.6 (sproxy.go returns HTTP 400 on error).
+	logger := zap.NewNop()
+	_, _, err := convertOpenAIToAnthropicRequest([]byte(`{invalid json`), logger, "req1", nil)
+	assert.Error(t, err, "malformed JSON should return error for OtoA (no silent degradation)")
+}
+
 func TestConvertOpenAIToAnthropicRequest(t *testing.T) {
 	logger := zap.NewNop()
 

@@ -975,7 +975,10 @@ func preferredProvidersByPath(path string) map[string]bool {
 }
 
 // buildRetryTransport 构建 RetryTransport（当 llmBalancer 已配置时）。
-func (sp *SProxy) buildRetryTransport(userID, groupID string) http.RoundTripper {
+// effectivePath 是传递给 PickNext 的路径（OtoA 时为 "/v1/messages"，其他为 r.URL.Path）。
+// これは次要防御機制：确保 retry 时 pickLLMTarget 从 /v1/messages 对应的 preferredProvidersByPath
+// 中选 Anthropic targets。主要机制是 Director 将出向请求路径改写为 convertedPath（Step 5.10）。
+func (sp *SProxy) buildRetryTransport(userID, groupID, effectivePath string) http.RoundTripper {
 	if sp.llmBalancer == nil {
 		return sp.transport
 	}
@@ -986,8 +989,13 @@ func (sp *SProxy) buildRetryTransport(userID, groupID string) http.RoundTripper 
 	return &lb.RetryTransport{
 		Inner:      sp.transport,
 		MaxRetries: maxRetries,
-		PickNext: func(path string, tried []string) (*lb.LLMTargetInfo, error) {
-			return sp.pickLLMTarget(path, userID, groupID, tried)
+		PickNext: func(_ string, tried []string) (*lb.LLMTargetInfo, error) {
+			// The `path` parameter passed by RetryTransport is intentionally shadowed by the
+			// captured `effectivePath`. This is correct: for OtoA retries, effectivePath is
+			// "/v1/messages" (Anthropic targets); for all other cases it equals r.URL.Path
+			// (same as what RetryTransport would pass). RetryTransport's `path` arg is the
+			// original request path before Director rewrite — we don't want that here.
+			return sp.pickLLMTarget(effectivePath, userID, groupID, tried)
 		},
 		OnSuccess: func(targetURL string) {
 			if sp.llmHC != nil {
@@ -1186,10 +1194,34 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 		requestedModel = extractModelFromBody(bodyBytes)
 	}
 
-	// 协议转换：Anthropic → OpenAI（当请求为 Anthropic 格式但目标为 OpenAI/Ollama 时）
-	needsConversion := shouldConvertProtocol(r.URL.Path, targetProvider)
+	convDir := detectConversionDirection(r.URL.Path, targetProvider)
+	effectivePath := r.URL.Path
+	if convDir == conversionOtoA {
+		effectivePath = "/v1/messages"
+		// Re-pick using effectivePath so preferredProvidersByPath["/v1/messages"] matches
+		// Anthropic targets correctly (spec §"Target Routing Fix for OtoA").
+		if repicked, pickErr := sp.pickLLMTarget(effectivePath, claims.UserID, claims.GroupID, nil); pickErr == nil {
+			firstInfo = repicked
+			targetProvider = sp.providerForURL(firstInfo.URL)
+			// Update targetURL so the Director closure (captured at line ~1164) uses the right host.
+			// For bound users re-pick returns the same target — this is a no-op in that case.
+			if newURL, parseErr := url.Parse(firstInfo.URL); parseErr == nil {
+				targetURL = newURL
+			}
+			// Safety check: if re-pick somehow returned a non-Anthropic target (misconfiguration),
+			// reset convDir to avoid applying OtoA conversion to an OpenAI/Ollama endpoint.
+			if sp.providerForURL(firstInfo.URL) != "anthropic" {
+				convDir = conversionNone
+			}
+		} else {
+			sp.logger.Warn("OtoA re-pick failed, continuing with initial target",
+				zap.String("request_id", reqID),
+				zap.Error(pickErr),
+			)
+		}
+	}
 	var convertedPath string
-	if needsConversion {
+	if convDir == conversionAtoO {
 		sp.logger.Info("protocol conversion required",
 			zap.String("request_id", reqID),
 			zap.String("from", "anthropic"),
@@ -1226,13 +1258,53 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 					zap.String("request_id", reqID),
 					zap.Error(convErr),
 				)
-				needsConversion = false // 降级：不转换响应
+				convDir = conversionNone // 降级：不转换响应
 			}
 		} else {
 			sp.logger.Warn("protocol conversion skipped: empty request body",
 				zap.String("request_id", reqID),
 			)
-			needsConversion = false
+			convDir = conversionNone
+		}
+	}
+	if convDir == conversionOtoA {
+		sp.logger.Info("protocol conversion required (OtoA)",
+			zap.String("request_id", reqID),
+			zap.String("from", "openai"),
+			zap.String("to", "anthropic"),
+			zap.String("target_provider", targetProvider),
+			zap.String("target_url", firstInfo.URL),
+			zap.String("original_path", r.URL.Path),
+		)
+		if len(bodyBytes) > 0 {
+			modelMapping := sp.modelMappingForURL(firstInfo.URL)
+			converted, newPath, convErr := convertOpenAIToAnthropicRequest(bodyBytes, sp.logger, reqID, modelMapping)
+			if convErr == nil {
+				bodyBytes = converted
+				convertedPath = newPath
+				r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+				r.ContentLength = int64(len(bodyBytes))
+				sp.logger.Info("OtoA request converted successfully",
+					zap.String("request_id", reqID),
+					zap.String("new_path", newPath),
+					zap.Int("converted_size", len(converted)),
+				)
+			} else {
+				sp.logger.Warn("OtoA request conversion failed, returning 400",
+					zap.String("request_id", reqID),
+					zap.Error(convErr),
+				)
+				writeJSONError(w, http.StatusBadRequest, "invalid_request_error",
+					"failed to convert OpenAI request to Anthropic format: "+convErr.Error())
+				return
+			}
+		} else {
+			sp.logger.Warn("OtoA conversion skipped: empty request body",
+				zap.String("request_id", reqID),
+			)
+			writeJSONError(w, http.StatusBadRequest, "invalid_request_error",
+				"request body is required for OpenAI to Anthropic conversion")
+			return
 		}
 	}
 
@@ -1241,7 +1313,7 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 		attribute.String("provider", targetProvider),
 		attribute.String("upstream_url", firstInfo.URL),
 	)
-	if needsConversion {
+	if convDir != conversionNone {
 		span.SetAttributes(attribute.Bool("protocol_converted", true))
 	}
 
@@ -1305,12 +1377,17 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 
 	// 创建 TeeResponseWriter
 	var finalWriter http.ResponseWriter = w
-	if needsConversion {
-		// 协议转换：在 TeeResponseWriter 之前插入流转换器
-		// 传入 requestedModel（原始 Anthropic 模型名），以便流式响应 message_start 中的 model 字段正确反映
+	switch convDir {
+	case conversionAtoO:
 		streamConverter := NewOpenAIToAnthropicStreamConverter(w, sp.logger, reqID, model)
 		finalWriter = streamConverter
-		sp.logger.Debug("stream converter inserted for protocol conversion",
+		sp.logger.Debug("AtoO stream converter inserted",
+			zap.String("request_id", reqID),
+		)
+	case conversionOtoA:
+		streamConverter := NewAnthropicToOpenAIStreamConverter(w, sp.logger, reqID, model)
+		finalWriter = streamConverter
+		sp.logger.Debug("OtoA stream converter inserted",
 			zap.String("request_id", reqID),
 		)
 	}
@@ -1318,7 +1395,7 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 	tw := tap.NewTeeResponseWriter(finalWriter, sp.logger, sp.writer, usageRecord, targetProvider, startTime, onChunk)
 
 	// 构建 transport（配置均衡器时使用 RetryTransport；否则使用基础 transport）
-	transport := sp.buildRetryTransport(claims.UserID, claims.GroupID)
+	transport := sp.buildRetryTransport(claims.UserID, claims.GroupID, effectivePath)
 
 	proxy := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
@@ -1327,7 +1404,7 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 			req.Host = targetURL.Host
 
 			// 协议转换：修改请求路径
-			if needsConversion && convertedPath != "" {
+			if convDir != conversionNone && convertedPath != "" {
 				originalPath := req.URL.Path
 				req.URL.Path = convertedPath
 				sp.logger.Debug("request path converted for protocol conversion",
@@ -1400,6 +1477,7 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 				)
 			}
 
+			otoaRecorded := false
 			if !isStreaming {
 				// 非 streaming：读取完整 body，解析 token，然后重新放回（ReverseProxy 需要）
 				body, readErr := io.ReadAll(resp.Body)
@@ -1412,38 +1490,70 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 					)
 				}
 
-				// 协议转换：OpenAI → Anthropic（非流式响应，含错误响应）
-				if needsConversion && readErr == nil && len(body) > 0 {
-					sp.logger.Debug("converting non-streaming response",
-						zap.String("request_id", reqID),
-						zap.Int("original_size", len(body)),
-						zap.Int("status_code", resp.StatusCode),
-					)
-					if resp.StatusCode >= 400 {
-						// 上游返回错误：转换 OpenAI 错误格式为 Anthropic 格式
-						body = convertOpenAIErrorResponse(body, sp.logger, reqID)
-						sp.logger.Info("error response converted to Anthropic format",
+				// 协议転換：非流式響応処理
+				if readErr == nil && len(body) > 0 {
+					switch convDir {
+					case conversionAtoO:
+						// AtoO: convert OpenAI response -> Anthropic format (existing behavior, unchanged)
+						sp.logger.Debug("AtoO: converting non-streaming response",
 							zap.String("request_id", reqID),
-							zap.Int("status_code", resp.StatusCode),
+							zap.Int("original_size", len(body)),
 						)
-					} else {
-						converted, convErr := convertOpenAIToAnthropicResponse(body, sp.logger, reqID, model)
-						if convErr == nil {
-							body = converted
-							sp.logger.Info("non-streaming response converted successfully",
+						if resp.StatusCode >= 400 {
+							body = convertOpenAIErrorResponse(body, sp.logger, reqID)
+							sp.logger.Info("AtoO: error response converted to Anthropic format",
 								zap.String("request_id", reqID),
-								zap.Int("converted_size", len(converted)),
 							)
 						} else {
-							sp.logger.Warn("response conversion failed, forwarding original",
+							converted, convErr := convertOpenAIToAnthropicResponse(body, sp.logger, reqID, model)
+							if convErr == nil {
+								body = converted
+								sp.logger.Info("AtoO: non-streaming response converted successfully",
+									zap.String("request_id", reqID),
+								)
+							} else {
+								sp.logger.Warn("AtoO: response conversion failed, forwarding original",
+									zap.String("request_id", reqID),
+									zap.Error(convErr),
+								)
+							}
+						}
+
+					case conversionOtoA:
+						// OtoA: RECORD FIRST with raw Anthropic body so AnthropicSSEParser parses correctly.
+						// Then convert to OpenAI format for the client.
+						// Use otoaRecorded=true to prevent double-recording at the default location below.
+						sp.logger.Debug("OtoA: converting non-streaming response",
+							zap.String("request_id", reqID),
+							zap.Int("original_size", len(body)),
+						)
+						tw.RecordNonStreaming(body, resp.StatusCode, durationMs)
+						otoaRecorded = true
+						if resp.StatusCode >= 400 {
+							body = convertAnthropicErrorResponseToOpenAI(body, sp.logger, reqID)
+							sp.logger.Info("OtoA: error response converted to OpenAI format",
 								zap.String("request_id", reqID),
-								zap.Error(convErr),
 							)
+						} else {
+							converted, convErr := convertAnthropicToOpenAIResponseReverse(body, sp.logger, reqID, requestedModel)
+							if convErr == nil {
+								body = converted
+								sp.logger.Info("OtoA: non-streaming response converted successfully",
+									zap.String("request_id", reqID),
+								)
+							} else {
+								sp.logger.Warn("OtoA: response conversion failed, forwarding original Anthropic response",
+									zap.String("request_id", reqID),
+									zap.Error(convErr),
+								)
+							}
 						}
 					}
 				}
 
 				resp.Body = io.NopCloser(bytes.NewReader(body))
+				resp.ContentLength = int64(len(body))
+				resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
 
 				if dl != nil {
 					dl.Debug("← LLM response body",
@@ -1469,20 +1579,23 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 				}
 
 				// 通过 TeeWriter 记录（token 解析 + 写入 UsageWriter）
-				tw.RecordNonStreaming(body, resp.StatusCode, durationMs)
+				if !otoaRecorded {
+					tw.RecordNonStreaming(body, resp.StatusCode, durationMs)
+				}
 
 				// 对话跟踪：记录非流式响应内容
 				if captureSession != nil {
 					captureSession.SetNonStreamingResponse(body)
 					captureSession.Flush()
 				}
-			} else if needsConversion {
-				// 协议转换：OpenAI SSE → Anthropic SSE（流式响应）
-				// 需要在 resp.Body 和 tw 之间插入转换器
+			} else if convDir != conversionNone {
+				// 協議転換（streaming）：
+				// AtoO: 上游返回 OpenAI SSE → OpenAIToAnthropicStreamConverter 転為 Anthropic SSE 給客户端
+				// OtoA: 上游返回 Anthropic SSE → AnthropicToOpenAIStreamConverter 転為 OpenAI SSE 給客户端
+				// 注意：実際転換在 TeeResponseWriter.Write() 調用 streamConverter.Write() 中処理
 				sp.logger.Debug("streaming response will be converted",
 					zap.String("request_id", reqID),
 				)
-				// 注意：流式转换在 TeeResponseWriter.Write() 中处理
 			}
 			// streaming 情况：TeeResponseWriter.Write() 会自动 Feed SSE 解析器，
 			// 在 message_stop 事件时异步记录；onChunk 回调已记录每条 chunk

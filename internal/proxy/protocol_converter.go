@@ -52,11 +52,6 @@ func detectConversionDirection(requestPath, targetProvider string) conversionDir
 	return conversionNone
 }
 
-// shouldConvertProtocol は sproxy.go との互換のため一時的に残す。Task 5 で削除する。
-func shouldConvertProtocol(path, provider string) bool {
-	return detectConversionDirection(path, provider) == conversionAtoO
-}
-
 // mapModelName 将 Anthropic 模型名映射到目标提供商的本地模型名。
 // 优先精确匹配，其次通配符 "*"，均未命中则返回原名。
 // mapping 为 nil 或空时直接返回原名。
@@ -713,6 +708,10 @@ type OpenAIToAnthropicStreamConverter struct {
 	cachedTokens     int
 
 	done bool
+
+	// nonStreaming passthrough
+	firstWrite  bool
+	nonStreaming bool
 }
 
 // NewOpenAIToAnthropicStreamConverter 创建流转换器（渐进发射模式）。
@@ -747,10 +746,27 @@ func (c *OpenAIToAnthropicStreamConverter) WriteHeader(statusCode int) {
 	c.writer.WriteHeader(statusCode)
 }
 
-// Write 接收 OpenAI SSE chunk，逐步发射对应 Anthropic SSE 事件。
+// Write 接收 OpenAI SSE chunk，逐步发射対応 Anthropic SSE 事件。
 func (c *OpenAIToAnthropicStreamConverter) Write(chunk []byte) (int, error) {
 	if c.done {
 		return len(chunk), nil
+	}
+
+	// Non-streaming passthrough: if the first Write contains no SSE data prefix,
+	// treat it as non-streaming JSON (already converted in ModifyResponse) and pass through.
+	if !c.firstWrite {
+		c.firstWrite = true
+		if !bytes.Contains(chunk, []byte("data:")) {
+			c.nonStreaming = true
+			c.logger.Debug("AtoO stream converter: non-streaming passthrough",
+				zap.String("request_id", c.reqID),
+				zap.Int("size", len(chunk)),
+			)
+			return c.writer.Write(chunk)
+		}
+	}
+	if c.nonStreaming {
+		return c.writer.Write(chunk)
 	}
 
 	lines := bytes.Split(chunk, []byte("\n"))
@@ -1634,6 +1650,11 @@ type AnthropicToOpenAIStreamConverter struct {
 	// for toolCallIndex to function correctly (it tracks the next OpenAI index to assign).
 	toolCallIndex map[int]int
 	nextToolIdx   int
+
+	// nonStreaming は最初の Write で SSE データでないと判定された場合に true。
+	// true の場合、後続の Write もパススルーする。
+	firstWrite   bool
+	nonStreaming  bool
 }
 
 // NewAnthropicToOpenAIStreamConverter はAnthropicToOpenAIStreamConverterを作成する。
@@ -1672,6 +1693,23 @@ func (c *AnthropicToOpenAIStreamConverter) Flush() {
 // 渡すことが実測上確認されている（各 "data: ...\n\n" が1回の Write で届く）。
 // この仮定が崩れる環境では、バッファリング実装への切り替えが必要になる場合がある。
 func (c *AnthropicToOpenAIStreamConverter) Write(chunk []byte) (int, error) {
+	// Non-streaming passthrough: if the first Write contains no SSE markers (event:/data:),
+	// treat it as non-streaming JSON (already converted in ModifyResponse) and pass through.
+	if !c.firstWrite {
+		c.firstWrite = true
+		if !bytes.Contains(chunk, []byte("event:")) && !bytes.Contains(chunk, []byte("data:")) {
+			c.nonStreaming = true
+			c.logger.Debug("OtoA stream converter: non-streaming passthrough",
+				zap.String("request_id", c.reqID),
+				zap.Int("size", len(chunk)),
+			)
+			return c.w.Write(chunk)
+		}
+	}
+	if c.nonStreaming {
+		return c.w.Write(chunk)
+	}
+
 	lines := bytes.Split(chunk, []byte("\n"))
 	var eventType string
 	var dataLine string
