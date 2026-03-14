@@ -2494,6 +2494,16 @@ func TestConvertAnthropicToOpenAIResponseReverse(t *testing.T) {
 		assert.Equal(t, float64(3), details["cached_tokens"])
 	})
 
+	t.Run("cache_read_input_tokens zero — prompt_tokens_details omitted", func(t *testing.T) {
+		input := `{"id":"msg_z","type":"message","role":"assistant","model":"claude","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":0}}`
+		out, err := convertAnthropicToOpenAIResponseReverse([]byte(input), logger, "req_zero", "")
+		require.NoError(t, err)
+		var got map[string]interface{}
+		require.NoError(t, json.Unmarshal(out, &got))
+		usage := got["usage"].(map[string]interface{})
+		assert.Nil(t, usage["prompt_tokens_details"], "zero cache_read_input_tokens must not emit prompt_tokens_details")
+	})
+
 	t.Run("empty body returns error", func(t *testing.T) {
 		_, err := convertAnthropicToOpenAIResponseReverse([]byte{}, logger, "req5", "")
 		assert.Error(t, err)

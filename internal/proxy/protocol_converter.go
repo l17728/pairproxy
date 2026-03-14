@@ -1506,8 +1506,8 @@ func convertAnthropicToOpenAIResponseReverse(body []byte, logger *zap.Logger, re
 		if v, ok := u["output_tokens"].(float64); ok {
 			completionTokens = int(v)
 		}
-		// Map cache_read_input_tokens unconditionally when present (spec maps it without omit-if-zero condition)
-		if cached, ok := u["cache_read_input_tokens"].(float64); ok {
+		// Spec: omit if zero — only emit prompt_tokens_details when cached > 0
+		if cached, ok := u["cache_read_input_tokens"].(float64); ok && cached != 0 {
 			usage["prompt_tokens_details"] = map[string]interface{}{
 				"cached_tokens": cached,
 			}
