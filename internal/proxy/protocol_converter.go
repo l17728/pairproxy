@@ -1404,7 +1404,7 @@ func convertOpenAIAssistantMessage(msg map[string]interface{}) map[string]interf
 				continue
 			}
 			// arguments is a JSON string → parse to object
-			var input interface{}
+			var input interface{} = map[string]interface{}{}
 			if args, ok := fn["arguments"].(string); ok {
 				if err := json.Unmarshal([]byte(args), &input); err != nil {
 					input = map[string]interface{}{}
