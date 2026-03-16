@@ -210,3 +210,58 @@ func TestLLMBindingRepo_EvenDistribute_EmptyTargets(t *testing.T) {
 		t.Error("expected error for empty targetURLs")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// TestLLMBindingRepo_EvenDistribute_SkipsExistingBindings
+//
+// 回归测试：distribute 不应覆盖已有用户级绑定（直连用户场景）。
+// 修复前：先清空所有用户绑定再重新分配，直连用户绑定被破坏。
+// 修复后：跳过已有绑定的用户，只分配无绑定的用户。
+// ---------------------------------------------------------------------------
+
+func TestLLMBindingRepo_EvenDistribute_SkipsExistingBindings(t *testing.T) {
+	db := openTestDB(t)
+	logger := zaptest.NewLogger(t)
+	repo := NewLLMBindingRepo(db, logger)
+
+	targets := []string{"https://a.com", "https://b.com"}
+
+	// u1 已有绑定（模拟直连用户手动设置）
+	u1 := "u1"
+	if err := repo.Set("https://fixed.com", &u1, nil); err != nil {
+		t.Fatalf("Set u1: %v", err)
+	}
+
+	// u2, u3 无绑定，应被 distribute 分配
+	userIDs := []string{"u1", "u2", "u3"}
+	if err := repo.EvenDistribute(userIDs, targets); err != nil {
+		t.Fatalf("EvenDistribute: %v", err)
+	}
+
+	// u1 的绑定必须保持不变
+	url, found, err := repo.FindForUser("u1", "")
+	if err != nil {
+		t.Fatalf("FindForUser u1: %v", err)
+	}
+	if !found {
+		t.Fatal("u1 binding should still exist after distribute")
+	}
+	if url != "https://fixed.com" {
+		t.Errorf("u1 binding = %q, want https://fixed.com (distribute must not overwrite existing bindings)", url)
+	}
+
+	// u2, u3 应被分配到 targets 中
+	for _, uid := range []string{"u2", "u3"} {
+		url, found, err := repo.FindForUser(uid, "")
+		if err != nil {
+			t.Fatalf("FindForUser %s: %v", uid, err)
+		}
+		if !found {
+			t.Errorf("%s should have been assigned a binding by distribute", uid)
+			continue
+		}
+		if url != "https://a.com" && url != "https://b.com" {
+			t.Errorf("%s binding = %q, want one of the distribute targets", uid, url)
+		}
+	}
+}

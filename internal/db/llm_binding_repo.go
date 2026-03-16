@@ -115,7 +115,8 @@ func (r *LLMBindingRepo) Delete(id string) error {
 	return nil
 }
 
-// EvenDistribute 将 userIDs 轮询分配到 targetURLs（替换现有用户级绑定）。
+// EvenDistribute 将 userIDs 中**尚无用户级绑定**的用户轮询分配到 targetURLs。
+// 已有用户级绑定的用户（如直连用户手动设置的固定绑定）会被跳过，不受影响。
 // user[i] → targetURLs[i % len(targetURLs)]，在单个事务中完成。
 // targetURLs 为空时返回 error。
 func (r *LLMBindingRepo) EvenDistribute(userIDs []string, targetURLs []string) error {
@@ -127,15 +128,42 @@ func (r *LLMBindingRepo) EvenDistribute(userIDs []string, targetURLs []string) e
 		return nil
 	}
 
-	return r.db.Transaction(func(tx *gorm.DB) error {
-		// 删除所有用户级绑定
-		if err := tx.Where("user_id IS NOT NULL").Delete(&LLMBinding{}).Error; err != nil {
-			return fmt.Errorf("clear user llm bindings: %w", err)
+	// 查出已有用户级绑定的 userID 集合，distribute 跳过这些用户
+	var existingBindings []LLMBinding
+	if err := r.db.Where("user_id IN ?", userIDs).Find(&existingBindings).Error; err != nil {
+		return fmt.Errorf("query existing user bindings: %w", err)
+	}
+	alreadyBound := make(map[string]bool, len(existingBindings))
+	for _, b := range existingBindings {
+		if b.UserID != nil {
+			alreadyBound[*b.UserID] = true
 		}
+	}
 
-		// 批量创建新绑定
+	// 过滤出无绑定的用户
+	var toAssign []string
+	for _, uid := range userIDs {
+		if !alreadyBound[uid] {
+			toAssign = append(toAssign, uid)
+		}
+	}
+
+	if len(toAssign) == 0 {
+		r.logger.Info("even distribute: all users already have bindings, nothing to do",
+			zap.Int("skipped", len(userIDs)),
+		)
+		return nil
+	}
+
+	r.logger.Info("even distribute: skipping users with existing bindings",
+		zap.Int("total", len(userIDs)),
+		zap.Int("skipped", len(alreadyBound)),
+		zap.Int("to_assign", len(toAssign)),
+	)
+
+	return r.db.Transaction(func(tx *gorm.DB) error {
 		now := time.Now()
-		for i, uid := range userIDs {
+		for i, uid := range toAssign {
 			targetURL := targetURLs[i%len(targetURLs)]
 			uidCopy := uid
 			b := &LLMBinding{
@@ -150,7 +178,7 @@ func (r *LLMBindingRepo) EvenDistribute(userIDs []string, targetURLs []string) e
 		}
 
 		r.logger.Info("even distribution completed",
-			zap.Int("users", len(userIDs)),
+			zap.Int("assigned", len(toAssign)),
 			zap.Int("targets", len(targetURLs)),
 		)
 		return nil
