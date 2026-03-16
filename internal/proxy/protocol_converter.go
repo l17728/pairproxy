@@ -1764,8 +1764,7 @@ func (c *AnthropicToOpenAIStreamConverter) handleEvent(eventType, data string) {
 		if cb == nil {
 			return
 		}
-		switch cb["type"] {
-		case "tool_use":
+		if cb["type"] == "tool_use" {
 			toolIdx := c.nextToolIdx
 			c.toolCallIndex[blockIdx] = toolIdx
 			c.nextToolIdx++
