@@ -840,3 +840,75 @@ func TestInputTokens_OpenAINonStreaming(t *testing.T) {
 		t.Errorf("DurationMs = %d, want >= 0", log.DurationMs)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// TestInputTokens_AtoONonStreaming
+//
+// 回归测试：AtoO 方向（/v1/messages + provider=ollama），非 streaming JSON 响应。
+// Bug: 修复前 body 先被转为 Anthropic 格式，再用 OpenAISSEParser 解析 → 返回 (0,0)。
+// 修复后：在转换前先从原始 OpenAI body 记录 token，InputTokens 必须非 0。
+// ---------------------------------------------------------------------------
+
+func TestInputTokens_AtoONonStreaming(t *testing.T) {
+	const (
+		wantInput  = 42
+		wantOutput = 15
+	)
+
+	// Mock LLM（Ollama 兼容）：接收 OpenAI 格式请求，返回 OpenAI 格式非流式响应
+	mockResp := `{"id":"chatcmpl-atoa","object":"chat.completion","model":"llama3.1",` +
+		`"choices":[{"index":0,"message":{"role":"assistant","content":"Hello!"},"finish_reason":"stop"}],` +
+		`"usage":{"prompt_tokens":42,"completion_tokens":15,"total_tokens":57}}`
+
+	mockLLM := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 验证 sproxy 已将路径转为 OpenAI 格式
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Errorf("unexpected path: %s, want /v1/chat/completions", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, mockResp)
+	}))
+	defer mockLLM.Close()
+
+	// provider="ollama" 触发 AtoO 转换
+	sp, jwtMgr, repo, cancel := newTokenEnv(t, []LLMTarget{
+		{URL: mockLLM.URL, APIKey: "ollama", Provider: "ollama"},
+	})
+
+	token, _ := jwtMgr.Sign(auth.JWTClaims{UserID: "u-atoa-nosm", Username: "atoa-ns"}, time.Hour)
+	// 客户端发 Anthropic 格式（非流式）
+	body := `{"model":"llama3.1","messages":[{"role":"user","content":"hi"}],"max_tokens":100}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	req.Header.Set("X-PairProxy-Auth", token)
+	req.Header.Set("Content-Type", "application/json")
+	req.ContentLength = int64(len(body))
+
+	rr := httptest.NewRecorder()
+	sp.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+
+	cancel()
+	time.Sleep(50 * time.Millisecond)
+
+	logs, err := repo.Query(db.UsageFilter{UserID: "u-atoa-nosm", Limit: 10})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(logs) != 1 {
+		t.Fatalf("expected 1 usage log, got %d", len(logs))
+	}
+	log := logs[0]
+	if log.InputTokens != wantInput {
+		t.Errorf("InputTokens = %d, want %d (AtoO non-streaming token bug)", log.InputTokens, wantInput)
+	}
+	if log.OutputTokens != wantOutput {
+		t.Errorf("OutputTokens = %d, want %d", log.OutputTokens, wantOutput)
+	}
+	if log.IsStreaming {
+		t.Error("IsStreaming should be false for non-streaming response")
+	}
+}

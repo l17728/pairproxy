@@ -1498,11 +1498,15 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 				if readErr == nil && len(body) > 0 {
 					switch convDir {
 					case conversionAtoO:
-						// AtoO: convert OpenAI response -> Anthropic format (existing behavior, unchanged)
+						// AtoO: RECORD FIRST from raw OpenAI body so OpenAISSEParser parses correctly.
+						// After conversion the body is Anthropic JSON; OpenAISSEParser cannot parse it
+						// and would return (0,0). Mirror the OtoA pattern: record before converting.
 						sp.logger.Debug("AtoO: converting non-streaming response",
 							zap.String("request_id", reqID),
 							zap.Int("original_size", len(body)),
 						)
+						tw.RecordNonStreaming(body, resp.StatusCode, durationMs)
+						otoaRecorded = true
 						if resp.StatusCode >= 400 {
 							body = convertOpenAIErrorResponse(body, sp.logger, reqID)
 							sp.logger.Info("AtoO: error response converted to Anthropic format",
