@@ -1,6 +1,6 @@
 # PairProxy 用户手册
 
-**版本 v2.9.4**
+**版本 v2.10.0**
 
 ---
 
@@ -3851,3 +3851,115 @@ docker run --rm ghcr.io/l17728/pairproxy:v2.9.4 version
 ```
 
 非 Docker 部署用户无需升级，v2.9.3 二进制版本号完全正确。
+
+## §25 v2.10.0 更新说明
+
+**版本**: v2.10.0 — OtoA 双向协议转换（OpenAI 客户端透明访问 Anthropic 端点）
+
+### 25.1 新功能：OtoA 协议转换
+
+v2.10.0 实现了与 v2.6.0 方向相反的协议转换：**OpenAI 格式客户端 → Anthropic 端点**。
+
+#### 使用场景
+
+| 方向 | 客户端 | 目标后端 | 触发条件 |
+|------|--------|----------|----------|
+| AtoO（v2.6.0+）| Claude CLI（Anthropic 格式）| Ollama / OpenAI 兼容 | target `provider: ollama/openai` |
+| **OtoA（v2.10.0）** | **OpenAI 格式客户端**（Cursor、Continue.dev 等）| **Anthropic API** | target `provider: anthropic`，请求路径 `/v1/chat/completions` |
+
+#### OtoA 转换流程
+
+```
+OpenAI 客户端 → PairProxy → Anthropic API
+/v1/chat/completions        /v1/messages
+   (OpenAI JSON)   ↓ OtoA ↓   (Anthropic JSON)
+
+请求转换:
+  messages (含 system role) → system + messages
+  tools (function) → Anthropic tool 格式
+  stop / model 名称映射
+
+响应转换:
+  id: chatcmpl-xxx → msg_xxx
+  finish_reason → stop_reason
+  usage.prompt_tokens → input_tokens
+  usage.completion_tokens → output_tokens
+  tool_calls → tool_use content block
+
+流式转换:
+  Anthropic SSE → OpenAI SSE (AnthropicToOpenAIStreamConverter)
+```
+
+#### 配置示例
+
+```yaml
+llm:
+  targets:
+    # OtoA 场景：OpenAI 客户端访问 Anthropic
+    - url: "https://api.anthropic.com"
+      api_key: "${ANTHROPIC_API_KEY}"
+      provider: "anthropic"
+      name: "Anthropic Claude"
+      weight: 1
+```
+
+将 OpenAI 格式客户端指向 PairProxy，无需任何额外配置：
+
+```bash
+# Cursor / Continue.dev / 任意 OpenAI 兼容客户端
+export OPENAI_API_KEY="<pairproxy-jwt>"
+export OPENAI_BASE_URL="http://localhost:9000"
+
+# 请求自动路由到 Anthropic 端点
+curl -X POST http://localhost:9000/v1/chat/completions \
+  -H "Authorization: Bearer <pairproxy-jwt>" \
+  -d '{"model":"claude-3-5-sonnet-20241022","messages":[{"role":"user","content":"Hello"}]}'
+```
+
+#### 防双计费保护
+
+OtoA 转换中，Anthropic 后端会返回真实用量数据。系统使用 `otoaRecorded` 标志确保
+token 用量只记录一次，避免从 OpenAI 响应格式重复统计。
+
+### 25.2 内部重构：conversionDirection 枚举
+
+替换原有 `bool` 标志，引入类型化枚举：
+
+```go
+type conversionDirection int
+
+const (
+    conversionNone conversionDirection = iota  // 不转换
+    conversionAtoO                             // Anthropic → OpenAI（v2.6.0）
+    conversionOtoA                             // OpenAI → Anthropic（v2.10.0）
+)
+```
+
+`detectConversionDirection()` 统一判断转换方向，代理逻辑更清晰。
+
+### 25.3 测试覆盖
+
+本版本新增 45 个测试，覆盖：
+- OtoA 请求转换（messages/tools/system/stop/model mapping）
+- OtoA 非流式响应转换（id 前缀、finish_reason、usage 字段）
+- OtoA 流式转换（`AnthropicToOpenAIStreamConverter` 全事件类型）
+- 防双计费逻辑
+- re-pick 路由修正（`effectivePath="/v1/messages"`）
+
+### 25.4 升级指南
+
+此版本无数据库变更，直接替换二进制即可：
+
+```bash
+# 下载最新版
+# https://github.com/l17728/pairproxy/releases/tag/v2.10.0
+
+# 停止旧进程，替换二进制，重启
+./sproxy start --config sproxy.yaml
+
+# 验证版本
+./sproxy version
+# 应输出：sproxy v2.10.0 (...)
+```
+
+OtoA 功能自动生效，无需任何配置变更。现有 AtoO 配置不受影响。
