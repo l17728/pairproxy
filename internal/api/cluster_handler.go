@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -14,11 +15,15 @@ import (
 
 // ClusterHandler 处理 sp-2 → sp-1 的内部 API 请求。
 type ClusterHandler struct {
-	logger       *zap.Logger
-	registry     *cluster.PeerRegistry
-	manager      *cluster.Manager // 用于路由表轮询端点（改进项4）
-	usageWriter  *db.UsageWriter
-	sharedSecret string // Bearer token，空串表示不鉴权（仅测试用）
+	logger         *zap.Logger
+	registry       *cluster.PeerRegistry
+	manager        *cluster.Manager // 用于路由表轮询端点（改进项4）
+	usageWriter    *db.UsageWriter
+	sharedSecret   string // Bearer token，空串表示不鉴权（仅测试用）
+	userRepo       *db.UserRepo
+	groupRepo      *db.GroupRepo
+	llmTargetRepo  *db.LLMTargetRepo
+	llmBindingRepo *db.LLMBindingRepo
 }
 
 // NewClusterHandler 创建 ClusterHandler。
@@ -36,6 +41,20 @@ func NewClusterHandler(
 	}
 }
 
+// SetConfigRepos 注入用于生成配置快照的仓库。
+// Primary 节点必须调用此方法以启用 GET /api/internal/config-snapshot 端点。
+func (h *ClusterHandler) SetConfigRepos(
+	userRepo *db.UserRepo,
+	groupRepo *db.GroupRepo,
+	llmTargetRepo *db.LLMTargetRepo,
+	llmBindingRepo *db.LLMBindingRepo,
+) {
+	h.userRepo = userRepo
+	h.groupRepo = groupRepo
+	h.llmTargetRepo = llmTargetRepo
+	h.llmBindingRepo = llmBindingRepo
+}
+
 // SetManager 设置集群管理器（用于路由表轮询端点）。
 func (h *ClusterHandler) SetManager(m *cluster.Manager) {
 	h.manager = m
@@ -46,6 +65,7 @@ func (h *ClusterHandler) SetManager(m *cluster.Manager) {
 func (h *ClusterHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/internal/register", h.handleRegister)
 	mux.HandleFunc("/api/internal/usage", h.handleUsageReport)
+	mux.HandleFunc("/api/internal/config-snapshot", h.handleConfigSnapshot)
 	mux.HandleFunc("/cluster/routing", h.handleGetRouting)
 	mux.HandleFunc("/cluster/routing-poll", h.handleRoutingPoll) // 改进项4
 }
@@ -172,6 +192,79 @@ func (h *ClusterHandler) handleGetRouting(w http.ResponseWriter, r *http.Request
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"peers": peers,
 	})
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/internal/config-snapshot
+// ---------------------------------------------------------------------------
+
+// handleConfigSnapshot 返回 Primary 的配置快照（users/groups/llm_targets/llm_bindings）。
+// Worker 节点通过此端点同步配置数据到本地 DB，实现多节点一致性。
+func (h *ClusterHandler) handleConfigSnapshot(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !h.checkAuth(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	if h.userRepo == nil || h.groupRepo == nil || h.llmTargetRepo == nil || h.llmBindingRepo == nil {
+		h.logger.Warn("config snapshot: repos not initialized (not in primary mode or SetConfigRepos not called)",
+			zap.String("remote_addr", r.RemoteAddr),
+		)
+		http.Error(w, "config snapshot not available on this node", http.StatusServiceUnavailable)
+		return
+	}
+
+	users, err := h.userRepo.ListAll()
+	if err != nil {
+		h.logger.Error("config snapshot: failed to list users", zap.Error(err))
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	groups, err := h.groupRepo.List()
+	if err != nil {
+		h.logger.Error("config snapshot: failed to list groups", zap.Error(err))
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	targets, err := h.llmTargetRepo.ListAll()
+	if err != nil {
+		h.logger.Error("config snapshot: failed to list llm targets", zap.Error(err))
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	bindings, err := h.llmBindingRepo.List()
+	if err != nil {
+		h.logger.Error("config snapshot: failed to list llm bindings", zap.Error(err))
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	snap := cluster.ConfigSnapshot{
+		Version:     time.Now(),
+		Users:       users,
+		Groups:      groups,
+		LLMTargets:  targets,
+		LLMBindings: bindings,
+	}
+
+	h.logger.Debug("config snapshot served",
+		zap.String("remote_addr", r.RemoteAddr),
+		zap.Int("users", len(users)),
+		zap.Int("groups", len(groups)),
+		zap.Int("targets", len(targets)),
+		zap.Int("bindings", len(bindings)),
+	)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(snap)
 }
 
 // checkAuth 验证请求中的 Bearer token（shared secret）。

@@ -40,10 +40,16 @@ type AdminHandler struct {
 	adminPasswordHash string
 	tokenTTL          time.Duration
 	limiter           *LoginLimiter // 管理员登录失败速率限制
+	isWorkerNode      bool          // Worker 节点：写操作被封锁
 }
 
 // SetTokenRepo 注入 RefreshTokenRepo（用于 token 吊销端点）
 func (h *AdminHandler) SetTokenRepo(repo *db.RefreshTokenRepo) { h.tokenRepo = repo }
+
+// SetWorkerMode 设置 Worker 节点模式：所有写操作将被 RequireWritableNode 中间件拒绝。
+func (h *AdminHandler) SetWorkerMode(isWorkerNode bool) {
+	h.isWorkerNode = isWorkerNode
+}
 
 // NewAdminHandler 创建 AdminHandler
 func NewAdminHandler(
@@ -88,28 +94,30 @@ func (h *AdminHandler) SetDrainFunctions(
 
 // RegisterRoutes 注册管理员路由到 mux
 func (h *AdminHandler) RegisterRoutes(mux *http.ServeMux) {
+	w := h.RequireWritableNode // 简写，用于写操作路由
+
 	// 登录（无需认证）
 	mux.HandleFunc("POST /api/admin/login", h.handleLogin)
 
 	// 用户管理
 	mux.Handle("GET /api/admin/users", h.RequireAdmin(http.HandlerFunc(h.handleListUsers)))
-	mux.Handle("POST /api/admin/users", h.RequireAdmin(http.HandlerFunc(h.handleCreateUser)))
-	mux.Handle("PUT /api/admin/users/{id}/active", h.RequireAdmin(http.HandlerFunc(h.handleSetUserActive)))
-	mux.Handle("PUT /api/admin/users/{id}/password", h.RequireAdmin(http.HandlerFunc(h.handleResetPassword)))
-	mux.Handle("PUT /api/admin/users/{id}/group", h.RequireAdmin(http.HandlerFunc(h.handleSetUserGroup)))
-	mux.Handle("POST /api/admin/users/{id}/revoke-tokens", h.RequireAdmin(http.HandlerFunc(h.handleRevokeUserTokens)))
+	mux.Handle("POST /api/admin/users", h.RequireAdmin(w(http.HandlerFunc(h.handleCreateUser))))
+	mux.Handle("PUT /api/admin/users/{id}/active", h.RequireAdmin(w(http.HandlerFunc(h.handleSetUserActive))))
+	mux.Handle("PUT /api/admin/users/{id}/password", h.RequireAdmin(w(http.HandlerFunc(h.handleResetPassword))))
+	mux.Handle("PUT /api/admin/users/{id}/group", h.RequireAdmin(w(http.HandlerFunc(h.handleSetUserGroup))))
+	mux.Handle("POST /api/admin/users/{id}/revoke-tokens", h.RequireAdmin(w(http.HandlerFunc(h.handleRevokeUserTokens))))
 
 	// 分组管理
 	mux.Handle("GET /api/admin/groups", h.RequireAdmin(http.HandlerFunc(h.handleListGroups)))
-	mux.Handle("POST /api/admin/groups", h.RequireAdmin(http.HandlerFunc(h.handleCreateGroup)))
-	mux.Handle("PUT /api/admin/groups/{id}/quota", h.RequireAdmin(http.HandlerFunc(h.handleSetGroupQuota)))
-	mux.Handle("DELETE /api/admin/groups/{id}", h.RequireAdmin(http.HandlerFunc(h.handleDeleteGroup)))
+	mux.Handle("POST /api/admin/groups", h.RequireAdmin(w(http.HandlerFunc(h.handleCreateGroup))))
+	mux.Handle("PUT /api/admin/groups/{id}/quota", h.RequireAdmin(w(http.HandlerFunc(h.handleSetGroupQuota))))
+	mux.Handle("DELETE /api/admin/groups/{id}", h.RequireAdmin(w(http.HandlerFunc(h.handleDeleteGroup))))
 
 	// 配额状态
 	mux.Handle("GET /api/admin/quota/status", h.RequireAdmin(http.HandlerFunc(h.handleQuotaStatus)))
 
 	// 日志清理
-	mux.Handle("DELETE /api/admin/logs", h.RequireAdmin(http.HandlerFunc(h.handlePurgeLogs)))
+	mux.Handle("DELETE /api/admin/logs", h.RequireAdmin(w(http.HandlerFunc(h.handlePurgeLogs))))
 
 	// 统计查询
 	mux.Handle("GET /api/admin/stats/summary", h.RequireAdmin(http.HandlerFunc(h.handleStatsSummary)))
@@ -122,19 +130,36 @@ func (h *AdminHandler) RegisterRoutes(mux *http.ServeMux) {
 	// 数据导出（F-2）
 	mux.Handle("GET /api/admin/export", h.RequireAdmin(http.HandlerFunc(h.handleExport)))
 
-	// 排水控制
-	mux.Handle("POST /api/admin/drain", h.RequireAdmin(http.HandlerFunc(h.handleDrain)))
-	mux.Handle("POST /api/admin/undrain", h.RequireAdmin(http.HandlerFunc(h.handleUndrain)))
+	// 排水控制（仅 Primary 有意义）
+	mux.Handle("POST /api/admin/drain", h.RequireAdmin(w(http.HandlerFunc(h.handleDrain))))
+	mux.Handle("POST /api/admin/undrain", h.RequireAdmin(w(http.HandlerFunc(h.handleUndrain))))
 	mux.Handle("GET /api/admin/drain/status", h.RequireAdmin(http.HandlerFunc(h.handleDrainStatus)))
 
 	// API Key 管理（F-5）
 	mux.Handle("GET /api/admin/api-keys", h.RequireAdmin(http.HandlerFunc(h.handleListAPIKeys)))
-	mux.Handle("POST /api/admin/api-keys", h.RequireAdmin(http.HandlerFunc(h.handleCreateAPIKey)))
-	mux.Handle("POST /api/admin/api-keys/{id}/assign", h.RequireAdmin(http.HandlerFunc(h.handleAssignAPIKey)))
-	mux.Handle("DELETE /api/admin/api-keys/{id}", h.RequireAdmin(http.HandlerFunc(h.handleRevokeAPIKey)))
+	mux.Handle("POST /api/admin/api-keys", h.RequireAdmin(w(http.HandlerFunc(h.handleCreateAPIKey))))
+	mux.Handle("POST /api/admin/api-keys/{id}/assign", h.RequireAdmin(w(http.HandlerFunc(h.handleAssignAPIKey))))
+	mux.Handle("DELETE /api/admin/api-keys/{id}", h.RequireAdmin(w(http.HandlerFunc(h.handleRevokeAPIKey))))
 
 	// 用户用量查询（需求 B）
 	mux.Handle("GET /api/admin/active-users", h.RequireAdmin(http.HandlerFunc(h.handleGetActiveUsers)))
+}
+
+// RequireWritableNode 中间件：Worker 节点上所有写操作返回 403。
+// 应链在 RequireAdmin 之后使用：h.RequireAdmin(h.RequireWritableNode(handler))
+func (h *AdminHandler) RequireWritableNode(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if h.isWorkerNode {
+			h.logger.Warn("blocked write operation on worker node",
+				zap.String("method", r.Method),
+				zap.String("path", r.URL.Path),
+			)
+			writeJSONError(w, http.StatusForbidden, "worker_read_only",
+				"write operations are not allowed on worker nodes; perform admin operations on the primary node")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // RequireAdmin 中间件：验证 Bearer token 或 cookie 中携带有效的管理员 JWT

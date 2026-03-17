@@ -501,8 +501,10 @@ func TestLLMTargetManagement_WebUIOperations(t *testing.T) {
 			next.ServeHTTP(w, r)
 		})
 	}
+	// 非 Worker 节点（Primary）：不封锁写操作
+	noopWritable := func(next http.Handler) http.Handler { return next }
 
-	handler.RegisterRoutes(mux, requireAdmin)
+	handler.RegisterRoutes(mux, requireAdmin, noopWritable)
 
 	// 创建测试服务器
 	server := httptest.NewServer(mux)

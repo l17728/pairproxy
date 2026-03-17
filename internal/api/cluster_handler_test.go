@@ -339,3 +339,91 @@ func TestGetRoutingEndpoint(t *testing.T) {
 		t.Errorf("expected 1 peer, got %v", peers)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// TestConfigSnapshot_Endpoint — GET /api/internal/config-snapshot
+// ---------------------------------------------------------------------------
+
+// TestConfigSnapshot_NotAvailableWithoutRepos 验证未设置 repos 时返回 503。
+func TestConfigSnapshot_NotAvailableWithoutRepos(t *testing.T) {
+	handler, _, _, _, _ := setupClusterHandler(t)
+
+	req := authReq(http.MethodGet, "/api/internal/config-snapshot", nil)
+	rr := httptest.NewRecorder()
+	handler.handleConfigSnapshot(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", rr.Code)
+	}
+}
+
+// TestConfigSnapshot_ReturnsData 验证设置 repos 后端点返回正确的 JSON 快照。
+func TestConfigSnapshot_ReturnsData(t *testing.T) {
+	handler, _, _, _, _ := setupClusterHandler(t)
+
+	logger := zaptest.NewLogger(t)
+	gormDB, err := db.Open(logger, ":memory:")
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	if err := db.Migrate(logger, gormDB); err != nil {
+		t.Fatalf("db.Migrate: %v", err)
+	}
+
+	userRepo := db.NewUserRepo(gormDB, logger)
+	groupRepo := db.NewGroupRepo(gormDB, logger)
+	llmTargetRepo := db.NewLLMTargetRepo(gormDB, logger)
+	llmBindingRepo := db.NewLLMBindingRepo(gormDB, logger)
+
+	if err := userRepo.Create(&db.User{ID: "u1", Username: "alice", PasswordHash: "h1", IsActive: true}); err != nil {
+		t.Fatalf("Create user: %v", err)
+	}
+
+	handler.SetConfigRepos(userRepo, groupRepo, llmTargetRepo, llmBindingRepo)
+
+	req := authReq(http.MethodGet, "/api/internal/config-snapshot", nil)
+	rr := httptest.NewRecorder()
+	handler.handleConfigSnapshot(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+
+	var snap cluster.ConfigSnapshot
+	if err := json.NewDecoder(rr.Body).Decode(&snap); err != nil {
+		t.Fatalf("decode snapshot: %v", err)
+	}
+
+	if len(snap.Users) != 1 || snap.Users[0].Username != "alice" {
+		t.Errorf("expected 1 user 'alice', got %v", snap.Users)
+	}
+	if snap.Version.IsZero() {
+		t.Error("snapshot Version should not be zero")
+	}
+}
+
+// TestConfigSnapshot_RequiresAuth 验证无鉴权时返回 401。
+func TestConfigSnapshot_RequiresAuth(t *testing.T) {
+	handler, _, _, _, _ := setupClusterHandler(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/internal/config-snapshot", nil)
+	rr := httptest.NewRecorder()
+	handler.handleConfigSnapshot(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", rr.Code)
+	}
+}
+
+// TestConfigSnapshot_MethodNotAllowed 验证非 GET 请求返回 405。
+func TestConfigSnapshot_MethodNotAllowed(t *testing.T) {
+	handler, _, _, _, _ := setupClusterHandler(t)
+
+	req := authReq(http.MethodPost, "/api/internal/config-snapshot", []byte(`{}`))
+	rr := httptest.NewRecorder()
+	handler.handleConfigSnapshot(rr, req)
+
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Errorf("status = %d, want 405", rr.Code)
+	}
+}

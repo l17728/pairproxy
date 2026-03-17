@@ -624,6 +624,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	authHandler.RegisterRoutes(mux)
 
 	// 管理 REST API
+	adminHandler.SetWorkerMode(!isPrimary)
 	adminHandler.RegisterRoutes(mux)
 	adminHandler.RegisterLLMRoutes(mux)
 	logger.Info("admin API registered at /api/admin/")
@@ -633,7 +634,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 		logger, jwtMgr, llmTargetRepo, auditRepo,
 		cfg.Admin.PasswordHash, adminTokenTTL,
 	)
-	llmTargetHandler.RegisterRoutes(mux, adminHandler.RequireAdmin)
+	llmTargetHandler.RegisterRoutes(mux, adminHandler.RequireAdmin, adminHandler.RequireWritableNode)
 	logger.Info("LLM target API registered at /api/admin/llm/targets")
 
 	// 用户自助服务 API（F-10 WebUI 增强）
@@ -649,6 +650,8 @@ func runStart(cmd *cobra.Command, args []string) error {
 		if clusterMgr != nil {
 			clusterHandler.SetManager(clusterMgr)
 		}
+		// 注入配置快照所需的 repos（Primary 专用）
+		clusterHandler.SetConfigRepos(userRepo, groupRepo, llmTargetRepo, llmBindingRepo)
 		clusterHandler.RegisterRoutes(mux)
 		if cfg.Cluster.SharedSecret == "" {
 			logger.Warn("cluster.shared_secret is not configured; internal API will reject all requests (fail-closed). " +
@@ -656,6 +659,34 @@ func runStart(cmd *cobra.Command, args []string) error {
 		} else {
 			logger.Info("cluster handler registered with shared secret authentication")
 		}
+	}
+
+	// Worker 节点：启动配置同步器（从 Primary 拉取 users/groups/targets/bindings）
+	var configSyncer *cluster.ConfigSyncer
+	if !isPrimary && cfg.Cluster.Primary != "" {
+		reportInterval := cfg.Cluster.ReportInterval
+		if reportInterval <= 0 {
+			reportInterval = 30 * time.Second
+		}
+		configSyncer = cluster.NewConfigSyncer(
+			logger,
+			cluster.ConfigSyncerConfig{
+				PrimaryAddr:  cfg.Cluster.Primary,
+				SharedSecret: cfg.Cluster.SharedSecret,
+				Interval:     reportInterval,
+			},
+			database,
+			userRepo,
+			groupRepo,
+			llmTargetRepo,
+			llmBindingRepo,
+		)
+		configSyncer.Start(ctx)
+		defer configSyncer.Wait()
+		logger.Info("config syncer started",
+			zap.String("primary", cfg.Cluster.Primary),
+			zap.Duration("interval", reportInterval),
+		)
 	}
 
 	// Dashboard（Phase 5）
@@ -670,6 +701,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 		dashHandler.SetTokenRepo(tokenRepo)
 		dashHandler.SetDrainFunctions(sp.Drain, sp.Undrain, sp.GetDrainStatus)
 		dashHandler.SetEventLog(evtLog)
+		dashHandler.SetWorkerMode(!isPrimary)
 		dashHandler.RegisterRoutes(mux)
 		logger.Info("dashboard registered at /dashboard/")
 	}

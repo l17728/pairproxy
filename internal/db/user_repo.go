@@ -345,6 +345,11 @@ func (r *UserRepo) ListActive() ([]User, error) {
 	return users, nil
 }
 
+// ListAll 返回所有用户（含关联 Group），用于配置快照生成。
+func (r *UserRepo) ListAll() ([]User, error) {
+	return r.ListByGroup("")
+}
+
 // List 列出所有分组
 func (r *GroupRepo) List() ([]Group, error) {
 	var groups []Group

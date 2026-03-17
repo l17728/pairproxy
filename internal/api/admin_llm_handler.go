@@ -23,11 +23,12 @@ func (h *AdminHandler) SetLLMHealthFn(fn func() []proxy.LLMTargetStatus) {
 
 // RegisterLLMRoutes 注册 LLM 相关管理路由（须在 RegisterRoutes 之后调用）。
 func (h *AdminHandler) RegisterLLMRoutes(mux *http.ServeMux) {
+	w := h.RequireWritableNode
 	mux.Handle("GET /api/admin/llm/targets/status", h.RequireAdmin(http.HandlerFunc(h.handleLLMTargets)))
 	mux.Handle("GET /api/admin/llm/bindings", h.RequireAdmin(http.HandlerFunc(h.handleListLLMBindings)))
-	mux.Handle("POST /api/admin/llm/bindings", h.RequireAdmin(http.HandlerFunc(h.handleCreateLLMBinding)))
-	mux.Handle("DELETE /api/admin/llm/bindings/{id}", h.RequireAdmin(http.HandlerFunc(h.handleDeleteLLMBinding)))
-	mux.Handle("POST /api/admin/llm/distribute", h.RequireAdmin(http.HandlerFunc(h.handleLLMDistribute)))
+	mux.Handle("POST /api/admin/llm/bindings", h.RequireAdmin(w(http.HandlerFunc(h.handleCreateLLMBinding))))
+	mux.Handle("DELETE /api/admin/llm/bindings/{id}", h.RequireAdmin(w(http.HandlerFunc(h.handleDeleteLLMBinding))))
+	mux.Handle("POST /api/admin/llm/distribute", h.RequireAdmin(w(http.HandlerFunc(h.handleLLMDistribute))))
 }
 
 // ---------------------------------------------------------------------------

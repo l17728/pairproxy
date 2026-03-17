@@ -44,6 +44,7 @@ type Handler struct {
 	undrainFn         func() error                   // 可选，退出排水模式
 	drainStatusFn     func() proxy.DrainStatus       // 可选，查询排水状态
 	eventLog          *eventlog.Log                  // 可选，内存告警事件缓冲区
+	isWorkerNode      bool                           // true = Worker 节点，只读模式
 
 	// 用户统计缓存（5 分钟 TTL，PRD NFR-缓存要求）
 	userStatsCacheMu  sync.Mutex
@@ -62,6 +63,9 @@ func (h *Handler) SetAPIKeyRepo(repo *db.APIKeyRepo) { h.apiKeyRepo = repo }
 
 // SetEventLog 设置内存事件日志（用于 /dashboard/alerts 页面）
 func (h *Handler) SetEventLog(log *eventlog.Log) { h.eventLog = log }
+
+// SetWorkerMode 设置 Worker 节点只读模式（Worker 节点调用此方法后，所有写操作返回 403）
+func (h *Handler) SetWorkerMode(isWorker bool) { h.isWorkerNode = isWorker }
 
 // NewHandler 创建 Dashboard Handler
 func NewHandler(
@@ -93,57 +97,48 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /dashboard/login", h.handleLoginSubmit)
 	mux.HandleFunc("GET /dashboard/logout", h.handleLogout)
 
-	// 需要 session
+	// 写操作中间件链（requireSession + requireWritableNode）
+	rw := func(hf http.Handler) http.Handler {
+		return h.requireSession(h.requireWritableNode(hf))
+	}
+
+	// 需要 session（读操作）
 	mux.Handle("GET /dashboard", h.requireSession(http.HandlerFunc(h.handleOverview)))
 	mux.Handle("GET /dashboard/overview", h.requireSession(http.HandlerFunc(h.handleOverview)))
 	mux.Handle("GET /dashboard/users", h.requireSession(http.HandlerFunc(h.handleUsersPage)))
-	mux.Handle("POST /dashboard/users", h.requireSession(http.HandlerFunc(h.handleCreateUser)))
-	mux.Handle("POST /dashboard/users/{id}/active", h.requireSession(http.HandlerFunc(h.handleToggleActive)))
-	mux.Handle("POST /dashboard/users/{id}/password", h.requireSession(http.HandlerFunc(h.handleResetPassword)))
-	mux.Handle("POST /dashboard/users/{id}/group", h.requireSession(http.HandlerFunc(h.handleSetUserGroup)))
-	mux.Handle("POST /dashboard/users/{id}/revoke-tokens", h.requireSession(http.HandlerFunc(h.handleRevokeUserTokens)))
 	mux.Handle("GET /dashboard/groups", h.requireSession(http.HandlerFunc(h.handleGroupsPage)))
-	mux.Handle("POST /dashboard/groups", h.requireSession(http.HandlerFunc(h.handleCreateGroup)))
-	mux.Handle("POST /dashboard/groups/{id}/quota", h.requireSession(http.HandlerFunc(h.handleSetQuota)))
-	mux.Handle("POST /dashboard/groups/{id}/delete", h.requireSession(http.HandlerFunc(h.handleDeleteGroup)))
 	mux.Handle("GET /dashboard/logs", h.requireSession(http.HandlerFunc(h.handleLogsPage)))
-	mux.Handle("POST /dashboard/logs/purge-all", h.requireSession(http.HandlerFunc(h.handleLogsPurgeAll)))
 	mux.Handle("GET /dashboard/audit", h.requireSession(http.HandlerFunc(h.handleAuditPage)))
 	mux.Handle("GET /dashboard/my-usage", h.requireSession(http.HandlerFunc(h.handleMyUsagePage)))
-
-	// LLM 管理（可选，需设置 llmBindingRepo）
 	mux.Handle("GET /dashboard/llm", h.requireSession(http.HandlerFunc(h.handleLLMPage)))
-	mux.Handle("POST /dashboard/llm/bindings", h.requireSession(http.HandlerFunc(h.handleLLMCreateBinding)))
-	mux.Handle("POST /dashboard/llm/bindings/{id}/delete", h.requireSession(http.HandlerFunc(h.handleLLMDeleteBinding)))
-	mux.Handle("POST /dashboard/llm/distribute", h.requireSession(http.HandlerFunc(h.handleLLMDistribute)))
-
-	// LLM 目标管理（可选，需设置 llmTargetRepo）
-	mux.Handle("POST /dashboard/llm/targets", h.requireSession(http.HandlerFunc(h.handleLLMCreateTarget)))
-	mux.Handle("POST /dashboard/llm/targets/{id}/update", h.requireSession(http.HandlerFunc(h.handleLLMUpdateTarget)))
-	mux.Handle("POST /dashboard/llm/targets/{id}/delete", h.requireSession(http.HandlerFunc(h.handleLLMDeleteTarget)))
-
-	// 排水控制（可选，需设置 drainFn）
-	mux.Handle("POST /dashboard/drain/enter", h.requireSession(http.HandlerFunc(h.handleDrainEnter)))
-	mux.Handle("POST /dashboard/drain/exit", h.requireSession(http.HandlerFunc(h.handleDrainExit)))
-
-	// 批量导入
 	mux.Handle("GET /dashboard/import", h.requireSession(http.HandlerFunc(h.handleImportPage)))
-	mux.Handle("POST /dashboard/import", h.requireSession(http.HandlerFunc(h.handleImportSubmit)))
-
-	// 告警与错误日志
 	mux.Handle("GET /dashboard/alerts", h.requireSession(http.HandlerFunc(h.handleAlertsPage)))
 	mux.Handle("GET /api/dashboard/events", h.requireSession(http.HandlerFunc(h.handleEventsAPI)))
-
-	// Trends API（F-10 WebUI 增强）
 	mux.Handle("GET /api/dashboard/trends", h.requireSession(http.HandlerFunc(h.handleTrendsAPI)))
-
-	// 用户统计 API（dashboard-user-token-stats）
 	mux.Handle("GET /dashboard/api/user-stats", h.requireSession(http.HandlerFunc(h.handleUserStats)))
-
-	// my-usage 页面数据 API（session 认证，无需 Bearer token）
 	mux.Handle("GET /api/dashboard/active-users", h.requireSession(http.HandlerFunc(h.handleDashboardActiveUsers)))
 	mux.Handle("GET /api/dashboard/user-quota", h.requireSession(http.HandlerFunc(h.handleDashboardUserQuota)))
 	mux.Handle("GET /api/dashboard/user-history", h.requireSession(http.HandlerFunc(h.handleDashboardUserHistory)))
+
+	// 需要 session + 可写节点（写操作）
+	mux.Handle("POST /dashboard/users", rw(http.HandlerFunc(h.handleCreateUser)))
+	mux.Handle("POST /dashboard/users/{id}/active", rw(http.HandlerFunc(h.handleToggleActive)))
+	mux.Handle("POST /dashboard/users/{id}/password", rw(http.HandlerFunc(h.handleResetPassword)))
+	mux.Handle("POST /dashboard/users/{id}/group", rw(http.HandlerFunc(h.handleSetUserGroup)))
+	mux.Handle("POST /dashboard/users/{id}/revoke-tokens", rw(http.HandlerFunc(h.handleRevokeUserTokens)))
+	mux.Handle("POST /dashboard/groups", rw(http.HandlerFunc(h.handleCreateGroup)))
+	mux.Handle("POST /dashboard/groups/{id}/quota", rw(http.HandlerFunc(h.handleSetQuota)))
+	mux.Handle("POST /dashboard/groups/{id}/delete", rw(http.HandlerFunc(h.handleDeleteGroup)))
+	mux.Handle("POST /dashboard/logs/purge-all", rw(http.HandlerFunc(h.handleLogsPurgeAll)))
+	mux.Handle("POST /dashboard/llm/bindings", rw(http.HandlerFunc(h.handleLLMCreateBinding)))
+	mux.Handle("POST /dashboard/llm/bindings/{id}/delete", rw(http.HandlerFunc(h.handleLLMDeleteBinding)))
+	mux.Handle("POST /dashboard/llm/distribute", rw(http.HandlerFunc(h.handleLLMDistribute)))
+	mux.Handle("POST /dashboard/llm/targets", rw(http.HandlerFunc(h.handleLLMCreateTarget)))
+	mux.Handle("POST /dashboard/llm/targets/{id}/update", rw(http.HandlerFunc(h.handleLLMUpdateTarget)))
+	mux.Handle("POST /dashboard/llm/targets/{id}/delete", rw(http.HandlerFunc(h.handleLLMDeleteTarget)))
+	mux.Handle("POST /dashboard/drain/enter", rw(http.HandlerFunc(h.handleDrainEnter)))
+	mux.Handle("POST /dashboard/drain/exit", rw(http.HandlerFunc(h.handleDrainExit)))
+	mux.Handle("POST /dashboard/import", rw(http.HandlerFunc(h.handleImportSubmit)))
 }
 
 // SetLLMDeps 设置 LLM 绑定相关依赖（可选；不设置则 LLM 页面显示空状态）。
@@ -165,9 +160,9 @@ func (h *Handler) SetDrainFunctions(
 
 // RegisterAdminLLMTargetRoutes 注册 LLM target 管理 API 路由（委托给 AdminLLMTargetHandler）
 func (h *Handler) RegisterAdminLLMTargetRoutes(mux *http.ServeMux, llmTargetHandler interface {
-	RegisterRoutes(mux *http.ServeMux, requireAdmin func(http.Handler) http.Handler)
+	RegisterRoutes(mux *http.ServeMux, requireAdmin func(http.Handler) http.Handler, requireWritableNode func(http.Handler) http.Handler)
 }) {
-	llmTargetHandler.RegisterRoutes(mux, h.requireSession)
+	llmTargetHandler.RegisterRoutes(mux, h.requireSession, h.requireWritableNode)
 }
 
 // ---------------------------------------------------------------------------
@@ -249,8 +244,23 @@ func (h *Handler) renderLogin(w http.ResponseWriter, errMsg string) {
 // ---------------------------------------------------------------------------
 
 type baseData struct {
-	Flash string
-	Error string
+	Flash        string
+	Error        string
+	IsWorkerNode bool
+}
+
+// newBase 创建 baseData，自动填充 IsWorkerNode 和 flash/error 查询参数。
+func (h *Handler) newBase(r *http.Request) baseData {
+	return baseData{
+		Flash:        r.URL.Query().Get("flash"),
+		Error:        r.URL.Query().Get("error"),
+		IsWorkerNode: h.isWorkerNode,
+	}
+}
+
+// newBaseErr 创建带错误消息的 baseData（用于服务器端验证失败）。
+func (h *Handler) newBaseErr(err string) baseData {
+	return baseData{Error: err, IsWorkerNode: h.isWorkerNode}
 }
 
 // ---------------------------------------------------------------------------
@@ -267,6 +277,24 @@ func (h *Handler) requireSession(next http.Handler) http.Handler {
 		claims, err := h.jwtMgr.Parse(c.Value)
 		if err != nil || claims.Role != "admin" {
 			http.Redirect(w, r, "/dashboard/login", http.StatusFound)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// requireWritableNode 中间件：在 Worker 节点上拒绝所有写操作（返回 403 JSON）。
+// 需链在 requireSession 之后使用。
+func (h *Handler) requireWritableNode(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if h.isWorkerNode {
+			h.logger.Warn("blocked write operation on worker node (dashboard)",
+				zap.String("method", r.Method),
+				zap.String("path", r.URL.Path),
+			)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"error":"worker_read_only","message":"write operations are not allowed on worker nodes; perform admin operations on the primary node"}`))
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -367,10 +395,7 @@ func (h *Handler) handleOverview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.renderPage(w, "overview.html", overviewPageData{
-		baseData: baseData{
-			Flash: r.URL.Query().Get("flash"),
-			Error: r.URL.Query().Get("error"),
-		},
+		baseData:       h.newBase(r),
 		Stats:          stats,
 		SuccessRatePct: pct,
 		ActiveUsers:    activeUsers,
@@ -394,10 +419,7 @@ func (h *Handler) handleUsersPage(w http.ResponseWriter, r *http.Request) {
 	users, _ := h.userRepo.ListByGroup("")
 	groups, _ := h.groupRepo.List()
 	h.renderPage(w, "users.html", usersPageData{
-		baseData: baseData{
-			Flash: r.URL.Query().Get("flash"),
-			Error: r.URL.Query().Get("error"),
-		},
+		baseData: h.newBase(r),
 		Users:  users,
 		Groups: groups,
 	})
@@ -552,10 +574,7 @@ type groupsPageData struct {
 func (h *Handler) handleGroupsPage(w http.ResponseWriter, r *http.Request) {
 	groups, _ := h.groupRepo.List()
 	h.renderPage(w, "groups.html", groupsPageData{
-		baseData: baseData{
-			Flash: r.URL.Query().Get("flash"),
-			Error: r.URL.Query().Get("error"),
-		},
+		baseData: h.newBase(r),
 		Groups: groups,
 	})
 }
@@ -684,10 +703,7 @@ func (h *Handler) handleLogsPage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.renderPage(w, "logs.html", logsPageData{
-		baseData: baseData{
-			Flash: r.URL.Query().Get("flash"),
-			Error: r.URL.Query().Get("error"),
-		},
+		baseData:       h.newBase(r),
 		Logs:           logs,
 		FilterUserID:   userID,
 		FilterUsername: displayUsername,
@@ -762,10 +778,7 @@ func (h *Handler) handleAuditPage(w http.ResponseWriter, r *http.Request) {
 	limit := 200
 	logs, _ := h.auditRepo.ListRecent(limit)
 	h.renderPage(w, "audit.html", auditPageData{
-		baseData: baseData{
-			Flash: r.URL.Query().Get("flash"),
-			Error: r.URL.Query().Get("error"),
-		},
+		baseData: h.newBase(r),
 		Logs:  logs,
 		Limit: limit,
 	})
@@ -858,10 +871,7 @@ func (h *Handler) handleTrendsAPI(w http.ResponseWriter, r *http.Request) {
 // ---------------------------------------------------------------------------
 
 func (h *Handler) handleMyUsagePage(w http.ResponseWriter, r *http.Request) {
-	h.renderPage(w, "my-usage.html", baseData{
-		Flash: r.URL.Query().Get("flash"),
-		Error: r.URL.Query().Get("error"),
-	})
+	h.renderPage(w, "my-usage.html", h.newBase(r))
 }
 
 // ---------------------------------------------------------------------------
@@ -1101,7 +1111,7 @@ func parseImportContent(content string) ([]dashImportSection, error) {
 
 func (h *Handler) handleImportPage(w http.ResponseWriter, r *http.Request) {
 	h.renderPage(w, "import.html", importPageData{
-		baseData: baseData{Flash: r.URL.Query().Get("flash")},
+		baseData: h.newBase(r),
 	})
 }
 
@@ -1128,7 +1138,7 @@ func (h *Handler) handleImportSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.TrimSpace(content) == "" {
 		h.renderPage(w, "import.html", importPageData{
-			baseData: baseData{Error: "请上传文件或粘贴导入内容"},
+			baseData: h.newBaseErr("请上传文件或粘贴导入内容"),
 			Content:  content,
 			Result:   dashImportResult{Done: true},
 		})
@@ -1141,7 +1151,7 @@ func (h *Handler) handleImportSubmit(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.logger.Warn("import: failed to parse content", zap.Error(err), zap.Bool("dry_run", dryRun))
 		h.renderPage(w, "import.html", importPageData{
-			baseData: baseData{},
+			baseData: h.newBaseErr(""),
 			Content:  content,
 			Result:   dashImportResult{Done: true, DryRun: dryRun, ParseError: err.Error()},
 		})
@@ -1265,7 +1275,7 @@ func (h *Handler) handleImportSubmit(w http.ResponseWriter, r *http.Request) {
 
 // handleAlertsPage 渲染告警页；实际数据由客户端 JS 通过 handleEventsAPI 获取。
 func (h *Handler) handleAlertsPage(w http.ResponseWriter, r *http.Request) {
-	h.renderPage(w, "alerts.html", baseData{})
+	h.renderPage(w, "alerts.html", h.newBase(r))
 }
 
 // eventsResponse 是 /api/dashboard/events 的 JSON 响应结构。

@@ -49,6 +49,35 @@ All ` + bq + `sproxy admin *` + bq + ` commands accept this flag.
 
 ---
 
+## Cluster Mode & Primary-Only Commands
+
+PairProxy supports a Primary + Worker cluster deployment mode (` + bq + `--role primary|worker` + bq + `).
+
+> ⚠️ **Worker Node Restriction**: All **write commands** listed below (marked **[primary-only]**)
+> **must be run against the Primary node**. Worker nodes are read-only: their databases are
+> automatically synced from the Primary every 30 seconds. Running write commands on a Worker
+> will return HTTP 403 (worker_read_only).
+>
+> **Read commands** (list, status, stats, audit) work on all nodes
+> and reflect each node's locally-synced state.
+
+**How to target the Primary node:**
+` + bq + `sproxy admin --config /path/to/primary-sproxy.yaml user add alice --password X` + bq + `
+
+Or configure your ` + bq + `sproxy.yaml` + bq + ` ` + bq + `admin.host` + bq + ` / run the CLI on the Primary host directly.
+
+**Primary-only commands** include:
+- All ` + bq + `user add/disable/enable/reset-password/set-group` + bq + ` (§1)
+- All ` + bq + `group add/set-quota/delete` + bq + ` (§2)
+- ` + bq + `token revoke` + bq + ` (§3)
+- ` + bq + `llm target add/update/delete/enable/disable` + bq + ` + ` + bq + `llm bind/unbind/distribute` + bq + ` (§8)
+- ` + bq + `apikey add/assign/revoke` + bq + ` (§9)
+- ` + bq + `backup` + bq + ` / ` + bq + `restore` + bq + ` (§10)
+- ` + bq + `drain enter/exit` + bq + ` (§12)
+- ` + bq + `import` + bq + ` (§14)
+
+---
+
 ## 1. User Management
 
 ### 1.1 Create user
@@ -802,56 +831,56 @@ Natural language: "start server", "start sproxy", "run the proxy"
 
 | Natural language | Shell command |
 |-----------------|---------------|
-| Create user alice with password X | sproxy admin user add alice --password X |
+| Create user alice with password X | sproxy admin user add alice --password X  **[primary-only]** |
 | List all users | sproxy admin user list |
 | List users in group free | sproxy admin user list --group free |
-| Disable user bob | sproxy admin user disable bob |
-| Enable user bob | sproxy admin user enable bob |
-| Reset alice's password | sproxy admin user reset-password alice --password <new> |
-| Move alice to group "premium" | sproxy admin user set-group alice --group premium |
-| Remove alice from her group | sproxy admin user set-group alice --ungroup |
-| Create group "free" (10k/day, 10 RPM) | sproxy admin group add free --daily-limit 10000 --rpm 10 |
+| Disable user bob | sproxy admin user disable bob  **[primary-only]** |
+| Enable user bob | sproxy admin user enable bob  **[primary-only]** |
+| Reset alice's password | sproxy admin user reset-password alice --password <new>  **[primary-only]** |
+| Move alice to group "premium" | sproxy admin user set-group alice --group premium  **[primary-only]** |
+| Remove alice from her group | sproxy admin user set-group alice --ungroup  **[primary-only]** |
+| Create group "free" (10k/day, 10 RPM) | sproxy admin group add free --daily-limit 10000 --rpm 10  **[primary-only]** |
 | List all groups | sproxy admin group list |
-| Update enterprise group to 1M daily | sproxy admin group set-quota enterprise --daily 1000000 |
-| Delete group "trial" (force) | sproxy admin group delete trial --force |
-| Force-logout / revoke tokens for alice | sproxy admin token revoke alice |
+| Update enterprise group to 1M daily | sproxy admin group set-quota enterprise --daily 1000000  **[primary-only]** |
+| Delete group "trial" (force) | sproxy admin group delete trial --force  **[primary-only]** |
+| Force-logout / revoke tokens for alice | sproxy admin token revoke alice  **[primary-only]** |
 | Check alice's quota status | sproxy admin quota status --user alice |
 | Check enterprise group quota | sproxy admin quota status --group enterprise |
 | Show 30-day stats | sproxy admin stats --days 30 |
 | Show alice's 7-day stats as JSON | sproxy admin stats --user alice --days 7 --format json |
 | Export January 2025 logs to CSV | sproxy admin export --from 2025-01-01 --to 2025-01-31 |
 | Export to specific file | sproxy admin export --output /tmp/logs.csv |
-| Purge logs older than 90 days | sproxy admin logs purge --days 90 |
-| Purge logs before 2025-01-01 | sproxy admin logs purge --before 2025-01-01 |
+| Purge logs older than 90 days | sproxy admin logs purge --days 90  **[primary-only]** |
+| Purge logs before 2025-01-01 | sproxy admin logs purge --before 2025-01-01  **[primary-only]** |
 | Show last 50 audit entries | sproxy admin audit --limit 50 |
 | List configured LLM targets | sproxy admin llm targets |
-| Add new LLM target | sproxy admin llm target add <url> --provider anthropic --name "Main" |
-| Update LLM target weight | sproxy admin llm target update <url> --weight 5 |
-| Delete LLM target | sproxy admin llm target delete <url> |
-| Enable LLM target | sproxy admin llm target enable <url> |
-| Disable LLM target | sproxy admin llm target disable <url> |
+| Add new LLM target | sproxy admin llm target add <url> --provider anthropic --name "Main"  **[primary-only]** |
+| Update LLM target weight | sproxy admin llm target update <url> --weight 5  **[primary-only]** |
+| Delete LLM target | sproxy admin llm target delete <url>  **[primary-only]** |
+| Enable LLM target | sproxy admin llm target enable <url>  **[primary-only]** |
+| Disable LLM target | sproxy admin llm target disable <url>  **[primary-only]** |
 | List LLM bindings | sproxy admin llm list |
-| Bind alice to LLM URL | sproxy admin llm bind alice --target <url> |
-| Bind group enterprise to LLM | sproxy admin llm bind --group enterprise --target <url> |
-| Unbind alice's LLM | sproxy admin llm unbind alice |
-| Distribute all users evenly | sproxy admin llm distribute |
+| Bind alice to LLM URL | sproxy admin llm bind alice --target <url>  **[primary-only]** |
+| Bind group enterprise to LLM | sproxy admin llm bind --group enterprise --target <url>  **[primary-only]** |
+| Unbind alice's LLM | sproxy admin llm unbind alice  **[primary-only]** |
+| Distribute all users evenly | sproxy admin llm distribute  **[primary-only]** |
 | List API keys | sproxy admin apikey list |
-| Add Anthropic API key | sproxy admin apikey add prod --value sk-xxx --provider anthropic |
-| Assign API key to alice | sproxy admin apikey assign prod --user alice |
-| Revoke API key | sproxy admin apikey revoke old-key |
-| Backup database | sproxy admin backup --output backup.db |
-| Restore database from file | sproxy admin restore backup.db |
+| Add Anthropic API key | sproxy admin apikey add prod --value sk-xxx --provider anthropic  **[primary-only]** |
+| Assign API key to alice | sproxy admin apikey assign prod --user alice  **[primary-only]** |
+| Revoke API key | sproxy admin apikey revoke old-key  **[primary-only]** |
+| Backup database | sproxy admin backup --output backup.db  **[primary-only]** |
+| Restore database from file | sproxy admin restore backup.db  **[primary-only]** |
 | Validate configuration file | sproxy admin validate |
-| Enter drain mode | sproxy admin drain enter |
-| Exit drain mode | sproxy admin drain exit |
+| Enter drain mode | sproxy admin drain enter  **[primary-only]** |
+| Exit drain mode | sproxy admin drain exit  **[primary-only]** |
 | Check drain status | sproxy admin drain status |
 | Wait for drain completion | sproxy admin drain wait --timeout 60s |
-| Enable conversation tracking for alice | sproxy admin track enable alice |
-| Disable conversation tracking for alice | sproxy admin track disable alice |
+| Enable conversation tracking for alice | sproxy admin track enable alice  **[primary-only]** |
+| Disable conversation tracking for alice | sproxy admin track disable alice  **[primary-only]** |
 | List all tracked users | sproxy admin track list |
 | Show alice's conversation records | sproxy admin track show alice |
-| Clear alice's conversation records | sproxy admin track clear alice |
-| Import groups/users from file | sproxy admin import users.txt |
+| Clear alice's conversation records | sproxy admin track clear alice  **[primary-only]** |
+| Import groups/users from file | sproxy admin import users.txt  **[primary-only]** |
 | Preview import without writing | sproxy admin import --dry-run users.txt |
 | Hash a new admin password | sproxy hash-password |
 `

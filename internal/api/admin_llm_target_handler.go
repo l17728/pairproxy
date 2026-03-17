@@ -46,14 +46,15 @@ func NewAdminLLMTargetHandler(
 }
 
 // RegisterRoutes 注册路由到 mux
-func (h *AdminLLMTargetHandler) RegisterRoutes(mux *http.ServeMux, requireAdmin func(http.Handler) http.Handler) {
+func (h *AdminLLMTargetHandler) RegisterRoutes(mux *http.ServeMux, requireAdmin func(http.Handler) http.Handler, requireWritableNode func(http.Handler) http.Handler) {
+	w := requireWritableNode
 	mux.Handle("GET /api/admin/llm/targets", requireAdmin(http.HandlerFunc(h.handleListTargets)))
-	mux.Handle("POST /api/admin/llm/targets", requireAdmin(http.HandlerFunc(h.handleCreateTarget)))
+	mux.Handle("POST /api/admin/llm/targets", requireAdmin(w(http.HandlerFunc(h.handleCreateTarget))))
 	mux.Handle("GET /api/admin/llm/targets/{id}", requireAdmin(http.HandlerFunc(h.handleGetTarget)))
-	mux.Handle("PUT /api/admin/llm/targets/{id}", requireAdmin(http.HandlerFunc(h.handleUpdateTarget)))
-	mux.Handle("DELETE /api/admin/llm/targets/{id}", requireAdmin(http.HandlerFunc(h.handleDeleteTarget)))
-	mux.Handle("POST /api/admin/llm/targets/{id}/enable", requireAdmin(http.HandlerFunc(h.handleEnableTarget)))
-	mux.Handle("POST /api/admin/llm/targets/{id}/disable", requireAdmin(http.HandlerFunc(h.handleDisableTarget)))
+	mux.Handle("PUT /api/admin/llm/targets/{id}", requireAdmin(w(http.HandlerFunc(h.handleUpdateTarget))))
+	mux.Handle("DELETE /api/admin/llm/targets/{id}", requireAdmin(w(http.HandlerFunc(h.handleDeleteTarget))))
+	mux.Handle("POST /api/admin/llm/targets/{id}/enable", requireAdmin(w(http.HandlerFunc(h.handleEnableTarget))))
+	mux.Handle("POST /api/admin/llm/targets/{id}/disable", requireAdmin(w(http.HandlerFunc(h.handleDisableTarget))))
 }
 
 // handleListTargets GET /api/admin/llm/targets - 列出所有 LLM targets

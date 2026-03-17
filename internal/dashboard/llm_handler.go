@@ -47,7 +47,7 @@ func (h *Handler) handleLLMPage(w http.ResponseWriter, r *http.Request) {
 	errMsg := r.URL.Query().Get("error")
 
 	data := llmPageData{
-		baseData:   baseData{Flash: flash, Error: errMsg},
+		baseData:   baseData{Flash: flash, Error: errMsg, IsWorkerNode: h.isWorkerNode},
 		BoundCount: make(map[string]int),
 	}
 
