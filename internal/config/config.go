@@ -255,6 +255,21 @@ func (c *SProxyFullConfig) Validate() error {
 		if c.Database.DSN == "" && (c.Database.Host == "" || c.Database.User == "" || c.Database.DBName == "") {
 			errs = append(errs, "database: for driver=postgres, either dsn or (host + user + dbname) is required")
 		}
+		if c.Database.DSN == "" {
+			// 独立字段模式下校验 SSLMode
+			switch c.Database.SSLMode {
+			case "disable", "allow", "prefer", "require", "verify-ca", "verify-full", "":
+				// 合法值（空字符串由 applySProxyDefaults 填充默认值）
+			default:
+				errs = append(errs, fmt.Sprintf(
+					`database.sslmode %q is invalid; must be one of: disable, allow, prefer, require, verify-ca, verify-full`,
+					c.Database.SSLMode,
+				))
+			}
+		}
+		if c.Database.DSN == "" && c.Database.Port != 0 && (c.Database.Port < 1 || c.Database.Port > 65535) {
+			errs = append(errs, fmt.Sprintf("database.port %d is out of range (1–65535)", c.Database.Port))
+		}
 	default: // "sqlite" 或空字符串
 		if c.Database.Path == "" {
 			errs = append(errs, "database.path is required")
