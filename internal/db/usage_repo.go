@@ -430,7 +430,7 @@ func (r *UsageRepo) UserStats(from, to time.Time, limit int) ([]UserStatRow, err
 			COUNT(*) as request_count`).
 		Where("created_at >= ? AND created_at <= ?", from, to).
 		Group("user_id").
-		Order("total_input + total_output DESC").
+		Order("(COALESCE(SUM(input_tokens),0) + COALESCE(SUM(output_tokens),0)) DESC").
 		Limit(limit).
 		Scan(&rows).Error
 	if err != nil {
