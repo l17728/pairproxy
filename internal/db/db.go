@@ -9,9 +9,6 @@ import (
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
 
-	// postgres driver — 将在 Phase 2 启用（driver=postgres 时使用）
-	_ "gorm.io/driver/postgres"
-
 	"github.com/l17728/pairproxy/internal/config"
 )
 
