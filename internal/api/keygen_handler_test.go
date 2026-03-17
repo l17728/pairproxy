@@ -223,3 +223,43 @@ func TestKeygenStaticPage(t *testing.T) {
 	assert.Equal(t, 200, rr.Code)
 	assert.Contains(t, rr.Body.String(), "PairProxy")
 }
+
+// TestKeygenWorkerBlocked 验证 Worker 节点拒绝 keygen 写操作（POST login/regenerate），返回 403。
+func TestKeygenWorkerBlocked(t *testing.T) {
+	h, _ := setupKeygenTest(t)
+	h.SetWorkerMode(true)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	writePaths := []string{
+		"/keygen/api/login",
+		"/keygen/api/regenerate",
+	}
+	for _, path := range writePaths {
+		t.Run("POST "+path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(`{}`))
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+			mux.ServeHTTP(rr, req)
+
+			assert.Equal(t, http.StatusForbidden, rr.Code,
+				"Worker node should return 403 for POST %s", path)
+			assert.Contains(t, rr.Body.String(), "worker_read_only",
+				"response body should contain 'worker_read_only'")
+		})
+	}
+}
+
+// TestKeygenWorkerAllowsStaticPage 验证 Worker 节点允许访问静态页面（GET /keygen/）。
+func TestKeygenWorkerAllowsStaticPage(t *testing.T) {
+	h, _ := setupKeygenTest(t)
+	h.SetWorkerMode(true)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/keygen/", nil)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusOK, rr.Code)
+}

@@ -783,6 +783,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 	// Key 生成 WebUI（用户自助服务）
 	keygenAPIHandler := api.NewKeygenHandler(logger, userRepo, jwtMgr)
+	keygenAPIHandler.SetWorkerMode(!isPrimary)
 	keygenAPIHandler.RegisterRoutes(mux)
 	logger.Info("keygen WebUI registered at /keygen/")
 

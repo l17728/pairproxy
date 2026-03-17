@@ -22,9 +22,10 @@ import (
 //
 // 与 Dashboard 完全独立：使用普通用户密码，不使用管理员密码。
 type KeygenHandler struct {
-	logger   *zap.Logger
-	userRepo *db.UserRepo
-	jwtMgr   *auth.Manager
+	logger       *zap.Logger
+	userRepo     *db.UserRepo
+	jwtMgr       *auth.Manager
+	isWorkerNode bool
 }
 
 // NewKeygenHandler 创建 KeygenHandler。
@@ -36,11 +37,30 @@ func NewKeygenHandler(logger *zap.Logger, userRepo *db.UserRepo, jwtMgr *auth.Ma
 	}
 }
 
+// SetWorkerMode 设置 Worker 节点模式；Worker 节点不允许写操作（API Key 生成/重置）。
+func (h *KeygenHandler) SetWorkerMode(isWorker bool) {
+	h.isWorkerNode = isWorker
+}
+
 // RegisterRoutes 注册 /keygen/ 相关路由。
 func (h *KeygenHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /keygen/", h.handleStaticPage)
-	mux.HandleFunc("POST /keygen/api/login", h.handleLogin)
-	mux.HandleFunc("POST /keygen/api/regenerate", h.handleRegenerate)
+	if h.isWorkerNode {
+		// Worker 节点：写端点返回 403，引导用户到 Primary 节点操作
+		blockHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			h.logger.Warn("blocked keygen write operation on worker node",
+				zap.String("method", r.Method),
+				zap.String("path", r.URL.Path),
+			)
+			writeKeygenError(w, http.StatusForbidden, "worker_read_only",
+				"API key operations are not available on worker nodes; please use the primary node")
+		})
+		mux.Handle("POST /keygen/api/login", blockHandler)
+		mux.Handle("POST /keygen/api/regenerate", blockHandler)
+	} else {
+		mux.HandleFunc("POST /keygen/api/login", h.handleLogin)
+		mux.HandleFunc("POST /keygen/api/regenerate", h.handleRegenerate)
+	}
 }
 
 // keygenLoginRequest 登录请求体
