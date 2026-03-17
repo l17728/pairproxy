@@ -144,6 +144,11 @@ func OpenWithConfig(logger *zap.Logger, cfg config.DatabaseConfig) (*gorm.DB, er
 		maxIdle = 10
 	}
 	if maxIdle > maxOpen {
+		logger.Warn("max_idle_conns exceeds max_open_conns, capping to max_open_conns",
+			zap.Int("configured_max_idle", cfg.MaxIdleConns),
+			zap.Int("max_open_conns", maxOpen),
+			zap.Int("capped_to", maxOpen),
+		)
 		maxIdle = maxOpen
 	}
 

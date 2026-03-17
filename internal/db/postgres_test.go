@@ -6,6 +6,8 @@ import (
 	"github.com/l17728/pairproxy/internal/config"
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/zap/zaptest"
+	pgdriver "gorm.io/driver/postgres"
+	"gorm.io/gorm"
 )
 
 // TestBuildPostgresDSN_FromDSN 验证 DSN 字段优先级高于独立字段
@@ -65,6 +67,12 @@ func TestMaskDSN_KVFormat(t *testing.T) {
 			input:    "password=my-p@ssw0rd! host=pg",
 			expected: "password=*** host=pg",
 		},
+		{
+			// M-1: password 在字符串末尾（无后续字段）
+			name:     "password at end of string",
+			input:    "host=pg user=app password=secret",
+			expected: "host=pg user=app password=***",
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -90,6 +98,12 @@ func TestMaskDSN_URLFormat(t *testing.T) {
 			input:    "postgres://app@pg.company.com/db",
 			expected: "postgres://app@pg.company.com/db",
 		},
+		{
+			// M-5 / I-5: URL 格式空密码（user:@host）应同样被替换为 ***
+			name:     "URL with empty password",
+			input:    "postgres://app:@pg.company.com/db",
+			expected: "postgres://app:***@pg.company.com/db",
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -112,4 +126,28 @@ func TestDriverName_SQLite(t *testing.T) {
 		t.Fatalf("open sqlite: %v", err)
 	}
 	assert.Equal(t, "sqlite", DriverName(db))
+}
+
+// TestDriverName_Postgres 验证 PostgreSQL 驱动返回 "postgres"（无需真实连接）。
+// 通过直接构造含 PG Dialector 的 gorm.DB 来测试，避免依赖运行中的 PostgreSQL 实例。
+func TestDriverName_Postgres(t *testing.T) {
+	pgDB := &gorm.DB{Config: &gorm.Config{Dialector: pgdriver.Open("host=localhost")}}
+	assert.Equal(t, "postgres", DriverName(pgDB))
+}
+
+// TestBuildPostgresDSN_PartialFields 验证独立字段部分为空时 DSN 仍能拼接（格式正确性，
+// 校验逻辑由 Validate 负责）。M-2
+func TestBuildPostgresDSN_PartialFields(t *testing.T) {
+	cfg := config.DatabaseConfig{
+		Host:    "pg.company.com",
+		Port:    5432,
+		// User 和 Password 故意留空
+		DBName:  "pairproxy",
+		SSLMode: "disable",
+	}
+	result := buildPostgresDSN(cfg)
+	assert.Equal(t,
+		"host=pg.company.com port=5432 user= password= dbname=pairproxy sslmode=disable",
+		result,
+	)
 }

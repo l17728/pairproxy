@@ -2,10 +2,17 @@ package db
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/l17728/pairproxy/internal/config"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest"
+	"go.uber.org/zap/zaptest/observer"
 	"gorm.io/gorm"
 )
 
@@ -437,4 +444,123 @@ func itoa(n int) string {
 		n /= 10
 	}
 	return string(buf)
+}
+
+// ---------------------------------------------------------------------------
+// Connection pool defaults
+// ---------------------------------------------------------------------------
+
+// TestOpenWithConfig_ConnectionPoolDefaults 验证 OpenWithConfig 根据数据库类型和路径
+// 应用正确的默认 MaxOpenConns：
+//   - SQLite :memory: → 1（内存库每连接独立实例，必须单连接）
+//   - SQLite 文件库   → 25（WAL 模式允许最多 25 个并发连接）
+func TestOpenWithConfig_ConnectionPoolDefaults(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+
+	t.Run("memory SQLite MaxOpenConns=1", func(t *testing.T) {
+		db, err := OpenWithConfig(logger, config.DatabaseConfig{
+			Driver: "sqlite",
+			Path:   ":memory:",
+		})
+		if err != nil {
+			t.Fatalf("OpenWithConfig: %v", err)
+		}
+		sqlDB, err := db.DB()
+		if err != nil {
+			t.Fatalf("db.DB(): %v", err)
+		}
+		stats := sqlDB.Stats()
+		if stats.MaxOpenConnections != 1 {
+			t.Errorf("MaxOpenConnections = %d, want 1 for :memory: SQLite", stats.MaxOpenConnections)
+		}
+	})
+
+	t.Run("file SQLite MaxOpenConns=25", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "test.db")
+		db, err := OpenWithConfig(logger, config.DatabaseConfig{
+			Driver: "sqlite",
+			Path:   path,
+		})
+		if err != nil {
+			t.Fatalf("OpenWithConfig: %v", err)
+		}
+		sqlDB, err := db.DB()
+		if err != nil {
+			t.Fatalf("db.DB(): %v", err)
+		}
+		t.Cleanup(func() { _ = sqlDB.Close() })
+		stats := sqlDB.Stats()
+		if stats.MaxOpenConnections != 25 {
+			t.Errorf("MaxOpenConnections = %d, want 25 for file SQLite", stats.MaxOpenConnections)
+		}
+	})
+}
+
+// TestOpenWithConfig_CustomMaxOpenConns 验证用户自定义 MaxOpenConns>0 时不被默认值覆盖。I-2
+func TestOpenWithConfig_CustomMaxOpenConns(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	db, err := OpenWithConfig(logger, config.DatabaseConfig{
+		Driver:       "sqlite",
+		Path:         ":memory:",
+		MaxOpenConns: 7,
+	})
+	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	stats := sqlDB.Stats()
+	assert.Equal(t, 7, stats.MaxOpenConnections)
+}
+
+// TestOpenWithConfig_MaxIdleConnsCapping 验证 maxIdle>maxOpen 时触发 WARN 日志并截断。I-1
+func TestOpenWithConfig_MaxIdleConnsCapping(t *testing.T) {
+	core, logs := observer.New(zapcore.WarnLevel)
+	logger := zap.New(core)
+
+	db, err := OpenWithConfig(logger, config.DatabaseConfig{
+		Driver:       "sqlite",
+		Path:         ":memory:",
+		MaxOpenConns: 5,
+		MaxIdleConns: 20, // 超过 maxOpen，应被截断
+	})
+	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	defer func() { _ = sqlDB.Close() }()
+
+	warnLogs := logs.FilterMessage("max_idle_conns exceeds max_open_conns, capping to max_open_conns")
+	assert.Equal(t, 1, warnLogs.Len(), "should emit one WARN when maxIdle > maxOpen")
+
+	stats := sqlDB.Stats()
+	assert.Equal(t, 5, stats.MaxOpenConnections, "MaxOpenConns should remain 5")
+}
+
+// TestOpenWithConfig_CustomLifecycleParams 验证自定义 ConnMaxLifetime/ConnMaxIdleTime>0
+// 时不被默认值覆盖（smoke test）。M-4
+func TestOpenWithConfig_CustomLifecycleParams(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	db, err := OpenWithConfig(logger, config.DatabaseConfig{
+		Driver:          "sqlite",
+		Path:            ":memory:",
+		ConnMaxLifetime: 30 * time.Minute,
+		ConnMaxIdleTime: 5 * time.Minute,
+	})
+	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	// 若生命周期参数被正确应用，DB 仍可正常 Ping
+	assert.NoError(t, sqlDB.Ping())
+}
+
+// TestOpenWithConfig_InvalidSQLitePath 验证无效路径时错误被正确包装返回。M-5
+// 注：glebarez/sqlite pure-Go 驱动对不存在的路径不会在 Open 阶段失败（懒加载），
+// 故使用 Postgres 驱动 + 必定拒绝的端口来验证错误包装。
+func TestOpenWithConfig_ErrorWrapping(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	// 127.0.0.1:1 几乎必定 connection refused，且 TCP 栈会立即返回
+	_, err := OpenWithConfig(logger, config.DatabaseConfig{
+		Driver: "postgres",
+		DSN:    "host=127.0.0.1 port=1 user=x dbname=x sslmode=disable connect_timeout=1",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "open database")
 }

@@ -120,3 +120,126 @@ func TestValidate_SQLitePathRequired(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "database.path")
 }
+
+// TestValidate_PostgresPortBoundaryValues 验证 PG 模式下 Port 字段边界值校验：
+//   - 0 合法（由 applySProxyDefaults 填充默认值 5432）
+//   - 1 合法（最小端口）
+//   - 65535 合法（最大端口）
+//   - -1 非法（小于 1）
+//   - 65536 非法（大于 65535）
+func TestValidate_PostgresPortBoundaryValues(t *testing.T) {
+	build := func(port int) *SProxyFullConfig {
+		cfg := &SProxyFullConfig{}
+		cfg.Database.Driver = "postgres"
+		cfg.Database.Host = "pg"
+		cfg.Database.User = "app"
+		cfg.Database.DBName = "db"
+		cfg.Database.Port = port
+		cfg.Auth.JWTSecret = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		cfg.LLM.Targets = []LLMTarget{{URL: "http://pg", APIKey: "key"}}
+		cfg.Listen.Port = 9000
+		return cfg
+	}
+
+	t.Run("port=0 valid (default)", func(t *testing.T) {
+		cfg := build(0)
+		applySProxyDefaults(cfg) // 填充默认 Port=5432
+		assert.NoError(t, cfg.Validate())
+	})
+	t.Run("port=1 valid", func(t *testing.T) {
+		cfg := build(1)
+		assert.NoError(t, cfg.Validate())
+	})
+	t.Run("port=65535 valid", func(t *testing.T) {
+		cfg := build(65535)
+		assert.NoError(t, cfg.Validate())
+	})
+	t.Run("port=-1 invalid", func(t *testing.T) {
+		cfg := build(-1)
+		err := cfg.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "port")
+	})
+	t.Run("port=65536 invalid", func(t *testing.T) {
+		cfg := build(65536)
+		err := cfg.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "port")
+	})
+}
+
+// TestValidate_PostgresMissingIndividualFields 验证缺少任一个字段（Host/User/DBName）时报错。I-3
+func TestValidate_PostgresMissingIndividualFields(t *testing.T) {
+	base := func() *SProxyFullConfig {
+		cfg := &SProxyFullConfig{}
+		cfg.Database.Driver = "postgres"
+		cfg.Auth.JWTSecret = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		cfg.LLM.Targets = []LLMTarget{{URL: "http://pg", APIKey: "key"}}
+		cfg.Listen.Port = 9000
+		return cfg
+	}
+
+	t.Run("host missing", func(t *testing.T) {
+		cfg := base()
+		cfg.Database.User = "app"
+		cfg.Database.DBName = "db"
+		// Host 为空
+		err := cfg.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "postgres")
+	})
+	t.Run("user missing", func(t *testing.T) {
+		cfg := base()
+		cfg.Database.Host = "pg"
+		cfg.Database.DBName = "db"
+		// User 为空
+		err := cfg.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "postgres")
+	})
+	t.Run("dbname missing", func(t *testing.T) {
+		cfg := base()
+		cfg.Database.Host = "pg"
+		cfg.Database.User = "app"
+		// DBName 为空
+		err := cfg.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "postgres")
+	})
+}
+
+// TestValidate_PostgresDSNSetPortIgnored 验证 DSN 非空时 Port 越界校验被跳过。I-4
+// 这保证了 DSN 模式下用户设置无效 Port 不会引发错误（DSN 已包含完整连接信息）。
+func TestValidate_PostgresDSNSetPortIgnored(t *testing.T) {
+	cfg := &SProxyFullConfig{}
+	cfg.Database.Driver = "postgres"
+	cfg.Database.DSN = "host=pg user=app dbname=db"
+	cfg.Database.Port = -1 // 越界，但 DSN 已设置，应被忽略
+	cfg.Auth.JWTSecret = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	cfg.LLM.Targets = []LLMTarget{{URL: "http://pg", APIKey: "key"}}
+	cfg.Listen.Port = 9000
+
+	err := cfg.Validate()
+	assert.NoError(t, err, "port check should be skipped when DSN is provided")
+}
+
+// TestValidate_PostgresSSLModeValidValues 验证每个合法 SSLMode 值均通过校验。M-3
+// 合法值：disable, allow, prefer, require, verify-ca, verify-full, ""（空字符串）
+func TestValidate_PostgresSSLModeValidValues(t *testing.T) {
+	valid := []string{"disable", "allow", "prefer", "require", "verify-ca", "verify-full", ""}
+	for _, mode := range valid {
+		mode := mode
+		t.Run("sslmode="+mode, func(t *testing.T) {
+			cfg := &SProxyFullConfig{}
+			cfg.Database.Driver = "postgres"
+			cfg.Database.Host = "pg"
+			cfg.Database.User = "app"
+			cfg.Database.DBName = "db"
+			cfg.Database.SSLMode = mode
+			cfg.Auth.JWTSecret = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+			cfg.LLM.Targets = []LLMTarget{{URL: "http://pg", APIKey: "key"}}
+			cfg.Listen.Port = 9000
+			assert.NoError(t, cfg.Validate(), "sslmode %q should be valid", mode)
+		})
+	}
+}
