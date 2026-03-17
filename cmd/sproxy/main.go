@@ -662,8 +662,14 @@ func runStart(cmd *cobra.Command, args []string) error {
 	}
 
 	// Worker 节点：启动配置同步器（从 Primary 拉取 users/groups/targets/bindings）
+	// PostgreSQL 模式下：所有节点共享同一个 PG 数据库，无需周期性同步
+	if cfg.Database.Driver == "postgres" && !isPrimary && cfg.Cluster.Primary != "" {
+		logger.Info("shared PostgreSQL detected — ConfigSyncer disabled; all nodes share the same DB",
+			zap.String("driver", "postgres"),
+		)
+	}
 	var configSyncer *cluster.ConfigSyncer
-	if !isPrimary && cfg.Cluster.Primary != "" {
+	if !isPrimary && cfg.Cluster.Primary != "" && cfg.Database.Driver != "postgres" {
 		reportInterval := cfg.Cluster.ReportInterval
 		if reportInterval <= 0 {
 			reportInterval = 30 * time.Second

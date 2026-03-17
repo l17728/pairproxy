@@ -59,7 +59,11 @@ func maskDSN(dsn string) string {
 // DriverName 返回当前 gorm.DB 使用的数据库驱动名称。
 // 返回值为 "sqlite" 或 "postgres"（与 DatabaseConfig.Driver 字段约定一致）。
 // 供 repo 层在需要方言特定 SQL 时使用。
+// 若 db 为 nil（如测试中未初始化），返回 "sqlite" 作为安全默认值。
 func DriverName(db *gorm.DB) string {
+	if db == nil {
+		return "sqlite"
+	}
 	name := db.Dialector.Name()
 	// glebarez/sqlite 驱动返回 "sqlite"，postgres 驱动返回 "postgres"
 	if strings.HasPrefix(name, "sqlite") {
