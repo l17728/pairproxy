@@ -15,6 +15,15 @@ import (
 	"github.com/l17728/pairproxy/internal/config"
 )
 
+// 包级变量：编译一次，复用（避免每次调用重新编译）
+var (
+	// kvPasswordRe 匹配 key=value 格式 DSN 中的 password 值
+	// (\S*) 而非 (\S+)：允许空密码值
+	kvPasswordRe = regexp.MustCompile(`(password\s*=\s*)(\S*)`)
+	// urlPasswordRe 匹配 URL 格式 DSN 中的密码部分
+	urlPasswordRe = regexp.MustCompile(`(://[^:@]*:)([^@]*)(@)`)
+)
+
 // Open 打开 SQLite 数据库连接（使用内置默认连接池，适合测试和简单场景）。
 // path 为 SQLite 文件路径，":memory:" 表示内存数据库（测试用）。
 // 生产环境请使用 OpenWithConfig 以传入完整连接池配置。
@@ -40,14 +49,10 @@ func buildPostgresDSN(cfg config.DatabaseConfig) string {
 // 示例：
 //
 //	"host=pg user=app password=secret dbname=db" → "host=pg user=app password=*** dbname=db"
-//	"postgres://app:secret@pg/db" → "postgres://app:***@pg/db"
+//	"postgres://app:secret@pg/db"                → "postgres://app:***@pg/db"
 func maskDSN(dsn string) string {
-	// 处理 key=value 格式（host=... user=... password=... dbname=...）
-	kvRe := regexp.MustCompile(`(password\s*=\s*)(\S+)`)
-	result := kvRe.ReplaceAllString(dsn, "${1}***")
-	// 处理 URL 格式（postgres://user:password@host/db）
-	urlRe := regexp.MustCompile(`(://[^:@]*:)([^@]+)(@)`)
-	result = urlRe.ReplaceAllString(result, "${1}***${3}")
+	result := kvPasswordRe.ReplaceAllString(dsn, "${1}***")
+	result = urlPasswordRe.ReplaceAllString(result, "${1}***${3}")
 	return result
 }
 
@@ -111,6 +116,10 @@ func OpenWithConfig(logger *zap.Logger, cfg config.DatabaseConfig) (*gorm.DB, er
 	// 获取底层 sql.DB 以配置连接池
 	sqlDB, err := db.DB()
 	if err != nil {
+		logger.Error("failed to get underlying sql.DB",
+			zap.String("target", logLabel),
+			zap.Error(err),
+		)
 		return nil, fmt.Errorf("get underlying sql.DB: %w", err)
 	}
 
