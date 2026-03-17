@@ -126,15 +126,32 @@ type LLMTarget struct {
 	ModelMapping    map[string]string `yaml:"model_mapping,omitempty"` // Anthropic 模型名 → Ollama/OpenAI 模型名映射；"*" 匹配所有未命中的模型
 }
 
-// DatabaseConfig SQLite 数据库配置
+// DatabaseConfig 数据库配置（支持 SQLite 和 PostgreSQL）
 type DatabaseConfig struct {
-	Path            string        `yaml:"path"`              // SQLite 文件路径
-	WriteBufferSize int           `yaml:"write_buffer_size"` // 批量写入 buffer 大小，默认 1000
+	// ── 驱动选择 ─────────────────────────────────────────────────────────────
+	// "sqlite"（默认）| "postgres"；省略时等同于 "sqlite"（向后兼容）
+	Driver string `yaml:"driver"`
+
+	// ── SQLite 配置（Driver=sqlite 时使用）────────────────────────────────────
+	Path string `yaml:"path"` // SQLite 文件路径
+
+	// ── PostgreSQL 配置（Driver=postgres 时使用）──────────────────────────────
+	// 方案一：完整 DSN（优先级高于独立字段）
+	DSN string `yaml:"dsn"`
+	// 方案二：独立字段（若 DSN 为空则从这些字段拼接）
+	Host     string `yaml:"host"`
+	Port     int    `yaml:"port"`
+	User     string `yaml:"user"`
+	Password string `yaml:"password"`
+	DBName   string `yaml:"dbname"`
+	SSLMode  string `yaml:"sslmode"` // "disable"|"require"|"verify-full"
+
+	// ── 通用连接池（SQLite & PostgreSQL 共用）──────────────────────────────────
+	WriteBufferSize int           `yaml:"write_buffer_size"` // 批量写入 buffer 大小，默认 200
 	FlushInterval   time.Duration `yaml:"flush_interval"`    // 强制 flush 间隔，默认 5s
 
-	// 连接池（SQLite WAL 模式下多读单写）
-	// 0 = 使用内置默认值：非内存库 MaxOpenConns=25，内存库=1
-	MaxOpenConns    int           `yaml:"max_open_conns"`     // 最大打开连接数，默认 25
+	// 0 = 使用内置默认值：SQLite 非内存库 MaxOpenConns=25，内存库=1；PostgreSQL=50
+	MaxOpenConns    int           `yaml:"max_open_conns"`     // 最大打开连接数
 	MaxIdleConns    int           `yaml:"max_idle_conns"`     // 最大空闲连接数，默认 10
 	ConnMaxLifetime time.Duration `yaml:"conn_max_lifetime"`  // 连接最大存活时间，默认 1h
 	ConnMaxIdleTime time.Duration `yaml:"conn_max_idle_time"` // 连接最大空闲时间，默认 10m
@@ -233,8 +250,15 @@ func (c *SProxyFullConfig) Validate() error {
 	} else if len(c.Auth.JWTSecret) < 32 {
 		errs = append(errs, "auth.jwt_secret should be at least 32 characters for security (current length is too short)")
 	}
-	if c.Database.Path == "" {
-		errs = append(errs, "database.path is required")
+	switch c.Database.Driver {
+	case "postgres":
+		if c.Database.DSN == "" && (c.Database.Host == "" || c.Database.User == "" || c.Database.DBName == "") {
+			errs = append(errs, "database: for driver=postgres, either dsn or (host + user + dbname) is required")
+		}
+	default: // "sqlite" 或空字符串
+		if c.Database.Path == "" {
+			errs = append(errs, "database.path is required")
+		}
 	}
 	if len(c.LLM.Targets) == 0 {
 		errs = append(errs, "llm.targets must not be empty (at least one LLM target is required)")

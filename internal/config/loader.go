@@ -198,6 +198,21 @@ func applySProxyDefaults(cfg *SProxyFullConfig) {
 	if cfg.LLM.LBStrategy == "" {
 		cfg.LLM.LBStrategy = "round_robin"
 	}
+	// 数据库驱动默认值
+	if cfg.Database.Driver == "" {
+		cfg.Database.Driver = "sqlite" // 向后兼容，默认 SQLite
+	}
+	if cfg.Database.Driver == "postgres" {
+		if cfg.Database.Port == 0 {
+			cfg.Database.Port = 5432
+		}
+		if cfg.Database.SSLMode == "" {
+			cfg.Database.SSLMode = "disable"
+		}
+		if cfg.Database.MaxOpenConns == 0 {
+			cfg.Database.MaxOpenConns = 50 // PG MVCC 支持高并发
+		}
+	}
 	if cfg.Database.WriteBufferSize == 0 {
 		cfg.Database.WriteBufferSize = 200
 	}
