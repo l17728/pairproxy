@@ -382,18 +382,6 @@ func TestSProxy_LoadAllTargets_WithDB(t *testing.T) {
 // sproxy.go: SetDB — 覆盖 error 分支（接口返回 err 时 warn）
 // ─────────────────────────────────────────────────────────────────────────────
 
-// badGormDB 模拟 DB() 返回 error 的 gorm.DB 替代品
-type badGormDB struct{}
-
-func (b *badGormDB) DB() (*interface{ Ping() error }, error) {
-	return nil, nil
-}
-
-// fakeGormDB 实现 interface{ DB() (*sql.DB, error) }，用于测试 SetDB 的 error 分支
-type fakeGormDBOK struct {
-	gormDB interface{ DB() (interface{}, error) }
-}
-
 // 直接用真实 in-memory DB 测试 SetDB 的成功路径（75% → 100%）
 func TestSProxy_SetDB_Success(t *testing.T) {
 	sp, cancel := newTestSProxySimple(t)

@@ -72,8 +72,6 @@ func TestCoverage_ExtractUserContent_ContentBlockWithText(t *testing.T) {
 	}
 	// 通过 JSON 往返确保类型一致
 	data, _ := json.Marshal(rawMsg)
-	var req messagesReq
-	req.Messages = []msgItem{}
 
 	var raw struct {
 		Messages []json.RawMessage `json:"messages"`

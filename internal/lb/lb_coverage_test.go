@@ -70,6 +70,7 @@ func TestCoverage_Pick_SingleNodeAlwaysReturned(t *testing.T) {
 
 func TestCoverage_RoundTrip_5xx_NoPickNext(t *testing.T) {
 	r1 := makeResp(503, `{"error":"service_unavailable"}`)
+	defer r1.Body.Close()
 	inner := &mockRoundTripper{
 		responses: []*http.Response{r1},
 	}
@@ -124,6 +125,7 @@ func TestCoverage_RoundTrip_ConnError_NoPickNext(t *testing.T) {
 
 func TestCoverage_RoundTrip_5xx_PickNextExhausted(t *testing.T) {
 	r1 := makeResp(500, `{"error":"internal"}`)
+	defer r1.Body.Close()
 	inner := &mockRoundTripper{
 		responses: []*http.Response{r1},
 	}
@@ -184,6 +186,7 @@ func TestCoverage_RoundTrip_ConnError_PickNextExhausted(t *testing.T) {
 
 func TestCoverage_RoundTrip_NilBody(t *testing.T) {
 	r1 := makeResp(200, `{"ok":true}`)
+	defer r1.Body.Close()
 	inner := &mockRoundTripper{
 		responses: []*http.Response{r1},
 	}
@@ -222,7 +225,10 @@ func TestCoverage_RoundTrip_DeadlineExceeded_NoRetry(t *testing.T) {
 	}
 
 	req, _ := http.NewRequest(http.MethodPost, "http://target1/v1/messages", nil)
-	_, err := rt.RoundTrip(req)
+	resp, err := rt.RoundTrip(req)
+	if resp != nil {
+		resp.Body.Close()
+	}
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("expected DeadlineExceeded, got %v", err)
 	}
@@ -237,7 +243,9 @@ func TestCoverage_RoundTrip_DeadlineExceeded_NoRetry(t *testing.T) {
 
 func TestCoverage_RoundTrip_OnFailureCalled(t *testing.T) {
 	r1 := makeResp(500, `{}`)
+	defer r1.Body.Close()
 	r2 := makeResp(200, `{"ok":true}`)
+	defer r2.Body.Close()
 	inner := &mockRoundTripper{
 		responses: []*http.Response{r1, r2},
 	}
@@ -273,6 +281,7 @@ func TestCoverage_RoundTrip_OnFailureCalled(t *testing.T) {
 func TestCoverage_RoundTrip_RetryNoAPIKey(t *testing.T) {
 	connErr := errors.New("conn refused")
 	r2 := makeResp(200, `{"ok":true}`)
+	defer r2.Body.Close()
 	inner := &mockRoundTripper{
 		errors:    []error{connErr, nil},
 		responses: []*http.Response{nil, r2},
@@ -304,7 +313,9 @@ func TestCoverage_RoundTrip_RetryNoAPIKey(t *testing.T) {
 
 func TestCoverage_RoundTrip_All5xx_Exhausted(t *testing.T) {
 	r1 := makeResp(500, `{}`)
+	defer r1.Body.Close()
 	r2 := makeResp(502, `{}`)
+	defer r2.Body.Close()
 	inner := &mockRoundTripper{
 		responses: []*http.Response{r1, r2},
 	}
@@ -386,6 +397,7 @@ func TestCoverage_CheckOneWithPath_InvalidURL(t *testing.T) {
 
 func TestCoverage_RoundTrip_BodyBuffered(t *testing.T) {
 	r1 := makeResp(200, `{"ok":true}`)
+	defer r1.Body.Close()
 	inner := &mockRoundTripper{
 		responses: []*http.Response{r1},
 	}

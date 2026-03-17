@@ -5,8 +5,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-
-	"github.com/l17728/pairproxy/internal/db"
 )
 
 // setupWorkerAdminTest 创建 Worker 节点配置的 AdminHandler（isWorkerNode=true）。
@@ -167,15 +165,3 @@ func containsStr(s, substr string) bool {
 		}())
 }
 
-// 辅助函数：创建带 LLM 绑定 repo 的 Worker 测试环境（用于 LLM 路由测试）
-func setupWorkerTestWithLLMRepo(t *testing.T) (*AdminHandler, *db.LLMBindingRepo, *http.ServeMux) {
-	t.Helper()
-	handler, _, _ := setupAdminTest(t, "")
-	handler.SetWorkerMode(true)
-	// LLMBindingRepo 由 setupAdminTest 中的 gormDB 间接支撑，
-	// 此处直接复用 handler 内部的 jwtMgr 进行认证即可
-	mux := http.NewServeMux()
-	handler.RegisterRoutes(mux)
-	handler.RegisterLLMRoutes(mux)
-	return handler, nil, mux
-}
