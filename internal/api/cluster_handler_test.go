@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/zap/zaptest"
 
 	"github.com/l17728/pairproxy/internal/cluster"
@@ -425,5 +427,106 @@ func TestConfigSnapshot_MethodNotAllowed(t *testing.T) {
 
 	if rr.Code != http.StatusMethodNotAllowed {
 		t.Errorf("status = %d, want 405", rr.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Peer Mode — PGPeerRegistry 路由端点
+// ---------------------------------------------------------------------------
+
+// TestHandleGetRouting_PeerMode 验证 Peer 模式下 /cluster/routing 从 PGPeerRegistry 返回节点列表
+func TestHandleGetRouting_PeerMode(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+
+	gormDB, err := db.Open(logger, ":memory:")
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	if err := db.Migrate(logger, gormDB); err != nil {
+		t.Fatalf("db.Migrate: %v", err)
+	}
+
+	// 构建 PGPeerRegistry 并写入两个节点
+	reg := cluster.NewPGPeerRegistry(gormDB, logger, "peer-1:9000", 50, 30*time.Second)
+	ctx := context.Background()
+	require.NoError(t, reg.Heartbeat(ctx))
+
+	reg2 := cluster.NewPGPeerRegistry(gormDB, logger, "peer-2:9000", 40, 30*time.Second)
+	require.NoError(t, reg2.Heartbeat(ctx))
+
+	// 构建 handler，注入 pgPeerRegistry（nil PeerRegistry 表示 Peer 模式）
+	ctx2, cancel := context.WithCancel(ctx)
+	writer := db.NewUsageWriter(gormDB, logger, 100, time.Minute)
+	writer.Start(ctx2)
+	t.Cleanup(func() { cancel(); writer.Wait() })
+
+	handler := NewClusterHandler(logger, nil, writer, testClusterSecret)
+	handler.SetPGPeerRegistry(reg)
+
+	req := authReq(http.MethodGet, "/cluster/routing", nil)
+	rr := httptest.NewRecorder()
+	handler.handleGetRouting(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp map[string]interface{}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
+	peers, ok := resp["peers"]
+	require.True(t, ok, "response should have 'peers' key")
+	peerList, ok := peers.([]interface{})
+	require.True(t, ok)
+	assert.Len(t, peerList, 2, "should return 2 healthy peers")
+}
+
+// TestHandleRegister_NilRegistry 验证 Peer 模式（registry=nil）时 register 端点返回 404
+func TestHandleRegister_NilRegistry(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+
+	gormDB, err := db.Open(logger, ":memory:")
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	writer := db.NewUsageWriter(gormDB, logger, 100, time.Minute)
+	writer.Start(ctx)
+	t.Cleanup(func() { cancel(); writer.Wait() })
+
+	// registry=nil 模拟 Peer 模式
+	handler := NewClusterHandler(logger, nil, writer, testClusterSecret)
+
+	body, _ := json.Marshal(cluster.RegisterPayload{ID: "node-1", Addr: "http://node-1:9000"})
+	req := authReq(http.MethodPost, "/api/internal/register", body)
+	rr := httptest.NewRecorder()
+	handler.handleRegister(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("nil registry register: status = %d, want 404", rr.Code)
+	}
+}
+
+// TestSetPGPeerRegistry_GetRouting_NoAuth 验证鉴权失败时 peer 路由端点也返回 401
+func TestSetPGPeerRegistry_GetRouting_NoAuth(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	gormDB, _ := db.Open(logger, ":memory:")
+	_ = db.Migrate(logger, gormDB)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	writer := db.NewUsageWriter(gormDB, logger, 100, time.Minute)
+	writer.Start(ctx)
+	t.Cleanup(func() { cancel(); writer.Wait() })
+
+	reg := cluster.NewPGPeerRegistry(gormDB, logger, "node:9000", 50, 30*time.Second)
+	handler := NewClusterHandler(logger, nil, writer, testClusterSecret)
+	handler.SetPGPeerRegistry(reg)
+
+	req := httptest.NewRequest(http.MethodGet, "/cluster/routing", nil)
+	// 不设置 Authorization 头
+	rr := httptest.NewRecorder()
+	handler.handleGetRouting(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("no auth: status = %d, want 401", rr.Code)
 	}
 }

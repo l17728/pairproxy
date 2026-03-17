@@ -4299,3 +4299,235 @@ export DATABASE_URL="host=localhost user=postgres password=test dbname=pairproxy
 - **DSN 密码脱敏**：日志中 `password=***`，不会泄露真实密码
 - **PostgreSQL 版本要求**：9.5+（支持 `CREATE INDEX IF NOT EXISTS`）
 - **向后兼容**：不修改 `driver` 字段则行为与旧版完全一致
+
+---
+
+## §29 PostgreSQL 对等节点模式（v2.14.0）
+
+> **适用版本**: v2.14.0+
+
+### 29.1 概念与动机
+
+在 PostgreSQL 模式下，所有节点直接读写同一个数据库，数据天然一致。此时传统的 Primary/Worker 区分已失去意义：
+- Worker 的「写封锁」（403 `worker_read_only`）变成了不必要的限制
+- Worker 向 Primary 推送用量（Reporter）变成了多余的操作
+- Primary 内存中的 `PeerRegistry` 无法跨节点共享
+
+**Peer 模式**解决了这些问题：所有节点完全对等，任意节点均可处理管理操作，通过数据库的 `peers` 表实现分布式节点发现。
+
+| 机制 | SQLite 模式 | PostgreSQL Peer 模式 |
+|------|------------|---------------------|
+| 写封锁 | ✅ Worker 封锁（防孤立写） | ❌ 不需要（所有节点共享 DB） |
+| ConfigSyncer | ✅ 30s 轮询 | ❌ 不需要（已在 v2.13.0 禁用） |
+| Reporter 推送 | ✅ Worker→Primary 汇聚用量 | ❌ 不需要（直接写共享 DB） |
+| Peer 发现 | Primary 内存维护 | ✅ 数据库 `peers` 表（分布式） |
+| 管理操作 | 仅 Primary | ✅ 任意节点均可 |
+
+### 29.2 启用 Peer 模式
+
+#### 自动启用（推荐）
+
+当 `database.driver = "postgres"` 且未显式设置 `cluster.role` 时，系统**自动**将角色设为 `"peer"`：
+
+```yaml
+database:
+  driver: "postgres"
+  dsn: "host=pg.company.com user=pairproxy password=secret dbname=pairproxy sslmode=disable"
+  # cluster.role 不设置 → 自动设为 "peer"
+```
+
+启动日志会输出：
+```
+INFO  sproxy  database.driver=postgres detected, cluster.role auto-set to "peer"
+INFO  sproxy  peer mode enabled — all nodes are equal, using PGPeerRegistry for discovery
+```
+
+#### 显式启用
+
+```yaml
+database:
+  driver: "postgres"
+  dsn: "host=pg.company.com user=pairproxy password=secret dbname=pairproxy sslmode=disable"
+cluster:
+  role: "peer"
+  self_addr: "sproxy-1.company.com:9000"   # 本节点对外地址（供其他节点发现）
+  self_weight: 50                           # 流量权重（0=使用默认值50）
+```
+
+> **注意**: `role: "peer"` 必须配合 `database.driver: "postgres"` 使用，否则启动时报错。
+
+### 29.3 三种集群模式对比
+
+```yaml
+# 模式1: Standalone（默认，单节点无集群功能）
+# cluster.role 不设置，database.driver 不设置
+
+# 模式2: Primary + Worker（SQLite 经典集群）
+# 节点1 (Primary)
+cluster:
+  role: "primary"
+  self_addr: "sproxy-1:9000"
+  shared_secret: "strong-secret"
+
+# 节点2 (Worker)
+cluster:
+  role: "worker"
+  primary_addr: "sproxy-1:9000"
+  shared_secret: "strong-secret"
+
+# 模式3: Peer（PostgreSQL 对等集群，v2.14.0 新增）
+# 所有节点配置相同，指向同一 PG
+database:
+  driver: "postgres"
+  dsn: "host=pg.company.com ..."
+cluster:
+  # role 不设置，自动为 "peer"
+  self_addr: "sproxy-1:9000"   # 每个节点设置自己的地址
+  self_weight: 50
+```
+
+### 29.4 PGPeerRegistry（节点发现机制）
+
+Peer 模式使用 `peers` 数据库表进行节点注册和健康发现。
+
+#### 生命周期
+
+```
+启动 → Heartbeat (UPSERT) → 写入 peers 表
+         ↓
+后台 ticker（每 30s）→ Heartbeat + EvictStale
+         ↓
+关闭 → Unregister → 将自身 is_active 设为 false
+```
+
+#### peers 表字段
+
+| 字段 | 说明 |
+|------|------|
+| `id` / `addr` | 节点唯一标识，使用 `self_addr` |
+| `weight` | 流量权重 |
+| `is_active` | 是否在线（心跳超时或主动注销后设为 false） |
+| `last_seen` | 最后一次心跳时间 |
+| `registered_at` | 首次注册时间 |
+
+#### 健康判定
+
+- **staleTimeout** = 3 × heartbeatInterval（默认 30s × 3 = **90s**）
+- `ListHealthy` 返回：`is_active = true AND last_seen > NOW() - 90s`
+- `EvictStale` 将超时节点的 `is_active` 设为 false（不包括自身）
+
+#### heartbeatInterval 配置
+
+使用 `cluster.report_interval`（默认 30s）作为心跳间隔：
+
+```yaml
+cluster:
+  report_interval: "30s"   # 心跳间隔，同时决定 staleTimeout（3×30s=90s）
+```
+
+### 29.5 路由端点（/cluster/routing）
+
+Peer 模式下，`/cluster/routing` 端点从 `peers` 表读取健康节点列表，而非 Primary 的内存列表：
+
+```bash
+curl -H "Authorization: Bearer <shared_secret>" \
+  http://sproxy-1:9000/cluster/routing
+```
+
+响应示例：
+```json
+{
+  "peers": [
+    {"id": "sproxy-1:9000", "addr": "sproxy-1:9000", "weight": 50, "is_active": true},
+    {"id": "sproxy-2:9000", "addr": "sproxy-2:9000", "weight": 50, "is_active": true}
+  ]
+}
+```
+
+任意节点均可处理该请求，c-proxy 可配置任一 peer 地址拉取路由表。
+
+### 29.6 快速部署示例（2 节点 Peer 集群）
+
+**共享的 `sproxy.yaml` 模板**（两节点除 `self_addr` 外相同）：
+
+```yaml
+listen:
+  port: 9000
+
+database:
+  driver: "postgres"
+  dsn: "host=pg.company.com user=pairproxy password=<secret> dbname=pairproxy sslmode=disable"
+
+auth:
+  jwt_secret: "your-long-jwt-secret-at-least-32-chars"
+
+cluster:
+  # role: 不设置，自动使用 "peer"
+  self_addr: "sproxy-1.company.com:9000"   # 节点2 改为 "sproxy-2.company.com:9000"
+  self_weight: 50
+  shared_secret: "cluster-shared-secret"
+
+llm:
+  targets:
+    - url: "https://api.anthropic.com"
+      api_key: "${ANTHROPIC_API_KEY}"
+      provider: "anthropic"
+
+dashboard:
+  enabled: true
+
+admin:
+  password_hash: "$2a$10$..."
+```
+
+**启动**：
+
+```bash
+# 节点1
+ANTHROPIC_API_KEY=sk-ant-... ./sproxy start --config sproxy-1.yaml
+
+# 节点2（同一 PG，不同 self_addr）
+ANTHROPIC_API_KEY=sk-ant-... ./sproxy start --config sproxy-2.yaml
+```
+
+**验证**：
+```bash
+# 在节点1 创建用户
+./sproxy admin user add alice --password Password123 --config sproxy-1.yaml
+
+# 在节点2 立即查询（同一 PG，无需等待同步）
+./sproxy admin user list --config sproxy-2.yaml
+# 应能立即看到 alice
+
+# 在节点2 执行管理操作（不再返回 403 worker_read_only）
+./sproxy admin group add engineering --config sproxy-2.yaml
+```
+
+### 29.7 与 v2.13.0 Primary/Worker 模式的区别
+
+| 特性 | Primary + Worker（v2.12.0~）| Peer 模式（v2.14.0） |
+|------|---------------------------|---------------------|
+| 数据库 | SQLite（各节点独立）或 PG（可选）| PostgreSQL（必须共享）|
+| 配置同步 | ConfigSyncer 30s 轮询 | 不需要（共享 DB 天然一致）|
+| 管理操作 | 仅 Primary | 任意节点 |
+| Worker 写封锁 | 是（403）| 否 |
+| 节点发现 | Primary 内存注册表 | DB `peers` 表 |
+| 适用场景 | 单机或小规模 SQLite 部署 | 多节点高可用 PG 部署 |
+
+### 29.8 向后兼容性
+
+- **现有 `role: "primary"` 配置**：完全不受影响，行为与 v2.13.0 完全一致
+- **现有 `role: "worker"` 配置**：完全不受影响
+- **现有 PG 部署（未设 role）**：升级到 v2.14.0 后，`role` 自动设为 `"peer"`，行为变化：
+  - Worker 写封锁**解除**（管理操作不再返回 403）
+  - Reporter 推送**停止**（用量已直接写入共享 DB）
+  - 节点发现改用 `peers` 表
+
+  > 如需保持旧 Primary/Worker 行为，显式设置 `cluster.role: "primary"` 或 `"worker"` 即可。
+
+### 29.9 注意事项
+
+- `role: "peer"` 必须配合 `database.driver: "postgres"`，SQLite 下使用 peer 模式会在启动时报错
+- Peer 模式不支持 ConfigSyncer，因为所有节点共享同一 DB
+- `self_addr` 建议设置为其他节点可路由的地址（主机名或 IP，不含 `http://`）
+- 心跳超时（90s）内宕机的节点会被 EvictStale 标记为 inactive，不影响 `ListHealthy` 结果

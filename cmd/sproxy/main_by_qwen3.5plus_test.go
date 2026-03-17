@@ -159,7 +159,7 @@ log:
 		}
 
 		err = cfg2.Validate()
-		if err == nil || !strings.Contains(err.Error(), "is invalid; must be \"primary\" or \"worker\"") {
+		if err == nil || !strings.Contains(err.Error(), "is invalid; must be \"primary\", \"worker\", or \"peer\"") {
 			t.Errorf("Expected invalid role validation error, got: %v", err)
 		}
 	})

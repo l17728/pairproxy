@@ -51,15 +51,21 @@ All ` + bq + `sproxy admin *` + bq + ` commands accept this flag.
 
 ## Cluster Mode & Primary-Only Commands
 
-PairProxy supports a Primary + Worker cluster deployment mode (` + bq + `--role primary|worker` + bq + `).
+PairProxy supports three deployment modes (` + bq + `cluster.role` + bq + ` in sproxy.yaml):
 
-> ⚠️ **Worker Node Restriction**: All **write commands** listed below (marked **[primary-only]**)
+- **standalone** (` + bq + `role: ""` + bq + ` / default for SQLite): single-node, no cluster features
+- **primary + worker** (SQLite): classic primary/worker split — workers are read-only, synced every 30s
+- **peer** (PostgreSQL): all nodes are equal, share the same PG database, any node accepts writes
+
+> ⚠️ **Worker Node Restriction** (` + bq + `role: worker` + bq + ` only): All **write commands** listed below (marked **[primary-only]**)
 > **must be run against the Primary node**. Worker nodes are read-only: their databases are
 > automatically synced from the Primary every 30 seconds. Running write commands on a Worker
 > will return HTTP 403 (worker_read_only).
 >
-> **Read commands** (list, status, stats, audit) work on all nodes
-> and reflect each node's locally-synced state.
+> **Peer mode** (` + bq + `role: peer` + bq + `): No such restriction — all nodes accept writes. Auto-set when
+> ` + bq + `database.driver: postgres` + bq + ` is configured without an explicit role.
+>
+> **Read commands** (list, status, stats, audit) work on all nodes.
 
 **How to target the Primary node:**
 ` + bq + `sproxy admin --config /path/to/primary-sproxy.yaml user add alice --password X` + bq + `

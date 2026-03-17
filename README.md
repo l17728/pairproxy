@@ -38,7 +38,7 @@
 | **速率限制** | 每用户每分钟请求数（RPM）限制，滑动窗口算法 |
 | **负载均衡** | cproxy↔sproxy、sproxy↔LLM 两级负载均衡，加权随机策略 |
 | **健康检查** | 主动（GET /health）+ 被动（连续失败熔断）双重检查 |
-| **集群模式** | primary + worker 多节点，路由表自动下发给 cproxy |
+| **集群模式** | primary + worker 多节点（SQLite），或 peer 对等节点（PostgreSQL），路由表自动下发给 cproxy |
 | **Web Dashboard** | Go 模板 + Tailwind CSS，内嵌二进制，无需前端构建 |
 | **Admin CLI** | 命令行管理用户、分组、配额、统计 |
 | **Prometheus 指标** | GET /metrics，标准文本格式，可接 Grafana；含 DB 文件大小、配额缓存命中率、心跳延迟 |
@@ -58,6 +58,7 @@
 | **Direct Proxy（v2.9.0）** | `sk-pp-` API Key 直连，无需 cproxy；访问 `/keygen/` 自助生成 Key；同时支持 OpenAI (`/v1/`) 和 Anthropic (`/anthropic/`) 两种头格式 |
 | **Worker 节点一致性（v2.12.0）** | ConfigSyncer 每 30s 从 Primary 拉取配置快照同步到本地 DB；Worker 写操作全部封锁（403 `worker_read_only`）；WebUI 只读横幅；统计响应头标注；CLI Primary-only 命令标注 |
 | **PostgreSQL 支持（v2.13.0）** | 新增 `driver: postgres` 选项，所有节点共享同一 PostgreSQL 实例，彻底解决 Worker 30s 一致性窗口；SQLite 保持默认向后兼容；支持 DSN 或独立字段（host/port/user/password/dbname/sslmode）；PG 模式下 ConfigSyncer 自动禁用 |
+| **Peer Mode 对等节点（v2.14.0）** | PG 模式下自动启用 `role: "peer"`；所有节点完全对等，任意节点可处理管理操作；`PGPeerRegistry` 通过 `peers` 表实现分布式节点发现（心跳/驱逐/优雅注销）；无写封锁、无 ConfigSyncer、无 Reporter |
 
 ---
 

@@ -1,7 +1,7 @@
 # PairProxy 测试报告
 
 **生成时间**: 2026-03-18
-**测试版本**: v2.13.0 (PostgreSQL 支持 + 全面覆盖率提升)
+**测试版本**: v2.14.0 (PostgreSQL Peer Mode 对等节点模式)
 **测试环境**: Windows 11, Go 1.23
 
 ---
@@ -12,14 +12,14 @@
 
 | 测试类型 | 状态 | 测试数 | 通过 | 跳过 | 失败 | 说明 |
 |---------|------|--------|------|------|------|------|
-| 单元测试 (UT) | ✅ PASS | 1,886 | 1,885 | 1 | 0 | 24个包全量单元测试（v2.13.0 累计） |
-| 子测试 (subtests) | ✅ PASS | 557 | 557 | 0 | 0 | t.Run 表驱动子测试 |
+| 单元测试 (UT) | ✅ PASS | 1,901 | 1,900 | 1 | 0 | 24个包全量单元测试（v2.14.0 累计） |
+| 子测试 (subtests) | ✅ PASS | 563 | 563 | 0 | 0 | t.Run 表驱动子测试 |
 | 集成测试 | ✅ PASS | 8 | 8 | 0 | 0 | integration_by_GLM5_test.go |
 | E2E测试 (httptest) | ✅ PASS | 90+ | 90+ | 0 | 0 | 含 Direct Proxy E2E + 用户流量 + LLM Target |
 | E2E测试 (integration) | ✅ PASS | 4 | 4 | 0 | 0 | TestFullChainWithMockProcesses 真实进程测试 |
 | 协议转换测试 | ✅ PASS | 80+ | 80+ | 0 | 0 | 含 OtoA 请求/响应/流式/错误转换（v2.10.0 +45 RUN） |
 
-**总计**: 2,443 RUN 条目（1,886 顶层测试 + 557 子测试），全部通过
+**总计**: 2,464 RUN 条目（1,901 顶层测试 + 563 子测试），全部通过
 
 ---
 
@@ -786,6 +786,37 @@ PostgreSQL 核心测试（`internal/db/postgres_test.go`、`internal/db/db_test.
 - `internal/otel/otel_coverage_test.go`: 覆盖 Setup disabled/stdout/gRPC/HTTP 分支（otel 66.7%→85.7%）
 - `cmd/mockllm/mockllm_coverage_test.go`: 覆盖 extractUserContent/handleMessages/estimateTokens（mockllm 62.4%→80.0%）
 - 其他 10 个包：internal/alert、internal/keygen、internal/lb、internal/metrics、internal/auth、internal/cluster、internal/quota、internal/tap、internal/preflight、internal/auth
+
+**v2.14.0 新增测试（PostgreSQL Peer Mode，+21 RUN）**:
+
+PGPeerRegistry 单元测试（`internal/cluster/pg_peer_registry_test.go`，12 个测试）:
+- ✅ `TestPGPeerRegistry_Heartbeat` — 心跳写入 peers 表，二次调用更新 last_seen
+- ✅ `TestPGPeerRegistry_ListHealthy_FiltersStale` — old last_seen 节点不在结果中
+- ✅ `TestPGPeerRegistry_EvictStale` — 驱逐后 is_active=false
+- ✅ `TestPGPeerRegistry_Unregister` — 关闭后自身 is_active=false
+- ✅ `TestPGPeerRegistry_MultiNodeDiscovery` — 两个 PGPeerRegistry 实例互相发现，注销后正确隐藏
+- ✅ `TestPGPeerRegistry_DefaultValues` — selfWeight=0/interval=0 时使用默认值（50/30s）
+- ✅ `TestPGPeerRegistry_Start_AndWait` — 后台 goroutine 正常启停，心跳写入验证
+- ✅ `TestPGPeerRegistry_Heartbeat_DBError` — DB 不可用时 Heartbeat 返回错误
+- ✅ `TestPGPeerRegistry_EvictStale_DBError` — DB 不可用时 EvictStale 返回错误
+- ✅ `TestPGPeerRegistry_ListHealthy_DBError` — DB 不可用时 ListHealthy 返回错误
+- ✅ `TestPGPeerRegistry_Unregister_DBError` — DB 不可用时 Unregister 返回错误
+- ✅ `TestPGPeerRegistry_EvictStale_SkipsSelf` — EvictStale 不驱逐自身（即使 last_seen 过期）
+
+ClusterHandler Peer 模式测试（`internal/api/cluster_handler_test.go`，3 个新测试）:
+- ✅ `TestHandleGetRouting_PeerMode` — Peer 模式下 /cluster/routing 从 PGPeerRegistry 返回节点列表
+- ✅ `TestHandleRegister_NilRegistry` — registry=nil（Peer 模式）时 register 端点返回 404
+- ✅ `TestSetPGPeerRegistry_GetRouting_NoAuth` — Peer 路由端点鉴权失败返回 401
+
+Peer 模式配置测试（`internal/config/peer_mode_config_test.go`，4 个新测试）:
+- ✅ `TestApplySProxyDefaults_PGAutoSetsPeer` — driver=postgres + role="" → 自动设为 "peer"
+- ✅ `TestApplySProxyDefaults_PGExplicitRoleNotOverridden` — driver=postgres + role="primary" → 保持不变
+- ✅ `TestValidate_PeerRoleRequiresPG` — role="peer" + driver="sqlite" → 校验报错
+- ✅ `TestValidate_PeerRoleWithPG` — role="peer" + driver="postgres" → 校验通过
+
+现有测试修复（断言字符串同步，2 个测试）:
+- ✅ `TestSProxyConfig/port_range_validation` — 角色校验错误信息更新（新增 `"peer"` 选项）
+- ✅ `TestSProxyConfigValidation/port_range_and_role_validation` — 同上
 
 **测试质量**: 优秀
 **代码稳定性**: 高

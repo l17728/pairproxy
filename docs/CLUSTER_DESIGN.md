@@ -6,12 +6,13 @@ This document describes the multi-node s-proxy clustering architecture: how node
 
 ## Overview
 
-PairProxy supports two deployment modes:
+PairProxy supports three deployment modes:
 
 | Mode | Description |
 |------|-------------|
 | **Single node** | One `s-proxy` instance serves all traffic. No clustering required. |
-| **Multi-node** | One **primary** (`sp-1`) and one or more **workers** (`sp-2`, `sp-3`, …). Workers register with the primary via heartbeat. The primary distributes load across all nodes to c-proxy clients. |
+| **Multi-node (Primary+Worker)** | One **primary** (`sp-1`) and one or more **workers** (`sp-2`, `sp-3`, …). Workers register with the primary via heartbeat. The primary distributes load across all nodes to c-proxy clients. Typically used with SQLite. |
+| **Peer mode (v2.14.0)** | All nodes are **equal peers** sharing a PostgreSQL database. Any node can handle management operations. Nodes discover each other via the `peers` DB table. No primary/worker distinction. |
 
 ```
                   heartbeat (POST /api/internal/register)
@@ -341,5 +342,92 @@ worker will ever call the internal API, so the fail-closed behavior is harmless.
 The cluster internal API should not be exposed to the public internet. Use
 firewall rules or a private network to restrict `/api/internal/*` access to
 only the nodes that need it (i.e., the workers and the primary).
+
+---
+
+## Peer Mode (v2.14.0)
+
+Peer mode is designed for PostgreSQL deployments where all nodes share the same
+database. It eliminates the primary/worker asymmetry by making all nodes equal
+peers.
+
+### When to Use Peer Mode
+
+- You are using `database.driver: "postgres"` (shared PG instance)
+- You want any node to be able to handle management operations (no 403 write-lock)
+- You want distributed node discovery without designating a primary
+- You do not need ConfigSyncer (data is already consistent via shared DB)
+
+### Enabling Peer Mode
+
+Peer mode is **automatically enabled** when `database.driver = "postgres"` and
+`cluster.role` is not set. To enable explicitly:
+
+```yaml
+database:
+  driver: "postgres"
+  dsn: "host=pg.company.com user=pairproxy password=secret dbname=pairproxy sslmode=disable"
+cluster:
+  role: "peer"                          # explicit, or leave empty for auto-detect
+  self_addr: "sproxy-1.company.com:9000"  # this node's address for peer discovery
+  self_weight: 50
+  shared_secret: "cluster-secret"       # still required for /cluster/routing auth
+```
+
+### PGPeerRegistry
+
+The `PGPeerRegistry` uses the existing `peers` database table for distributed
+node discovery:
+
+```
+Node startup  → Heartbeat() — UPSERT self into peers table
+Every 30s     → Heartbeat() + EvictStale() — update last_seen, mark stale nodes inactive
+Node shutdown → Unregister() — set own is_active = false
+```
+
+**Heartbeat (UPSERT)**: Uses `ON CONFLICT(addr) DO UPDATE` — atomic, safe for concurrent nodes.
+
+**EvictStale**: Marks nodes with `last_seen < NOW() - 90s` as `is_active = false`.
+Skips self (so a temporarily slow node doesn't evict itself).
+
+**ListHealthy**: Returns peers where `is_active = true AND last_seen > NOW() - 90s`.
+
+**staleTimeout**: Defaults to `3 × heartbeatInterval` (3 × 30s = 90s).
+
+### Routing in Peer Mode
+
+`GET /cluster/routing` (authenticated with `shared_secret`) reads healthy peers
+from the `peers` table rather than from primary's in-memory registry:
+
+```json
+{
+  "peers": [
+    {"id": "sproxy-1:9000", "addr": "sproxy-1:9000", "weight": 50, "is_active": true},
+    {"id": "sproxy-2:9000", "addr": "sproxy-2:9000", "weight": 50, "is_active": true}
+  ]
+}
+```
+
+C-proxy can connect to **any peer node** to pull the routing table.
+
+### Behavior Differences vs. Primary+Worker
+
+| Behavior | Primary+Worker | Peer Mode |
+|----------|---------------|-----------|
+| Write lock (worker_read_only 403) | Yes (worker nodes) | **No** |
+| ConfigSyncer 30s poll | Yes (workers) | **No** (shared DB) |
+| Reporter usage push | Yes (workers→primary) | **No** (direct DB write) |
+| Node discovery | Primary in-memory registry | **DB `peers` table** |
+| Management operations | Primary only | **Any node** |
+| `/api/internal/register` | Active (workers register) | Returns 404 (not needed) |
+
+### Backward Compatibility
+
+- Existing `role: "primary"` configs: **unchanged**
+- Existing `role: "worker"` configs: **unchanged**
+- Existing PG deployments without explicit `role`: auto-upgraded to `"peer"` on
+  first start with v2.14.0. Worker write-lock is removed and Reporter stops.
+  Set `role: "primary"` explicitly to preserve the old behavior.
+
 
 ---

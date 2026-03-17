@@ -224,7 +224,9 @@ func runStart(cmd *cobra.Command, args []string) error {
 		sourceNode = cfg.Cluster.SelfAddr
 	}
 
-	isPrimary := cfg.Cluster.Role == "primary" || cfg.Cluster.Role == ""
+	isPrimary  := cfg.Cluster.Role == "primary" || cfg.Cluster.Role == ""
+	isWorker   := cfg.Cluster.Role == "worker"
+	isPeerMode := cfg.Cluster.Role == "peer"
 
 	if isPrimary {
 		// sp-1：管理 peer 路由表，向 c-proxy 下发路由更新
@@ -284,7 +286,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 			}
 		}()
 
-	} else {
+	} else if isWorker {
 		// sp-2：定期向 sp-1 注册心跳 + 用量上报
 		if cfg.Cluster.Primary == "" {
 			return fmt.Errorf("cluster.primary is required for worker role")
@@ -308,6 +310,27 @@ func runStart(cmd *cobra.Command, args []string) error {
 		logger.Info("cluster: running as worker (sp-2)",
 			zap.String("self_addr", cfg.Cluster.SelfAddr),
 			zap.String("primary", cfg.Cluster.Primary),
+		)
+	}
+
+	// ---------------------------------------------------------------------------
+	// Peer 模式：PGPeerRegistry（通过共享 DB 实现对等节点发现）
+	// ---------------------------------------------------------------------------
+
+	var pgPeerReg *cluster.PGPeerRegistry
+	if isPeerMode {
+		peerInterval := cfg.Cluster.ReportInterval
+		if peerInterval <= 0 {
+			peerInterval = 30 * time.Second
+		}
+		pgPeerReg = cluster.NewPGPeerRegistry(database, logger, cfg.Cluster.SelfAddr, cfg.Cluster.SelfWeight, peerInterval)
+		if hbErr := pgPeerReg.Heartbeat(ctx); hbErr != nil {
+			logger.Warn("peer mode: initial heartbeat failed", zap.Error(hbErr))
+		}
+		pgPeerReg.Start(ctx)
+		logger.Info("peer mode enabled — all nodes are equal, using PGPeerRegistry for discovery",
+			zap.String("self_addr", cfg.Cluster.SelfAddr),
+			zap.Duration("heartbeat_interval", peerInterval),
 		)
 	}
 
@@ -624,7 +647,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	authHandler.RegisterRoutes(mux)
 
 	// 管理 REST API
-	adminHandler.SetWorkerMode(!isPrimary)
+	adminHandler.SetWorkerMode(isWorker)
 	adminHandler.RegisterRoutes(mux)
 	adminHandler.RegisterLLMRoutes(mux)
 	logger.Info("admin API registered at /api/admin/")
@@ -661,15 +684,25 @@ func runStart(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Peer 模式：注册集群路由端点（/cluster/routing 从 DB peers 表返回）
+	if pgPeerReg != nil {
+		peerClusterHandler := api.NewClusterHandler(logger, nil, writer, cfg.Cluster.SharedSecret)
+		peerClusterHandler.SetPGPeerRegistry(pgPeerReg)
+		peerClusterHandler.RegisterRoutes(mux)
+		logger.Info("peer mode: cluster routing handler registered",
+			zap.String("path", "/cluster/routing"),
+		)
+	}
+
 	// Worker 节点：启动配置同步器（从 Primary 拉取 users/groups/targets/bindings）
 	// PostgreSQL 模式下：所有节点共享同一个 PG 数据库，无需周期性同步
-	if cfg.Database.Driver == "postgres" && !isPrimary && cfg.Cluster.Primary != "" {
+	if cfg.Database.Driver == "postgres" && isWorker && cfg.Cluster.Primary != "" {
 		logger.Info("shared PostgreSQL detected — ConfigSyncer disabled; all nodes share the same DB",
 			zap.String("driver", "postgres"),
 		)
 	}
 	var configSyncer *cluster.ConfigSyncer
-	if !isPrimary && cfg.Cluster.Primary != "" && cfg.Database.Driver != "postgres" {
+	if isWorker && cfg.Cluster.Primary != "" && cfg.Database.Driver != "postgres" {
 		reportInterval := cfg.Cluster.ReportInterval
 		if reportInterval <= 0 {
 			reportInterval = 30 * time.Second
@@ -707,7 +740,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 		dashHandler.SetTokenRepo(tokenRepo)
 		dashHandler.SetDrainFunctions(sp.Drain, sp.Undrain, sp.GetDrainStatus)
 		dashHandler.SetEventLog(evtLog)
-		dashHandler.SetWorkerMode(!isPrimary)
+		dashHandler.SetWorkerMode(isWorker)
 		dashHandler.RegisterRoutes(mux)
 		logger.Info("dashboard registered at /dashboard/")
 	}
@@ -789,7 +822,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 	// Key 生成 WebUI（用户自助服务）
 	keygenAPIHandler := api.NewKeygenHandler(logger, userRepo, jwtMgr)
-	keygenAPIHandler.SetWorkerMode(!isPrimary)
+	keygenAPIHandler.SetWorkerMode(isWorker)
 	keygenAPIHandler.RegisterRoutes(mux)
 	logger.Info("keygen WebUI registered at /keygen/")
 
@@ -892,6 +925,13 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 		// 等待用量写入器完成
 		writer.Wait()
+
+		// Peer 模式：注销本节点（主动将 is_active=false 写入 DB）
+		if pgPeerReg != nil {
+			_ = pgPeerReg.Unregister(context.Background())
+			pgPeerReg.Wait()
+		}
+
 		logger.Info("sproxy shutdown complete")
 	}()
 

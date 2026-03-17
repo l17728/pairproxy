@@ -226,7 +226,13 @@ func applySProxyDefaults(cfg *SProxyFullConfig) {
 		cfg.Auth.RefreshTokenTTL = 168 * time.Hour
 	}
 	if cfg.Cluster.Role == "" {
-		cfg.Cluster.Role = "primary"
+		// PG 模式下若未指定 role，默认 peer（真正对等，无主从区分）
+		// SQLite 模式下默认 primary（单机或经典主从部署）
+		if cfg.Database.Driver == "postgres" {
+			cfg.Cluster.Role = "peer"
+		} else {
+			cfg.Cluster.Role = "primary"
+		}
 	}
 	if cfg.Cluster.SelfWeight == 0 {
 		cfg.Cluster.SelfWeight = 50

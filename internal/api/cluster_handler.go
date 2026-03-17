@@ -17,7 +17,8 @@ import (
 type ClusterHandler struct {
 	logger         *zap.Logger
 	registry       *cluster.PeerRegistry
-	manager        *cluster.Manager // 用于路由表轮询端点（改进项4）
+	pgPeerRegistry *cluster.PGPeerRegistry // Peer 模式：从 DB 发现节点
+	manager        *cluster.Manager        // 用于路由表轮询端点（改进项4）
 	usageWriter    *db.UsageWriter
 	sharedSecret   string // Bearer token，空串表示不鉴权（仅测试用）
 	userRepo       *db.UserRepo
@@ -58,6 +59,11 @@ func (h *ClusterHandler) SetConfigRepos(
 // SetManager 设置集群管理器（用于路由表轮询端点）。
 func (h *ClusterHandler) SetManager(m *cluster.Manager) {
 	h.manager = m
+}
+
+// SetPGPeerRegistry 注入 PGPeerRegistry（Peer 模式下从 DB 发现节点）。
+func (h *ClusterHandler) SetPGPeerRegistry(reg *cluster.PGPeerRegistry) {
+	h.pgPeerRegistry = reg
 }
 
 // RegisterRoutes 注册内部 API 路由。
@@ -102,6 +108,14 @@ func (h *ClusterHandler) handleRegister(w http.ResponseWriter, r *http.Request) 
 			zap.String("addr", payload.Addr),
 		)
 		http.Error(w, "id and addr are required", http.StatusBadRequest)
+		return
+	}
+
+	if h.registry == nil {
+		h.logger.Warn("peer register: registry not initialized (not in primary mode)",
+			zap.String("remote_addr", r.RemoteAddr),
+		)
+		http.Error(w, "not in primary mode", http.StatusNotFound)
 		return
 	}
 
@@ -174,6 +188,36 @@ func (h *ClusterHandler) handleGetRouting(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Peer 模式：从 DB peers 表返回路由表
+	if h.pgPeerRegistry != nil {
+		peers, err := h.pgPeerRegistry.ListHealthy(r.Context())
+		if err != nil {
+			h.logger.Error("cluster routing: failed to list peers from DB", zap.Error(err))
+			http.Error(w, "failed to list peers", http.StatusInternalServerError)
+			return
+		}
+		type peerEntry struct {
+			ID     string `json:"id"`
+			Addr   string `json:"addr"`
+			Weight int    `json:"weight"`
+		}
+		entries := make([]peerEntry, 0, len(peers))
+		for _, p := range peers {
+			entries = append(entries, peerEntry{ID: p.ID, Addr: p.Addr, Weight: p.Weight})
+		}
+		h.logger.Debug("cluster routing queried (peer mode)",
+			zap.String("remote_addr", r.RemoteAddr),
+			zap.Int("peer_count", len(peers)),
+		)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"peers": entries,
+		})
+		return
+	}
+
+	// Primary 模式：从内存 PeerRegistry 返回
 	if h.registry == nil {
 		h.logger.Warn("cluster routing query: registry not initialized (not in cluster mode)",
 			zap.String("remote_addr", r.RemoteAddr),

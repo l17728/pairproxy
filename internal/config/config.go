@@ -297,8 +297,11 @@ func (c *SProxyFullConfig) Validate() error {
 	if c.Cluster.Role == "worker" && c.Cluster.SharedSecret == "" {
 		errs = append(errs, "cluster.shared_secret is required when cluster.role is \"worker\"")
 	}
-	if c.Cluster.Role != "" && c.Cluster.Role != "primary" && c.Cluster.Role != "worker" {
-		errs = append(errs, fmt.Sprintf("cluster.role %q is invalid; must be \"primary\" or \"worker\"", c.Cluster.Role))
+	if c.Cluster.Role == "peer" && c.Database.Driver != "postgres" {
+		errs = append(errs, "cluster.role \"peer\" requires database.driver \"postgres\"")
+	}
+	if c.Cluster.Role != "" && c.Cluster.Role != "primary" && c.Cluster.Role != "worker" && c.Cluster.Role != "peer" {
+		errs = append(errs, fmt.Sprintf("cluster.role %q is invalid; must be \"primary\", \"worker\", or \"peer\"", c.Cluster.Role))
 	}
 
 	if len(errs) > 0 {

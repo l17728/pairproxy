@@ -1,10 +1,10 @@
 # PairProxy 项目验收报告
 
 **项目名称**: PairProxy - 企业级 LLM API 代理网关
-**版本**: v2.13.0 (PostgreSQL 支持 + 全面覆盖率提升)
-**提交日期**: 2026-03-17
+**版本**: v2.14.0 (PostgreSQL Peer Mode 对等节点模式)
+**提交日期**: 2026-03-18
 **开发语言**: Go 1.23
-**代码规模**: 57,579 行非空非注释 Go 代码（含测试，Phase 1~3 新增约 1,800 行）
+**代码规模**: 57,900+ 行非空非注释 Go 代码（含测试，v2.14.0 新增约 380 行）
 
 ---
 
@@ -26,6 +26,8 @@ PairProxy 是一个企业级的 LLM API 代理网关系统，提供统一的 API
 - **LLM Target 动态管理 (v2.7.0)**: 配置文件 + 数据库双来源管理 LLM targets，支持 CLI/WebUI 动态增删改查
 - **告警页面 (v2.8.0)**: Dashboard 实时 WARN/ERROR 日志查看器，支持 SSE 推送
 - **批量导入 (v2.8.0)**: 一次性从文件批量创建分组和用户，支持 CLI + WebUI + dry-run
+- **PostgreSQL 支持 (v2.13.0)**: 共享 PG 实例彻底解决 Worker 一致性窗口，支持 DSN 或独立字段配置
+- **Peer Mode 对等节点 (v2.14.0)**: PG 模式下所有节点完全对等，任意节点可处理管理操作，PGPeerRegistry 分布式节点发现
 
 ---
 
@@ -713,6 +715,8 @@ Total: 50  Pass: 50  Fail: 0  Error: 0  Time: 60ms
 - **协议转换进阶（v2.8.0）**: 图片转换、错误格式转换、id前缀替换、prefill/thinking拒绝、强制绑定、model_mapping
 - **Direct Proxy（v2.9.0）**: `sk-pp-` API Key 直连，无需 cproxy，`/keygen/` 自助生成 WebUI；协议转换补全（content_filter→end_turn、流式 message_delta 含准确 input_tokens）
 - **Worker 节点一致性修复（v2.12.0）**: ConfigSyncer 定期从 Primary 拉取配置快照并同步到本地 DB；Worker 写操作封锁（所有 POST/PUT/DELETE 返回 403）；Worker WebUI 只读横幅；Key 生成封锁；统计响应头标注（X-Node-Role/X-Stats-Scope）；CLI Primary-only 标注
+- **PostgreSQL 支持（v2.13.0）**: `driver: postgres` 选项，共享 PG 彻底解决 Worker 30s 一致性窗口；PG 模式 ConfigSyncer 自动禁用；DSN 脱敏日志；方言适配（dateExpr/monthsActiveExpr）
+- **Peer Mode 对等节点（v2.14.0）**: `cluster.role: "peer"` 模式（PG 模式自动启用）；PGPeerRegistry 通过 `peers` 表实现分布式节点发现（心跳/驱逐/注销）；任意节点可处理管理操作（无写封锁）；/cluster/routing 从 DB 读取健康节点列表
 
 ✅ **运维功能**: 完整实现
 - 监控指标 (Prometheus)
@@ -723,8 +727,8 @@ Total: 50  Pass: 50  Fail: 0  Error: 0  Time: 60ms
 
 ### 9.2 代码质量
 
-✅ **代码规模**: ~59,000 行非空非注释 Go 代码（含测试；v2.11.0 基准 57,579 行，v2.12.0 新增约 1,800 行）
-✅ **测试覆盖**: 2,443 RUN 条目（1,886 顶层 + 557 子测试），覆盖率 76.2%
+✅ **代码规模**: ~57,900+ 行非空非注释 Go 代码（含测试；v2.13.0 基准 57,579 行，v2.14.0 新增约 380 行）
+✅ **测试覆盖**: 2,464 RUN 条目（1,901 顶层 + 563 子测试），覆盖率 76.2%（internal/cluster 84.6%→85%+）
 ✅ **代码规范**: 通过golangci-lint检查
 ✅ **文档完整**: 用户手册、API文档、设计文档齐全
 
@@ -787,8 +791,8 @@ Total: 50  Pass: 50  Fail: 0  Error: 0  Time: 60ms
 
 ---
 
-**验收日期**: 2026-03-17
-**验收版本**: v2.13.0
+**验收日期**: 2026-03-18
+**验收版本**: v2.14.0
 **验收人员**: Claude Sonnet 4.6
 **验收结果**: ✅ 通过
 
