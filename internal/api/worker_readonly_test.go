@@ -6,30 +6,24 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"go.uber.org/zap/zaptest"
-
-	"github.com/l17728/pairproxy/internal/auth"
 	"github.com/l17728/pairproxy/internal/db"
 )
 
 // setupWorkerAdminTest 创建 Worker 节点配置的 AdminHandler（isWorkerNode=true）。
-func setupWorkerAdminTest(t *testing.T) (*AdminHandler, *auth.Manager, *http.ServeMux) {
+func setupWorkerAdminTest(t *testing.T) (*AdminHandler, *http.ServeMux) {
 	t.Helper()
-	handler, jwtMgr, mux := setupAdminTest(t, "")
+	handler, _, _ := setupAdminTest(t, "")
 	handler.SetWorkerMode(true)
-	// 重新注册路由（SetWorkerMode 必须在 RegisterRoutes 之前或重新注册）
-	mux2 := http.NewServeMux()
-	handler.RegisterRoutes(mux2)
-	handler.RegisterLLMRoutes(mux2)
-	_ = mux
-	return handler, jwtMgr, mux2
+	mux := http.NewServeMux()
+	handler.RegisterRoutes(mux)
+	handler.RegisterLLMRoutes(mux)
+	return handler, mux
 }
 
 // TestWorkerBlocksWriteOperations 验证 Worker 节点拒绝所有写操作（POST/PUT/DELETE），返回 403。
 func TestWorkerBlocksWriteOperations(t *testing.T) {
-	handler, jwtMgr, mux := setupWorkerAdminTest(t)
-	_ = handler
-	tok := adminToken(t, jwtMgr)
+	handler, mux := setupWorkerAdminTest(t)
+	tok := adminToken(t, handler.jwtMgr)
 
 	writePaths := []struct {
 		method string
@@ -67,28 +61,18 @@ func TestWorkerBlocksWriteOperations(t *testing.T) {
 
 // TestWorkerAllowsReadOperations 验证 Worker 节点允许 GET 读操作，返回 2xx。
 func TestWorkerAllowsReadOperations(t *testing.T) {
-	logger := zaptest.NewLogger(t)
-	jwtMgr, _ := auth.NewManager(logger, "test-secret")
-
-	// 需要使用真实的 DB 以便 GET 端点正常工作
-	handler, _, _ := setupAdminTest(t, "")
-	handler.SetWorkerMode(true)
-	mux := http.NewServeMux()
-	handler.RegisterRoutes(mux)
-	tok := adminToken(t, jwtMgr)
-	_ = tok
+	handler, mux := setupWorkerAdminTest(t)
+	tok := adminToken(t, handler.jwtMgr)
 
 	readPaths := []string{
 		"/api/admin/users",
 		"/api/admin/groups",
 	}
 
-	tok2 := adminToken(t, handler.jwtMgr)
-
 	for _, path := range readPaths {
 		t.Run("GET "+path, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, path, nil)
-			req.Header.Set("Authorization", "Bearer "+tok2)
+			req.Header.Set("Authorization", "Bearer "+tok)
 			rr := httptest.NewRecorder()
 			mux.ServeHTTP(rr, req)
 
@@ -101,28 +85,9 @@ func TestWorkerAllowsReadOperations(t *testing.T) {
 
 // TestWorkerReadOnlyReturnsCorrectErrorBody 验证 Worker 403 响应体包含正确的 error code。
 func TestWorkerReadOnlyReturnsCorrectErrorBody(t *testing.T) {
-	logger := zaptest.NewLogger(t)
-	jwtMgr, _ := auth.NewManager(logger, "test-secret")
+	handler, mux := setupWorkerAdminTest(t)
+	tok := adminToken(t, handler.jwtMgr)
 
-	gormDB, err := db.Open(logger, ":memory:")
-	if err != nil {
-		t.Fatalf("db.Open: %v", err)
-	}
-	if err := db.Migrate(logger, gormDB); err != nil {
-		t.Fatalf("db.Migrate: %v", err)
-	}
-
-	userRepo := db.NewUserRepo(gormDB, logger)
-	groupRepo := db.NewGroupRepo(gormDB, logger)
-	usageRepo := db.NewUsageRepo(gormDB, logger)
-	auditRepo := db.NewAuditRepo(logger, gormDB)
-
-	handler := NewAdminHandler(logger, jwtMgr, userRepo, groupRepo, usageRepo, auditRepo, "", 0)
-	handler.SetWorkerMode(true)
-	mux := http.NewServeMux()
-	handler.RegisterRoutes(mux)
-
-	tok := adminToken(t, jwtMgr)
 	req := httptest.NewRequest(http.MethodPost, "/api/admin/users", bytes.NewBufferString(`{"username":"x","password":"y"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+tok)
@@ -132,10 +97,61 @@ func TestWorkerReadOnlyReturnsCorrectErrorBody(t *testing.T) {
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", rr.Code)
 	}
+	if !containsStr(rr.Body.String(), "worker_read_only") {
+		t.Errorf("response body should contain 'worker_read_only', got: %s", rr.Body.String())
+	}
+}
 
-	body := rr.Body.String()
-	if !containsStr(body, "worker_read_only") {
-		t.Errorf("response body should contain 'worker_read_only', got: %s", body)
+// TestWorkerStatsHeadersSet 验证 Worker 节点统计端点自动附加
+// X-Node-Role: worker 和 X-Stats-Scope: local 响应头（P3-2）。
+func TestWorkerStatsHeadersSet(t *testing.T) {
+	handler, mux := setupWorkerAdminTest(t)
+	tok := adminToken(t, handler.jwtMgr)
+
+	statsPaths := []string{
+		"/api/admin/stats/summary",
+		"/api/admin/stats/users",
+		"/api/admin/stats/logs",
+	}
+
+	for _, path := range statsPaths {
+		t.Run("GET "+path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			req.Header.Set("Authorization", "Bearer "+tok)
+			rr := httptest.NewRecorder()
+			mux.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusOK {
+				t.Errorf("GET %s: status = %d, want 200", path, rr.Code)
+			}
+			if got := rr.Header().Get("X-Node-Role"); got != "worker" {
+				t.Errorf("GET %s: X-Node-Role = %q, want \"worker\"", path, got)
+			}
+			if got := rr.Header().Get("X-Stats-Scope"); got != "local" {
+				t.Errorf("GET %s: X-Stats-Scope = %q, want \"local\"", path, got)
+			}
+		})
+	}
+}
+
+// TestPrimaryNodeStatsNoWorkerHeaders 验证 Primary 节点统计端点不附加 Worker 响应头。
+func TestPrimaryNodeStatsNoWorkerHeaders(t *testing.T) {
+	handler, _, mux := setupAdminTest(t, "") // Primary 模式（isWorkerNode=false）
+	tok := adminToken(t, handler.jwtMgr)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/stats/summary", nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if got := rr.Header().Get("X-Node-Role"); got != "" {
+		t.Errorf("Primary node should not set X-Node-Role, got %q", got)
+	}
+	if got := rr.Header().Get("X-Stats-Scope"); got != "" {
+		t.Errorf("Primary node should not set X-Stats-Scope, got %q", got)
 	}
 }
 
@@ -149,4 +165,17 @@ func containsStr(s, substr string) bool {
 			}
 			return false
 		}())
+}
+
+// 辅助函数：创建带 LLM 绑定 repo 的 Worker 测试环境（用于 LLM 路由测试）
+func setupWorkerTestWithLLMRepo(t *testing.T) (*AdminHandler, *db.LLMBindingRepo, *http.ServeMux) {
+	t.Helper()
+	handler, _, _ := setupAdminTest(t, "")
+	handler.SetWorkerMode(true)
+	// LLMBindingRepo 由 setupAdminTest 中的 gormDB 间接支撑，
+	// 此处直接复用 handler 内部的 jwtMgr 进行认证即可
+	mux := http.NewServeMux()
+	handler.RegisterRoutes(mux)
+	handler.RegisterLLMRoutes(mux)
+	return handler, nil, mux
 }

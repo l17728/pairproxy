@@ -220,6 +220,11 @@ func TestConfigSyncer_PrimaryUnreachable(t *testing.T) {
 	if user == nil {
 		t.Error("expected charlie to remain in DB after failed sync")
 	}
+
+	// 验证 PullFailures 计数器已递增（Primary 不可达应计入失败）
+	if syncer.PullFailures() == 0 {
+		t.Error("expected PullFailures > 0 after unreachable primary, got 0")
+	}
 }
 
 // TestConfigSyncer_IdempotentUpsert 验证多次同步相同快照是幂等的（不产生重复数据）。
@@ -296,5 +301,198 @@ func TestConfigSyncer_IdempotentUpsert(t *testing.T) {
 	}
 	if opsCount != 1 {
 		t.Errorf("expected exactly 1 group 'ops', got %d (idempotency broken)", opsCount)
+	}
+}
+
+// TestConfigSyncer_LLMTargetsAndBindingsSynced 验证 LLM Targets 和 Bindings 能正确同步至 Worker（P1-4/P1-5）。
+func TestConfigSyncer_LLMTargetsAndBindingsSynced(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+
+	gormDB, err := db.Open(logger, ":memory:")
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	if err := db.Migrate(logger, gormDB); err != nil {
+		t.Fatalf("db.Migrate: %v", err)
+	}
+
+	userID := "u1"
+	snap := ConfigSnapshot{
+		Version: time.Now(),
+		Users: []db.User{
+			{ID: userID, Username: "eve", PasswordHash: "hash1", IsActive: true},
+		},
+		Groups: []db.Group{},
+		LLMTargets: []*db.LLMTarget{
+			{
+				ID:       "t1",
+				URL:      "https://api.example.com",
+				Provider: "anthropic",
+				Name:     "Test Target",
+				Weight:   1,
+				IsActive: true,
+				Source:   "config",
+			},
+		},
+		LLMBindings: []db.LLMBinding{
+			{ID: "b1", TargetURL: "https://api.example.com", UserID: &userID},
+		},
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(snap)
+	}))
+	defer srv.Close()
+
+	userRepo := db.NewUserRepo(gormDB, logger)
+	groupRepo := db.NewGroupRepo(gormDB, logger)
+	llmTargetRepo := db.NewLLMTargetRepo(gormDB, logger)
+	llmBindingRepo := db.NewLLMBindingRepo(gormDB, logger)
+
+	syncer := NewConfigSyncer(logger, ConfigSyncerConfig{
+		PrimaryAddr:  srv.URL,
+		SharedSecret: "test-secret",
+		Interval:     50 * time.Millisecond,
+	}, gormDB, userRepo, groupRepo, llmTargetRepo, llmBindingRepo)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	syncer.Start(ctx)
+	syncer.Wait()
+
+	// 验证 LLM Target 已同步（P1-5）
+	target, err := llmTargetRepo.GetByURL("https://api.example.com")
+	if err != nil {
+		t.Fatalf("GetByURL: %v", err)
+	}
+	if target == nil {
+		t.Fatal("expected LLM target to be synced, but got nil")
+	}
+	if target.Name != "Test Target" {
+		t.Errorf("target.Name = %q, want \"Test Target\"", target.Name)
+	}
+
+	// 验证 LLM Binding 已同步（P1-4）
+	bindings, err := llmBindingRepo.List()
+	if err != nil {
+		t.Fatalf("llmBindingRepo.List: %v", err)
+	}
+	found := false
+	for _, b := range bindings {
+		if b.ID == "b1" && b.TargetURL == "https://api.example.com" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected LLM binding b1 to be synced, bindings: %v", bindings)
+	}
+}
+
+// TestConfigSyncer_PrimaryNon200 验证 Primary 返回非 200 状态码时 syncer 不崩溃，
+// PullFailures 计数器递增，本地数据不受影响。
+func TestConfigSyncer_PrimaryNon200(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+
+	gormDB, err := db.Open(logger, ":memory:")
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	if err := db.Migrate(logger, gormDB); err != nil {
+		t.Fatalf("db.Migrate: %v", err)
+	}
+
+	userRepo := db.NewUserRepo(gormDB, logger)
+	groupRepo := db.NewGroupRepo(gormDB, logger)
+	llmTargetRepo := db.NewLLMTargetRepo(gormDB, logger)
+	llmBindingRepo := db.NewLLMBindingRepo(gormDB, logger)
+
+	if err := userRepo.Create(&db.User{ID: "u1", Username: "frank", IsActive: true}); err != nil {
+		t.Fatalf("Create user: %v", err)
+	}
+
+	// Primary 始终返回 500
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	syncer := NewConfigSyncer(logger, ConfigSyncerConfig{
+		PrimaryAddr:  srv.URL,
+		SharedSecret: "test-secret",
+		Interval:     50 * time.Millisecond,
+	}, gormDB, userRepo, groupRepo, llmTargetRepo, llmBindingRepo)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	syncer.Start(ctx)
+	syncer.Wait()
+
+	// 本地数据不受影响
+	user, err := userRepo.GetByUsername("frank")
+	if err != nil {
+		t.Fatalf("GetByUsername: %v", err)
+	}
+	if user == nil {
+		t.Error("expected frank to remain in DB")
+	}
+	// 失败计数器递增
+	if syncer.PullFailures() == 0 {
+		t.Error("expected PullFailures > 0 after non-200 responses, got 0")
+	}
+}
+
+// TestConfigSyncer_MalformedJSON 验证 Primary 返回畸形 JSON 时 syncer 不崩溃，
+// PullFailures 计数器递增，本地数据不受影响。
+func TestConfigSyncer_MalformedJSON(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+
+	gormDB, err := db.Open(logger, ":memory:")
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	if err := db.Migrate(logger, gormDB); err != nil {
+		t.Fatalf("db.Migrate: %v", err)
+	}
+
+	userRepo := db.NewUserRepo(gormDB, logger)
+	groupRepo := db.NewGroupRepo(gormDB, logger)
+	llmTargetRepo := db.NewLLMTargetRepo(gormDB, logger)
+	llmBindingRepo := db.NewLLMBindingRepo(gormDB, logger)
+
+	if err := userRepo.Create(&db.User{ID: "u1", Username: "grace", IsActive: true}); err != nil {
+		t.Fatalf("Create user: %v", err)
+	}
+
+	// Primary 返回非法 JSON
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{invalid json`))
+	}))
+	defer srv.Close()
+
+	syncer := NewConfigSyncer(logger, ConfigSyncerConfig{
+		PrimaryAddr:  srv.URL,
+		SharedSecret: "test-secret",
+		Interval:     50 * time.Millisecond,
+	}, gormDB, userRepo, groupRepo, llmTargetRepo, llmBindingRepo)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	syncer.Start(ctx)
+	syncer.Wait()
+
+	// 本地数据不受影响
+	user, err := userRepo.GetByUsername("grace")
+	if err != nil {
+		t.Fatalf("GetByUsername: %v", err)
+	}
+	if user == nil {
+		t.Error("expected grace to remain in DB after malformed JSON")
+	}
+	// 失败计数器递增
+	if syncer.PullFailures() == 0 {
+		t.Error("expected PullFailures > 0 after malformed JSON, got 0")
 	}
 }

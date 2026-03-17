@@ -38,6 +38,9 @@ func NewKeygenHandler(logger *zap.Logger, userRepo *db.UserRepo, jwtMgr *auth.Ma
 }
 
 // SetWorkerMode 设置 Worker 节点模式；Worker 节点不允许写操作（API Key 生成/重置）。
+//
+// 注意：必须在 RegisterRoutes 之前调用，因为封锁逻辑在路由注册时分支，
+// 而不是运行时中间件判断。调用顺序颠倒会导致封锁静默失效。
 func (h *KeygenHandler) SetWorkerMode(isWorker bool) {
 	h.isWorkerNode = isWorker
 }
