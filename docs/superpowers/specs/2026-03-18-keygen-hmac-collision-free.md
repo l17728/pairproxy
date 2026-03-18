@@ -156,9 +156,10 @@ func encodeBase62HMAC(hmac []byte) string {
 | `internal/keygen/generator.go` | Core | Rewrite GenerateKey with HMAC-SHA256 |
 | `internal/keygen/validator.go` | Core | Rewrite ValidateAndGetUser with HMAC comparison |
 | `internal/config/config.go` | Config | Add KeygenSecret field + validation |
-| `internal/api/keygen_handler.go` | API | Pass secret to GenerateKey |
-| `internal/proxy/keyauth_middleware.go` | Middleware | Pass secret to ValidateAndGetUser + constructor change |
-| `cmd/sproxy/main.go` | Main | Update KeyAuthMiddleware + KeygenHandler instantiation |
+| `internal/api/keygen_handler.go` | API | Add keygenSecret field + update constructor + pass secret to GenerateKey |
+| `internal/proxy/keyauth_middleware.go` | Middleware | Add keygenSecret parameter + pass secret to ValidateAndGetUser |
+| `internal/proxy/direct_handler.go` | Proxy | Add keygenSecret parameter + pass to NewKeyAuthMiddleware |
+| `cmd/sproxy/main.go` | Main | Update NewDirectProxyHandler + NewKeygenHandler calls |
 | `config/sproxy.yaml.example` | Config | Add keygen_secret field |
 | `internal/keygen/generator_test.go` | Test | Rewrite tests for HMAC algorithm |
 | `internal/keygen/validator_test.go` | Test | Rewrite tests for HMAC validation |
@@ -271,54 +272,171 @@ func (c *SProxyFullConfig) Validate() error {
 }
 ```
 
-**4. Caller Updates (3 locations)**
-
-**`internal/api/keygen_handler.go`**:
-```go
-// In login handler
-key, err := keygen.GenerateKey(username, []byte(h.config.Auth.KeygenSecret))
-
-// In regenerate handler
-key, err := keygen.GenerateKey(username, []byte(h.config.Auth.KeygenSecret))
+**Startup Behavior**:
+- If `keygen_secret` is missing or too short, sproxy **refuses to start** (hard validation failure)
+- This is a **breaking change** for existing deployments: all v2.14.x → v2.15.0 upgrades must add this field
+- Rationale: Direct Proxy is a core feature (not optional), and running without a secret would allow key generation but break validation, causing silent auth failures
 ```
 
-**`internal/proxy/keyauth_middleware.go`**:
-```go
-// In KeyAuthMiddleware.authenticate()
-user, err := keygen.ValidateAndGetUser(apiKey, users, []byte(m.keygenSecret))
-```
+**4. Caller Updates**
+
+**4.1 `internal/api/keygen_handler.go`**
+
+**Changes**:
+- Add `keygenSecret string` field to `KeygenHandler` struct
+- Update `NewKeygenHandler` constructor to accept `keygenSecret` parameter
+- Update `handleLogin` and `handleRegenerate` to pass secret to `GenerateKey`
 
 **Constructor change**:
 ```go
-func NewKeyAuthMiddleware(
+type KeygenHandler struct {
+    logger       *zap.Logger
+    userRepo     *db.UserRepo
+    jwtMgr       *auth.Manager
+    keygenSecret string  // New field
+    isWorkerNode bool
+}
+
+func NewKeygenHandler(
     logger *zap.Logger,
-    userLister ActiveUserLister,
+    userRepo *db.UserRepo,
+    jwtMgr *auth.Manager,
     keygenSecret string,  // New parameter
-    cache *keygen.KeyCache,
-) *KeyAuthMiddleware {
-    return &KeyAuthMiddleware{
-        logger:       logger,
-        userLister:   userLister,
+) *KeygenHandler {
+    return &KeygenHandler{
+        logger:       logger.Named("keygen_handler"),
+        userRepo:     userRepo,
+        jwtMgr:       jwtMgr,
         keygenSecret: keygenSecret,  // Store
-        cache:        cache,
     }
 }
 ```
 
-**`cmd/sproxy/main.go`**:
+**In handleLogin (line 133)**:
 ```go
-// KeyAuthMiddleware instantiation (around line 200+)
-keyAuthMW := proxy.NewKeyAuthMiddleware(
+// Old:
+apiKey, err := keygen.GenerateKey(req.Username)
+
+// New:
+apiKey, err := keygen.GenerateKey(req.Username, []byte(h.keygenSecret))
+```
+
+**In handleRegenerate (line 190)**:
+```go
+// Old:
+apiKey, err := keygen.GenerateKey(claims.Username)
+
+// New:
+apiKey, err := keygen.GenerateKey(claims.Username, []byte(h.keygenSecret))
+```
+
+**4.2 `internal/proxy/keyauth_middleware.go`**
+
+**Changes**:
+- `NewKeyAuthMiddleware` is a closure function (not a struct constructor)
+- Capture `keygenSecret` in closure scope
+- Update `ValidateAndGetUser` call to pass secret
+
+**Function signature change**:
+```go
+// Old:
+func NewKeyAuthMiddleware(
+    logger *zap.Logger,
+    users ActiveUserLister,
+    cache *keygen.KeyCache,
+    next http.Handler,
+) http.Handler
+
+// New:
+func NewKeyAuthMiddleware(
+    logger *zap.Logger,
+    users ActiveUserLister,
+    cache *keygen.KeyCache,
+    keygenSecret string,  // New parameter
+    next http.Handler,
+) http.Handler
+```
+
+**In closure body (line 116)**:
+```go
+// Old:
+matched, valErr := keygen.ValidateAndGetUser(token, activeUsers)
+
+// New:
+matched, valErr := keygen.ValidateAndGetUser(token, activeUsers, []byte(keygenSecret))
+```
+
+**4.3 `internal/proxy/direct_handler.go`**
+
+**Changes**:
+- Update `NewDirectProxyHandler` to accept `keygenSecret` parameter
+- Pass `keygenSecret` to `NewKeyAuthMiddleware` in `buildChain` closure
+
+**Constructor change**:
+```go
+// Old:
+func NewDirectProxyHandler(
+    logger *zap.Logger,
+    server DirectServer,
+    users ActiveUserLister,
+    cache *keygen.KeyCache,
+) *DirectProxyHandler
+
+// New:
+func NewDirectProxyHandler(
+    logger *zap.Logger,
+    server DirectServer,
+    users ActiveUserLister,
+    cache *keygen.KeyCache,
+    keygenSecret string,  // New parameter
+) *DirectProxyHandler
+```
+
+**In buildChain closure (line 75)**:
+```go
+// Old:
+withAuth := NewKeyAuthMiddleware(log, users, cache, core)
+
+// New:
+withAuth := NewKeyAuthMiddleware(log, users, cache, keygenSecret, core)
+```
+
+**4.4 `cmd/sproxy/main.go`**
+
+**Changes**:
+- Update `NewDirectProxyHandler` call to pass `cfg.Auth.KeygenSecret`
+- Update `NewKeygenHandler` call to pass `cfg.Auth.KeygenSecret`
+
+**DirectProxyHandler instantiation (around line 820)**:
+```go
+// Old:
+directHandler := proxy.NewDirectProxyHandler(
     logger,
+    sproxy,
     dbUserLister,
-    cfg.Auth.KeygenSecret,  // Pass keygen secret
     keyCache,
 )
 
-// KeygenHandler instantiation (around line 250+)
+// New:
+directHandler := proxy.NewDirectProxyHandler(
+    logger,
+    sproxy,
+    dbUserLister,
+    keyCache,
+    cfg.Auth.KeygenSecret,  // Pass keygen secret
+)
+```
+
+**KeygenHandler instantiation (around line 824)**:
+```go
+// Old:
+keygenHandler := api.NewKeygenHandler(logger, userRepo, jwtMgr)
+
+// New:
 keygenHandler := api.NewKeygenHandler(
     logger,
     userRepo,
+    jwtMgr,
     cfg.Auth.KeygenSecret,  // Pass keygen secret
 )
 ```
@@ -437,7 +555,14 @@ func BenchmarkValidateAndGetUser_CacheHit(b *testing.B) {
 
 **Documentation**:
 - Release notes: "⚠️ Breaking Change: All existing API Keys will be invalidated"
+- Release notes: "⚠️ Breaking Change: Key regeneration is now idempotent (returns same key)"
 - User guide: "Record locations where API Keys are used before upgrading"
+
+**Behavioral Change**:
+- **Old behavior**: `GenerateKey` uses `crypto/rand`, produces a different key each time
+- **New behavior**: `GenerateKey` uses HMAC-SHA256 (deterministic), produces the same key for the same username
+- **Impact**: Users who regenerate expecting a new key will get the same one
+- **Workaround**: If key rotation is needed, admin must manually change the user's username (or implement a nonce/counter in future versions)
 
 **Communication**:
 - Email notification to admins
