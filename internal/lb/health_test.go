@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest"
 
 	"github.com/l17728/pairproxy/internal/alert"
@@ -226,7 +227,8 @@ func TestRecordFailure_AlertNodeRecovered(t *testing.T) {
 	b := makeBalancer(true)
 	logger := zaptest.NewLogger(t)
 	hc := NewHealthChecker(b, logger, WithFailThreshold(1))
-	notifier := alert.NewNotifier(logger, webhookSrv.URL)
+	// 使用 zap.NewNop() 给 notifier，避免 send() goroutine 在测试结束后写 zaptest logger 导致 data race
+	notifier := alert.NewNotifier(zap.NewNop(), webhookSrv.URL)
 	hc.SetNotifier(notifier)
 
 	// 触发熔断（会发告警 EventNodeDown）

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest"
 
 	"github.com/l17728/pairproxy/internal/alert"
@@ -86,8 +87,8 @@ func TestChecker_SetNotifier_NotifiesOnQuotaExceeded(t *testing.T) {
 	cache := NewQuotaCache(time.Millisecond) // 极短 TTL 确保总是查 DB
 	checker := NewChecker(logger, userRepo, usageRepo, cache)
 
-	// 注册 notifier
-	notifier := alert.NewNotifier(logger, webhookSrv.URL)
+	// 注册 notifier — 使用 zap.NewNop() 避免 send() goroutine 在测试结束后写 zaptest logger 导致 data race
+	notifier := alert.NewNotifier(zap.NewNop(), webhookSrv.URL)
 	checker.SetNotifier(notifier)
 
 	// 预填用量到达 daily 限制
