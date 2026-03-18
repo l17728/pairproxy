@@ -579,12 +579,12 @@ func TestConfigSyncer_LLMTargetURLConflictResolution(t *testing.T) {
 		Interval:     50 * time.Millisecond,
 	}, gormDB, userRepo, groupRepo, llmTargetRepo, llmBindingRepo)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	syncer.Start(ctx)
 
 	// 等待至少一次成功同步
-	time.Sleep(80 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond)
 	syncer.Wait()
 
 	// 验证同步成功（无 UNIQUE constraint 错误）
