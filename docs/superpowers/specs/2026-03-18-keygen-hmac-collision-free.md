@@ -440,8 +440,6 @@ keygenHandler := api.NewKeygenHandler(
     cfg.Auth.KeygenSecret,  // Pass keygen secret
 )
 ```
-key, err := keygen.GenerateKey(username, []byte(h.config.Auth.KeygenSecret))
-```
 
 **5. Configuration Files**
 
