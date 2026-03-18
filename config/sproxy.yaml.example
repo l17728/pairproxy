@@ -134,6 +134,12 @@ auth:
   # 生成示例：openssl rand -hex 32
   jwt_secret: "${JWT_SECRET}"
 
+  # keygen_secret: API Key HMAC 签名密钥（v2.15.0 新增必填项）
+  # 用于生成和验证 sk-pp- 格式的 Direct Proxy API Key
+  # 必须保密！建议使用环境变量注入，至少 32 字符
+  # 生成示例：openssl rand -base64 32
+  keygen_secret: "${KEYGEN_SECRET}"
+
   # access_token_ttl: access token 有效期（用户需在此期内刷新）
   access_token_ttl: 24h
 

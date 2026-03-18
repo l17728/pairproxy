@@ -1,0 +1,2424 @@
+
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+		<title>db: Go Coverage Report</title>
+		<style>
+			body {
+				background: black;
+				color: rgb(80, 80, 80);
+			}
+			body, pre, #legend span {
+				font-family: Menlo, monospace;
+				font-weight: bold;
+			}
+			#topbar {
+				background: black;
+				position: fixed;
+				top: 0; left: 0; right: 0;
+				height: 42px;
+				border-bottom: 1px solid rgb(80, 80, 80);
+			}
+			#content {
+				margin-top: 50px;
+			}
+			#nav, #legend {
+				float: left;
+				margin-left: 10px;
+			}
+			#legend {
+				margin-top: 12px;
+			}
+			#nav {
+				margin-top: 10px;
+			}
+			#legend span {
+				margin: 0 5px;
+			}
+			.cov0 { color: rgb(192, 0, 0) }
+.cov1 { color: rgb(128, 128, 128) }
+.cov2 { color: rgb(116, 140, 131) }
+.cov3 { color: rgb(104, 152, 134) }
+.cov4 { color: rgb(92, 164, 137) }
+.cov5 { color: rgb(80, 176, 140) }
+.cov6 { color: rgb(68, 188, 143) }
+.cov7 { color: rgb(56, 200, 146) }
+.cov8 { color: rgb(44, 212, 149) }
+.cov9 { color: rgb(32, 224, 152) }
+.cov10 { color: rgb(20, 236, 155) }
+
+		</style>
+	</head>
+	<body>
+		<div id="topbar">
+			<div id="nav">
+				<select id="files">
+				
+				<option value="file0">github.com/l17728/pairproxy/internal/db/apikey_repo.go (97.5%)</option>
+				
+				<option value="file1">github.com/l17728/pairproxy/internal/db/audit_repo.go (100.0%)</option>
+				
+				<option value="file2">github.com/l17728/pairproxy/internal/db/db.go (90.2%)</option>
+				
+				<option value="file3">github.com/l17728/pairproxy/internal/db/llm_binding_repo.go (94.3%)</option>
+				
+				<option value="file4">github.com/l17728/pairproxy/internal/db/llmtarget_repo.go (89.5%)</option>
+				
+				<option value="file5">github.com/l17728/pairproxy/internal/db/models.go (100.0%)</option>
+				
+				<option value="file6">github.com/l17728/pairproxy/internal/db/token_repo.go (100.0%)</option>
+				
+				<option value="file7">github.com/l17728/pairproxy/internal/db/usage_repo.go (96.4%)</option>
+				
+				<option value="file8">github.com/l17728/pairproxy/internal/db/user_repo.go (97.8%)</option>
+				
+				</select>
+			</div>
+			<div id="legend">
+				<span>not tracked</span>
+			
+				<span class="cov0">not covered</span>
+				<span class="cov8">covered</span>
+			
+			</div>
+		</div>
+		<div id="content">
+		
+		<pre class="file" id="file0" style="display: none">package db
+
+import (
+        "errors"
+        "fmt"
+        "time"
+
+        "github.com/google/uuid"
+        "go.uber.org/zap"
+        "gorm.io/gorm"
+)
+
+// APIKeyRepo 提供 API Key 的 CRUD 和分配查询接口。
+type APIKeyRepo struct {
+        db     *gorm.DB
+        logger *zap.Logger
+}
+
+// NewAPIKeyRepo 创建 APIKeyRepo。
+func NewAPIKeyRepo(db *gorm.DB, logger *zap.Logger) *APIKeyRepo <span class="cov8" title="1">{
+        return &amp;APIKeyRepo{db: db, logger: logger.Named("apikey_repo")}
+}</span>
+
+// Create 创建新的 API Key 记录（encryptedValue 已加密）。
+func (r *APIKeyRepo) Create(name, encryptedValue, provider string) (*APIKey, error) <span class="cov8" title="1">{
+        if provider == "" </span><span class="cov8" title="1">{
+                provider = "anthropic"
+        }</span>
+        <span class="cov8" title="1">key := &amp;APIKey{
+                ID:             uuid.New().String(),
+                Name:           name,
+                EncryptedValue: encryptedValue,
+                Provider:       provider,
+                IsActive:       true,
+                CreatedAt:      time.Now(),
+        }
+        if err := r.db.Create(key).Error; err != nil </span><span class="cov8" title="1">{
+                r.logger.Error("failed to create api key",
+                        zap.String("name", name),
+                        zap.Error(err),
+                )
+                return nil, fmt.Errorf("create api key %q: %w", name, err)
+        }</span>
+        <span class="cov8" title="1">r.logger.Info("api key created",
+                zap.String("id", key.ID),
+                zap.String("name", name),
+                zap.String("provider", provider),
+        )
+        return key, nil</span>
+}
+
+// GetByName 按名称查询 API Key。
+func (r *APIKeyRepo) GetByName(name string) (*APIKey, error) <span class="cov8" title="1">{
+        var key APIKey
+        err := r.db.Where("name = ?", name).First(&amp;key).Error
+        if err != nil </span><span class="cov8" title="1">{
+                if errors.Is(err, gorm.ErrRecordNotFound) </span><span class="cov8" title="1">{
+                        return nil, nil
+                }</span>
+                <span class="cov8" title="1">return nil, fmt.Errorf("get api key %q: %w", name, err)</span>
+        }
+        <span class="cov8" title="1">return &amp;key, nil</span>
+}
+
+// GetByID 按 ID 查询 API Key。
+func (r *APIKeyRepo) GetByID(id string) (*APIKey, error) <span class="cov8" title="1">{
+        var key APIKey
+        err := r.db.Where("id = ?", id).First(&amp;key).Error
+        if err != nil </span><span class="cov8" title="1">{
+                if errors.Is(err, gorm.ErrRecordNotFound) </span><span class="cov8" title="1">{
+                        return nil, nil
+                }</span>
+                <span class="cov8" title="1">return nil, fmt.Errorf("get api key by id %q: %w", id, err)</span>
+        }
+        <span class="cov8" title="1">return &amp;key, nil</span>
+}
+
+// List 列出所有 API Key（包含非活跃记录）。
+func (r *APIKeyRepo) List() ([]APIKey, error) <span class="cov8" title="1">{
+        var keys []APIKey
+        if err := r.db.Order("created_at ASC").Find(&amp;keys).Error; err != nil </span><span class="cov8" title="1">{
+                return nil, fmt.Errorf("list api keys: %w", err)
+        }</span>
+        <span class="cov8" title="1">return keys, nil</span>
+}
+
+// Assign 将 API Key 分配给指定用户或分组。
+// userID 和 groupID 至少一个非空；若同时提供，优先级由 FindForUser 的查询顺序决定。
+// 重复调用视为 upsert（先删除旧分配，再创建新分配）。
+func (r *APIKeyRepo) Assign(keyID string, userID, groupID *string) error <span class="cov8" title="1">{
+        // 删除同 user/group 的旧分配
+        q := r.db.Where("api_key_id = ?", keyID)
+        if userID != nil </span><span class="cov8" title="1">{
+                q = q.Where("user_id = ?", *userID)
+        }</span> else<span class="cov8" title="1"> {
+                q = q.Where("user_id IS NULL")
+        }</span>
+        <span class="cov8" title="1">if groupID != nil </span><span class="cov8" title="1">{
+                q = q.Where("group_id = ?", *groupID)
+        }</span> else<span class="cov8" title="1"> {
+                q = q.Where("group_id IS NULL")
+        }</span>
+        <span class="cov8" title="1">if err := q.Delete(&amp;APIKeyAssignment{}).Error; err != nil </span><span class="cov8" title="1">{
+                r.logger.Warn("assign: failed to remove old assignment", zap.Error(err))
+        }</span>
+
+        <span class="cov8" title="1">assign := &amp;APIKeyAssignment{
+                ID:       uuid.New().String(),
+                APIKeyID: keyID,
+                UserID:   userID,
+                GroupID:  groupID,
+        }
+        if err := r.db.Create(assign).Error; err != nil </span><span class="cov8" title="1">{
+                r.logger.Error("failed to assign api key",
+                        zap.String("key_id", keyID),
+                        zap.Error(err),
+                )
+                return fmt.Errorf("assign api key: %w", err)
+        }</span>
+        <span class="cov8" title="1">r.logger.Info("api key assigned",
+                zap.String("key_id", keyID),
+                zap.Any("user_id", userID),
+                zap.Any("group_id", groupID),
+        )
+        return nil</span>
+}
+
+// Revoke 停用指定 API Key（软删除，不影响历史记录）。
+func (r *APIKeyRepo) Revoke(id string) error <span class="cov8" title="1">{
+        result := r.db.Model(&amp;APIKey{}).Where("id = ?", id).Update("is_active", false)
+        if result.Error != nil </span><span class="cov8" title="1">{
+                r.logger.Error("failed to revoke api key",
+                        zap.String("id", id),
+                        zap.Error(result.Error),
+                )
+                return fmt.Errorf("revoke api key %q: %w", id, result.Error)
+        }</span>
+        <span class="cov8" title="1">r.logger.Info("api key revoked", zap.String("id", id))
+        return nil</span>
+}
+
+// FindForUser 查找适用于指定用户的 API Key（用户级分配优先于分组级）。
+// userID 为用户 ID；groupID 为该用户的分组 ID（空字符串表示无分组）。
+// 返回 nil 表示无匹配记录，调用方应回退到配置文件中的静态 API Key。
+func (r *APIKeyRepo) FindForUser(userID, groupID string) (*APIKey, error) <span class="cov8" title="1">{
+        // 1. 先查用户级分配
+        if userID != "" </span><span class="cov8" title="1">{
+                key, err := r.findByAssignment(userID, true)
+                if err != nil </span><span class="cov8" title="1">{
+                        return nil, err
+                }</span>
+                <span class="cov8" title="1">if key != nil </span><span class="cov8" title="1">{
+                        r.logger.Debug("api key found: user assignment",
+                                zap.String("user_id", userID),
+                                zap.String("key_name", key.Name),
+                        )
+                        return key, nil
+                }</span>
+        }
+
+        // 2. 再查分组级分配
+        <span class="cov8" title="1">if groupID != "" </span><span class="cov8" title="1">{
+                key, err := r.findByAssignment(groupID, false)
+                if err != nil </span><span class="cov0" title="0">{
+                        return nil, err
+                }</span>
+                <span class="cov8" title="1">if key != nil </span><span class="cov8" title="1">{
+                        r.logger.Debug("api key found: group assignment",
+                                zap.String("group_id", groupID),
+                                zap.String("key_name", key.Name),
+                        )
+                        return key, nil
+                }</span>
+        }
+
+        <span class="cov8" title="1">return nil, nil</span>
+}
+
+// findByAssignment 通过 user_id 或 group_id 查找活跃的 API Key。
+func (r *APIKeyRepo) findByAssignment(id string, isUser bool) (*APIKey, error) <span class="cov8" title="1">{
+        var assign APIKeyAssignment
+        q := r.db
+        if isUser </span><span class="cov8" title="1">{
+                q = q.Where("user_id = ?", id)
+        }</span> else<span class="cov8" title="1"> {
+                q = q.Where("group_id = ?", id)
+        }</span>
+        <span class="cov8" title="1">err := q.First(&amp;assign).Error
+        if err != nil </span><span class="cov8" title="1">{
+                if errors.Is(err, gorm.ErrRecordNotFound) </span><span class="cov8" title="1">{
+                        return nil, nil
+                }</span>
+                <span class="cov8" title="1">return nil, fmt.Errorf("find assignment: %w", err)</span>
+        }
+
+        <span class="cov8" title="1">var key APIKey
+        err = r.db.Where("id = ? AND is_active = ?", assign.APIKeyID, true).First(&amp;key).Error
+        if err != nil </span><span class="cov8" title="1">{
+                if errors.Is(err, gorm.ErrRecordNotFound) </span><span class="cov8" title="1">{
+                        return nil, nil // key was revoked
+                }</span>
+                <span class="cov0" title="0">return nil, fmt.Errorf("find api key by assignment: %w", err)</span>
+        }
+        <span class="cov8" title="1">return &amp;key, nil</span>
+}
+</pre>
+		
+		<pre class="file" id="file1" style="display: none">package db
+
+import (
+        "fmt"
+        "time"
+
+        "go.uber.org/zap"
+        "gorm.io/gorm"
+)
+
+// AuditRepo 操作审计日志仓库。
+type AuditRepo struct {
+        logger *zap.Logger
+        db     *gorm.DB
+}
+
+// NewAuditRepo 创建 AuditRepo。
+func NewAuditRepo(logger *zap.Logger, db *gorm.DB) *AuditRepo <span class="cov8" title="1">{
+        return &amp;AuditRepo{
+                logger: logger.Named("audit_repo"),
+                db:     db,
+        }
+}</span>
+
+// Create 写入一条审计记录。
+func (r *AuditRepo) Create(operator, action, target, detail string) error <span class="cov8" title="1">{
+        record := &amp;AuditLog{
+                Operator:  operator,
+                Action:    action,
+                Target:    target,
+                Detail:    detail,
+                CreatedAt: time.Now(),
+        }
+        if err := r.db.Create(record).Error; err != nil </span><span class="cov8" title="1">{
+                r.logger.Error("audit: failed to write",
+                        zap.String("action", action),
+                        zap.String("target", target),
+                        zap.Error(err),
+                )
+                return fmt.Errorf("audit create: %w", err)
+        }</span>
+        <span class="cov8" title="1">r.logger.Debug("audit record written",
+                zap.String("operator", operator),
+                zap.String("action", action),
+                zap.String("target", target),
+        )
+        return nil</span>
+}
+
+// ListRecent 返回最近 limit 条审计记录（按 created_at 降序）。
+func (r *AuditRepo) ListRecent(limit int) ([]AuditLog, error) <span class="cov8" title="1">{
+        if limit &lt;= 0 </span><span class="cov8" title="1">{
+                limit = 100
+        }</span>
+        <span class="cov8" title="1">var logs []AuditLog
+        if err := r.db.Order("created_at DESC").Limit(limit).Find(&amp;logs).Error; err != nil </span><span class="cov8" title="1">{
+                r.logger.Error("audit: failed to list", zap.Error(err))
+                return nil, fmt.Errorf("audit list: %w", err)
+        }</span>
+        <span class="cov8" title="1">return logs, nil</span>
+}
+</pre>
+		
+		<pre class="file" id="file2" style="display: none">package db
+
+import (
+        "fmt"
+        "regexp"
+        "strings"
+        "time"
+
+        "github.com/glebarez/sqlite"
+        "go.uber.org/zap"
+        "gorm.io/driver/postgres"
+        "gorm.io/gorm"
+        gormlogger "gorm.io/gorm/logger"
+
+        "github.com/l17728/pairproxy/internal/config"
+)
+
+// 包级变量：编译一次，复用（避免每次调用重新编译）
+var (
+        // kvPasswordRe 匹配 key=value 格式 DSN 中的 password 值
+        // (\S*) 而非 (\S+)：允许空密码值
+        kvPasswordRe = regexp.MustCompile(`(password\s*=\s*)(\S*)`)
+        // urlPasswordRe 匹配 URL 格式 DSN 中的密码部分
+        urlPasswordRe = regexp.MustCompile(`(://[^:@]*:)([^@]*)(@)`)
+)
+
+// Open 打开 SQLite 数据库连接（使用内置默认连接池，适合测试和简单场景）。
+// path 为 SQLite 文件路径，":memory:" 表示内存数据库（测试用）。
+// 生产环境请使用 OpenWithConfig 以传入完整连接池配置。
+func Open(logger *zap.Logger, path string) (*gorm.DB, error) <span class="cov8" title="1">{
+        return OpenWithConfig(logger, config.DatabaseConfig{Path: path})
+}</span>
+
+// buildPostgresDSN 构建 PostgreSQL 连接字符串。
+// 若 cfg.DSN 非空则直接使用（优先级最高）；
+// 否则从独立字段拼接（Host/Port/User/Password/DBName/SSLMode）。
+func buildPostgresDSN(cfg config.DatabaseConfig) string <span class="cov8" title="1">{
+        if cfg.DSN != "" </span><span class="cov8" title="1">{
+                return cfg.DSN
+        }</span>
+        <span class="cov8" title="1">return fmt.Sprintf(
+                "host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+                cfg.Host, cfg.Port, cfg.User, cfg.Password, cfg.DBName, cfg.SSLMode,
+        )</span>
+}
+
+// maskDSN 对 DSN 字符串进行脱敏处理，将 password= 的值替换为 ***。
+// 用于日志输出，防止密码泄露。
+// 示例：
+//
+//        "host=pg user=app password=secret dbname=db" → "host=pg user=app password=*** dbname=db"
+//        "postgres://app:secret@pg/db"                → "postgres://app:***@pg/db"
+func maskDSN(dsn string) string <span class="cov8" title="1">{
+        result := kvPasswordRe.ReplaceAllString(dsn, "${1}***")
+        result = urlPasswordRe.ReplaceAllString(result, "${1}***${3}")
+        return result
+}</span>
+
+// DriverName 返回当前 gorm.DB 使用的数据库驱动名称。
+// 返回值为 "sqlite" 或 "postgres"（与 DatabaseConfig.Driver 字段约定一致）。
+// 供 repo 层在需要方言特定 SQL 时使用。
+// 若 db 为 nil（如测试中未初始化），返回 "sqlite" 作为安全默认值。
+func DriverName(db *gorm.DB) string <span class="cov8" title="1">{
+        if db == nil </span><span class="cov8" title="1">{
+                return "sqlite"
+        }</span>
+        <span class="cov8" title="1">name := db.Dialector.Name()
+        // glebarez/sqlite 驱动返回 "sqlite"，postgres 驱动返回 "postgres"
+        if strings.HasPrefix(name, "sqlite") </span><span class="cov8" title="1">{
+                return "sqlite"
+        }</span>
+        <span class="cov8" title="1">return name</span>
+}
+
+// OpenWithConfig 打开数据库连接，支持 SQLite 和 PostgreSQL。
+//
+// 驱动选择（cfg.Driver）：
+//   - "" 或 "sqlite"：打开 SQLite 文件数据库（向后兼容）
+//   - "postgres"：打开 PostgreSQL 数据库
+//
+// 连接池默认值（cfg 字段为零值时生效）：
+//   - SQLite MaxOpenConns: 25（":memory:" 时为 1）
+//   - PostgreSQL MaxOpenConns: 50
+//   - MaxIdleConns:    10
+//   - ConnMaxLifetime: 1h
+//   - ConnMaxIdleTime: 10m
+func OpenWithConfig(logger *zap.Logger, cfg config.DatabaseConfig) (*gorm.DB, error) <span class="cov8" title="1">{
+        logger = logger.Named("db")
+
+        // 将 zap logger 适配为 gorm logger（仅输出 error 级别，减少噪音）
+        gormLog := gormlogger.Default.LogMode(gormlogger.Silent)
+
+        var dialector gorm.Dialector
+        var logLabel string // 用于日志输出（不含密码）
+        isPostgres := cfg.Driver == "postgres"
+
+        if isPostgres </span><span class="cov8" title="1">{
+                dsn := buildPostgresDSN(cfg)
+                logLabel = maskDSN(dsn)
+                dialector = postgres.Open(dsn)
+                logger.Info("opening PostgreSQL database", zap.String("dsn", logLabel))
+        }</span> else<span class="cov8" title="1"> {
+                // SQLite（默认）
+                logLabel = cfg.Path
+                dialector = sqlite.Open(cfg.Path)
+                logger.Info("opening SQLite database", zap.String("path", logLabel))
+        }</span>
+
+        <span class="cov8" title="1">db, err := gorm.Open(dialector, &amp;gorm.Config{
+                Logger: gormLog,
+        })
+        if err != nil </span><span class="cov8" title="1">{
+                logger.Error("failed to open database",
+                        zap.String("target", logLabel),
+                        zap.Error(err),
+                )
+                return nil, fmt.Errorf("open database %q: %w", logLabel, err)
+        }</span>
+
+        // 获取底层 sql.DB 以配置连接池
+        <span class="cov8" title="1">sqlDB, err := db.DB()
+        if err != nil </span><span class="cov0" title="0">{
+                logger.Error("failed to get underlying sql.DB",
+                        zap.String("target", logLabel),
+                        zap.Error(err),
+                )
+                return nil, fmt.Errorf("get underlying sql.DB: %w", err)
+        }</span>
+
+        // ── 连接池参数 ──────────────────────────────────────────────────────────
+        <span class="cov8" title="1">maxOpen := cfg.MaxOpenConns
+        if maxOpen &lt;= 0 </span><span class="cov8" title="1">{
+                if isPostgres </span><span class="cov0" title="0">{
+                        maxOpen = 50 // PG MVCC 支持高并发
+                }</span> else<span class="cov8" title="1"> if cfg.Path == ":memory:" </span><span class="cov8" title="1">{
+                        maxOpen = 1 // 内存库：每连接独立实例，必须单连接
+                }</span> else<span class="cov8" title="1"> {
+                        maxOpen = 25 // SQLite WAL 模式：允许最多 25 个并发连接
+                }</span>
+        }
+
+        <span class="cov8" title="1">maxIdle := cfg.MaxIdleConns
+        if maxIdle &lt;= 0 </span><span class="cov8" title="1">{
+                maxIdle = 10
+        }</span>
+        <span class="cov8" title="1">if maxIdle &gt; maxOpen </span><span class="cov8" title="1">{
+                logger.Warn("max_idle_conns exceeds max_open_conns, capping to max_open_conns",
+                        zap.Int("configured_max_idle", cfg.MaxIdleConns),
+                        zap.Int("max_open_conns", maxOpen),
+                        zap.Int("capped_to", maxOpen),
+                )
+                maxIdle = maxOpen
+        }</span>
+
+        <span class="cov8" title="1">connMaxLifetime := cfg.ConnMaxLifetime
+        if connMaxLifetime &lt;= 0 </span><span class="cov8" title="1">{
+                connMaxLifetime = time.Hour
+        }</span>
+
+        <span class="cov8" title="1">connMaxIdleTime := cfg.ConnMaxIdleTime
+        if connMaxIdleTime &lt;= 0 </span><span class="cov8" title="1">{
+                connMaxIdleTime = 10 * time.Minute
+        }</span>
+
+        <span class="cov8" title="1">sqlDB.SetMaxOpenConns(maxOpen)
+        sqlDB.SetMaxIdleConns(maxIdle)
+        sqlDB.SetConnMaxLifetime(connMaxLifetime)
+        sqlDB.SetConnMaxIdleTime(connMaxIdleTime)
+        // ────────────────────────────────────────────────────────────────────────
+
+        // SQLite PRAGMA（仅 SQLite 模式下执行）
+        if !isPostgres </span><span class="cov8" title="1">{
+                pragmas := []string{
+                        "PRAGMA journal_mode=WAL",   // WAL 模式：读写并发
+                        "PRAGMA busy_timeout=5000",  // 锁等待超时 5s
+                        "PRAGMA synchronous=NORMAL", // WAL 模式下 NORMAL 兼顾性能与安全
+                        "PRAGMA cache_size=-64000",  // 64MB 页缓存
+                        "PRAGMA foreign_keys=ON",    // 启用外键约束
+                }
+                for _, pragma := range pragmas </span><span class="cov8" title="1">{
+                        if err := db.Exec(pragma).Error; err != nil </span><span class="cov0" title="0">{
+                                logger.Warn("failed to set pragma",
+                                        zap.String("pragma", pragma),
+                                        zap.Error(err),
+                                )
+                        }</span>
+                }
+        }
+
+        <span class="cov8" title="1">if isPostgres </span><span class="cov0" title="0">{
+                logger.Info("PostgreSQL database opened successfully",
+                        zap.String("dsn", logLabel),
+                        zap.Int("max_open_conns", maxOpen),
+                        zap.Int("max_idle_conns", maxIdle),
+                        zap.Duration("conn_max_lifetime", connMaxLifetime),
+                        zap.Duration("conn_max_idle_time", connMaxIdleTime),
+                )
+        }</span> else<span class="cov8" title="1"> {
+                logger.Info("SQLite database opened successfully",
+                        zap.String("path", logLabel),
+                        zap.String("journal_mode", "WAL"),
+                        zap.Int("max_open_conns", maxOpen),
+                        zap.Int("max_idle_conns", maxIdle),
+                        zap.Duration("conn_max_lifetime", connMaxLifetime),
+                        zap.Duration("conn_max_idle_time", connMaxIdleTime),
+                )
+        }</span>
+        <span class="cov8" title="1">return db, nil</span>
+}
+
+// Migrate 执行数据库迁移，创建所有表和索引
+func Migrate(logger *zap.Logger, db *gorm.DB) error <span class="cov8" title="1">{
+        logger = logger.Named("migrate")
+        logger.Info("running database migrations")
+
+        // AutoMigrate 创建/更新表结构
+        models := []interface{}{
+                &amp;Group{},
+                &amp;User{},
+                &amp;RefreshToken{},
+                &amp;UsageLog{},
+                &amp;Peer{},
+                &amp;AuditLog{},         // P2-3: 管理操作审计日志
+                &amp;APIKey{},           // F-5: 多 API Key 管理
+                &amp;APIKeyAssignment{}, // F-5: API Key 分配
+                &amp;LLMBinding{},       // LLM 绑定管理
+                &amp;LLMTarget{},        // LLM 目标动态管理
+        }
+
+        for _, model := range models </span><span class="cov8" title="1">{
+                if err := db.AutoMigrate(model); err != nil </span><span class="cov0" title="0">{
+                        logger.Error("AutoMigrate failed",
+                                zap.String("model", fmt.Sprintf("%T", model)),
+                                zap.Error(err),
+                        )
+                        return fmt.Errorf("migrate %T: %w", model, err)
+                }</span>
+                <span class="cov8" title="1">logger.Debug("migrated model", zap.String("model", fmt.Sprintf("%T", model)))</span>
+        }
+
+        // 创建额外的复合索引（AutoMigrate 不支持复合索引）
+        <span class="cov8" title="1">extraIndexes := []struct {
+                table string
+                name  string
+                cols  string
+        }{
+                {"usage_logs", "idx_usage_user_date", "(user_id, created_at)"},
+                // idx_usage_user_id 支持 GetUserAllTimeStats 按 user_id GROUP BY 的快速聚合
+                {"usage_logs", "idx_usage_user_id", "(user_id)"},
+        }
+        for _, idx := range extraIndexes </span><span class="cov8" title="1">{
+                sql := fmt.Sprintf(
+                        "CREATE INDEX IF NOT EXISTS %s ON %s %s",
+                        idx.name, idx.table, idx.cols,
+                )
+                if err := db.Exec(sql).Error; err != nil </span><span class="cov0" title="0">{
+                        logger.Warn("failed to create index",
+                                zap.String("index", idx.name),
+                                zap.Error(err),
+                        )
+                        // 索引创建失败不阻止启动（只影响查询性能）
+                }</span> else<span class="cov8" title="1"> {
+                        logger.Debug("index ensured", zap.String("index", idx.name))
+                }</span>
+        }
+
+        <span class="cov8" title="1">logger.Info("database migrations completed")
+        return nil</span>
+}
+</pre>
+		
+		<pre class="file" id="file3" style="display: none">package db
+
+import (
+        "fmt"
+        "time"
+
+        "github.com/google/uuid"
+        "go.uber.org/zap"
+        "gorm.io/gorm"
+)
+
+// LLMBindingRepo 管理 LLMBinding 记录（用户/分组 ↔ LLM target 绑定）。
+type LLMBindingRepo struct {
+        db     *gorm.DB
+        logger *zap.Logger
+}
+
+// NewLLMBindingRepo 创建 LLMBindingRepo。
+func NewLLMBindingRepo(db *gorm.DB, logger *zap.Logger) *LLMBindingRepo <span class="cov8" title="1">{
+        return &amp;LLMBindingRepo{
+                db:     db,
+                logger: logger.Named("llm_binding_repo"),
+        }
+}</span>
+
+// Set 创建或替换绑定。
+// 同一 userID 或 groupID 的旧绑定会先被删除，再创建新绑定。
+// userID 和 groupID 至少有一个非 nil。
+func (r *LLMBindingRepo) Set(targetURL string, userID, groupID *string) error <span class="cov8" title="1">{
+        if userID == nil &amp;&amp; groupID == nil </span><span class="cov8" title="1">{
+                return fmt.Errorf("llm_binding: userID and groupID cannot both be nil")
+        }</span>
+
+        <span class="cov8" title="1">return r.db.Transaction(func(tx *gorm.DB) error </span><span class="cov8" title="1">{
+                // 删除已有的同维度绑定
+                if userID != nil </span><span class="cov8" title="1">{
+                        if err := tx.Where("user_id = ?", *userID).Delete(&amp;LLMBinding{}).Error; err != nil </span><span class="cov0" title="0">{
+                                return fmt.Errorf("delete old user binding: %w", err)
+                        }</span>
+                } else<span class="cov8" title="1"> {
+                        if err := tx.Where("group_id = ?", *groupID).Delete(&amp;LLMBinding{}).Error; err != nil </span><span class="cov0" title="0">{
+                                return fmt.Errorf("delete old group binding: %w", err)
+                        }</span>
+                }
+
+                // 创建新绑定
+                <span class="cov8" title="1">b := &amp;LLMBinding{
+                        ID:        uuid.NewString(),
+                        TargetURL: targetURL,
+                        UserID:    userID,
+                        GroupID:   groupID,
+                        CreatedAt: time.Now(),
+                }
+                if err := tx.Create(b).Error; err != nil </span><span class="cov0" title="0">{
+                        return fmt.Errorf("create llm binding: %w", err)
+                }</span>
+
+                <span class="cov8" title="1">r.logger.Info("llm binding set",
+                        zap.String("target_url", targetURL),
+                        zap.Any("user_id", userID),
+                        zap.Any("group_id", groupID),
+                )
+                return nil</span>
+        })
+}
+
+// FindForUser 查找用户的 LLM target 绑定，用户级优先于分组级。
+// 返回 (targetURL, true, nil) 若找到；(", false, nil) 若无绑定；("", false, err) 若 DB 错误。
+func (r *LLMBindingRepo) FindForUser(userID, groupID string) (targetURL string, found bool, err error) <span class="cov8" title="1">{
+        // 1. 先查用户级绑定
+        if userID != "" </span><span class="cov8" title="1">{
+                var b LLMBinding
+                err := r.db.Where("user_id = ?", userID).First(&amp;b).Error
+                if err == nil </span><span class="cov8" title="1">{
+                        r.logger.Debug("llm binding found (user)", zap.String("user_id", userID), zap.String("target_url", b.TargetURL))
+                        return b.TargetURL, true, nil
+                }</span>
+                <span class="cov8" title="1">if err != gorm.ErrRecordNotFound </span><span class="cov8" title="1">{
+                        return "", false, fmt.Errorf("find user llm binding: %w", err)
+                }</span>
+        }
+
+        // 2. 再查分组级绑定
+        <span class="cov8" title="1">if groupID != "" </span><span class="cov8" title="1">{
+                var b LLMBinding
+                err := r.db.Where("group_id = ?", groupID).First(&amp;b).Error
+                if err == nil </span><span class="cov8" title="1">{
+                        r.logger.Debug("llm binding found (group)", zap.String("group_id", groupID), zap.String("target_url", b.TargetURL))
+                        return b.TargetURL, true, nil
+                }</span>
+                <span class="cov8" title="1">if err != gorm.ErrRecordNotFound </span><span class="cov8" title="1">{
+                        return "", false, fmt.Errorf("find group llm binding: %w", err)
+                }</span>
+        }
+
+        <span class="cov8" title="1">return "", false, nil</span>
+}
+
+// List 返回全部 LLMBinding 记录（按创建时间升序）。
+func (r *LLMBindingRepo) List() ([]LLMBinding, error) <span class="cov8" title="1">{
+        var bindings []LLMBinding
+        if err := r.db.Order("created_at ASC").Find(&amp;bindings).Error; err != nil </span><span class="cov8" title="1">{
+                return nil, fmt.Errorf("list llm bindings: %w", err)
+        }</span>
+        <span class="cov8" title="1">r.logger.Debug("listed llm bindings", zap.Int("count", len(bindings)))
+        return bindings, nil</span>
+}
+
+// Delete 按 ID 删除绑定。
+func (r *LLMBindingRepo) Delete(id string) error <span class="cov8" title="1">{
+        if err := r.db.Delete(&amp;LLMBinding{}, "id = ?", id).Error; err != nil </span><span class="cov8" title="1">{
+                return fmt.Errorf("delete llm binding %q: %w", id, err)
+        }</span>
+        <span class="cov8" title="1">r.logger.Info("llm binding deleted", zap.String("id", id))
+        return nil</span>
+}
+
+// EvenDistribute 将 userIDs 中**尚无用户级绑定**的用户轮询分配到 targetURLs。
+// 已有用户级绑定的用户（如直连用户手动设置的固定绑定）会被跳过，不受影响。
+// user[i] → targetURLs[i % len(targetURLs)]，在单个事务中完成。
+// targetURLs 为空时返回 error。
+func (r *LLMBindingRepo) EvenDistribute(userIDs []string, targetURLs []string) error <span class="cov8" title="1">{
+        if len(targetURLs) == 0 </span><span class="cov8" title="1">{
+                return fmt.Errorf("llm_binding: targetURLs must not be empty")
+        }</span>
+        <span class="cov8" title="1">if len(userIDs) == 0 </span><span class="cov8" title="1">{
+                r.logger.Info("even distribute: no users to distribute")
+                return nil
+        }</span>
+
+        // 查出已有用户级绑定的 userID 集合，distribute 跳过这些用户
+        <span class="cov8" title="1">var existingBindings []LLMBinding
+        if err := r.db.Where("user_id IN ?", userIDs).Find(&amp;existingBindings).Error; err != nil </span><span class="cov8" title="1">{
+                return fmt.Errorf("query existing user bindings: %w", err)
+        }</span>
+        <span class="cov8" title="1">alreadyBound := make(map[string]bool, len(existingBindings))
+        for _, b := range existingBindings </span><span class="cov8" title="1">{
+                if b.UserID != nil </span><span class="cov8" title="1">{
+                        alreadyBound[*b.UserID] = true
+                }</span>
+        }
+
+        // 过滤出无绑定的用户
+        <span class="cov8" title="1">var toAssign []string
+        for _, uid := range userIDs </span><span class="cov8" title="1">{
+                if !alreadyBound[uid] </span><span class="cov8" title="1">{
+                        toAssign = append(toAssign, uid)
+                }</span>
+        }
+
+        <span class="cov8" title="1">if len(toAssign) == 0 </span><span class="cov8" title="1">{
+                r.logger.Info("even distribute: all users already have bindings, nothing to do",
+                        zap.Int("skipped", len(userIDs)),
+                )
+                return nil
+        }</span>
+
+        <span class="cov8" title="1">r.logger.Info("even distribute: skipping users with existing bindings",
+                zap.Int("total", len(userIDs)),
+                zap.Int("skipped", len(alreadyBound)),
+                zap.Int("to_assign", len(toAssign)),
+        )
+
+        return r.db.Transaction(func(tx *gorm.DB) error </span><span class="cov8" title="1">{
+                now := time.Now()
+                for i, uid := range toAssign </span><span class="cov8" title="1">{
+                        targetURL := targetURLs[i%len(targetURLs)]
+                        uidCopy := uid
+                        b := &amp;LLMBinding{
+                                ID:        uuid.NewString(),
+                                TargetURL: targetURL,
+                                UserID:    &amp;uidCopy,
+                                CreatedAt: now,
+                        }
+                        if err := tx.Create(b).Error; err != nil </span><span class="cov0" title="0">{
+                                return fmt.Errorf("create binding for user %q: %w", uid, err)
+                        }</span>
+                }
+
+                <span class="cov8" title="1">r.logger.Info("even distribution completed",
+                        zap.Int("assigned", len(toAssign)),
+                        zap.Int("targets", len(targetURLs)),
+                )
+                return nil</span>
+        })
+}
+</pre>
+		
+		<pre class="file" id="file4" style="display: none">package db
+
+import (
+        "fmt"
+
+        "github.com/google/uuid"
+        "go.uber.org/zap"
+        "gorm.io/gorm"
+)
+
+// LLMTargetRepo LLM Target 数据库操作
+type LLMTargetRepo struct {
+        db     *gorm.DB
+        logger *zap.Logger
+}
+
+// NewLLMTargetRepo 创建 LLMTargetRepo
+func NewLLMTargetRepo(db *gorm.DB, logger *zap.Logger) *LLMTargetRepo <span class="cov8" title="1">{
+        return &amp;LLMTargetRepo{
+                db:     db,
+                logger: logger.Named("llmtarget_repo"),
+        }
+}</span>
+
+// Create 创建新的 LLM target
+func (r *LLMTargetRepo) Create(target *LLMTarget) error <span class="cov8" title="1">{
+        if err := r.db.Create(target).Error; err != nil </span><span class="cov8" title="1">{
+                r.logger.Error("failed to create llm target",
+                        zap.String("url", target.URL),
+                        zap.Error(err))
+                return fmt.Errorf("create llm target: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">r.logger.Info("llm target created",
+                zap.String("id", target.ID),
+                zap.String("url", target.URL),
+                zap.String("source", target.Source))
+
+        return nil</span>
+}
+
+// GetByURL 根据 URL 查询 LLM target
+func (r *LLMTargetRepo) GetByURL(url string) (*LLMTarget, error) <span class="cov8" title="1">{
+        var target LLMTarget
+        if err := r.db.Where("url = ?", url).First(&amp;target).Error; err != nil </span><span class="cov8" title="1">{
+                if err == gorm.ErrRecordNotFound </span><span class="cov8" title="1">{
+                        return nil, err
+                }</span>
+                <span class="cov8" title="1">r.logger.Error("failed to get llm target by url",
+                        zap.String("url", url),
+                        zap.Error(err))
+                return nil, fmt.Errorf("get llm target by url: %w", err)</span>
+        }
+        <span class="cov8" title="1">return &amp;target, nil</span>
+}
+
+// GetByID 根据 ID 查询 LLM target
+func (r *LLMTargetRepo) GetByID(id string) (*LLMTarget, error) <span class="cov8" title="1">{
+        var target LLMTarget
+        if err := r.db.Where("id = ?", id).First(&amp;target).Error; err != nil </span><span class="cov8" title="1">{
+                if err == gorm.ErrRecordNotFound </span><span class="cov8" title="1">{
+                        return nil, err
+                }</span>
+                <span class="cov8" title="1">r.logger.Error("failed to get llm target by id",
+                        zap.String("id", id),
+                        zap.Error(err))
+                return nil, fmt.Errorf("get llm target by id: %w", err)</span>
+        }
+        <span class="cov8" title="1">return &amp;target, nil</span>
+}
+
+// ListAll 列出所有 LLM targets
+func (r *LLMTargetRepo) ListAll() ([]*LLMTarget, error) <span class="cov8" title="1">{
+        var targets []*LLMTarget
+        if err := r.db.Order("created_at DESC").Find(&amp;targets).Error; err != nil </span><span class="cov8" title="1">{
+                r.logger.Error("failed to list llm targets", zap.Error(err))
+                return nil, fmt.Errorf("list llm targets: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">r.logger.Debug("listed llm targets", zap.Int("count", len(targets)))
+        return targets, nil</span>
+}
+
+// URLExists 检查 URL 是否已存在
+func (r *LLMTargetRepo) URLExists(url string) (bool, error) <span class="cov8" title="1">{
+        var count int64
+        if err := r.db.Model(&amp;LLMTarget{}).Where("url = ?", url).Count(&amp;count).Error; err != nil </span><span class="cov8" title="1">{
+                r.logger.Error("failed to check url exists",
+                        zap.String("url", url),
+                        zap.Error(err))
+                return false, fmt.Errorf("check url exists: %w", err)
+        }</span>
+        <span class="cov8" title="1">return count &gt; 0, nil</span>
+}
+
+// Update 更新 LLM target（仅可编辑的）
+func (r *LLMTargetRepo) Update(target *LLMTarget) error <span class="cov8" title="1">{
+        // 检查是否可编辑
+        if !target.IsEditable </span><span class="cov8" title="1">{
+                return fmt.Errorf("target is not editable (config-sourced)")
+        }</span>
+
+        <span class="cov8" title="1">if err := r.db.Save(target).Error; err != nil </span><span class="cov8" title="1">{
+                r.logger.Error("failed to update llm target",
+                        zap.String("id", target.ID),
+                        zap.String("url", target.URL),
+                        zap.Error(err))
+                return fmt.Errorf("update llm target: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">r.logger.Info("llm target updated",
+                zap.String("id", target.ID),
+                zap.String("url", target.URL))
+
+        return nil</span>
+}
+
+// Delete 删除 LLM target（仅可编辑的）
+func (r *LLMTargetRepo) Delete(id string) error <span class="cov8" title="1">{
+        // 先查询检查是否可编辑
+        target, err := r.GetByID(id)
+        if err != nil </span><span class="cov8" title="1">{
+                return err
+        }</span>
+
+        <span class="cov8" title="1">if !target.IsEditable </span><span class="cov8" title="1">{
+                return fmt.Errorf("target is not editable (config-sourced)")
+        }</span>
+
+        <span class="cov8" title="1">if err := r.db.Delete(&amp;LLMTarget{}, "id = ?", id).Error; err != nil </span><span class="cov0" title="0">{
+                r.logger.Error("failed to delete llm target",
+                        zap.String("id", id),
+                        zap.Error(err))
+                return fmt.Errorf("delete llm target: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">r.logger.Info("llm target deleted",
+                zap.String("id", id),
+                zap.String("url", target.URL))
+
+        return nil</span>
+}
+
+// Upsert 插入或更新 LLM target（用于配置文件同步）
+func (r *LLMTargetRepo) Upsert(target *LLMTarget) error <span class="cov8" title="1">{
+        // 检查是否存在
+        existing, err := r.GetByURL(target.URL)
+        if err != nil &amp;&amp; err != gorm.ErrRecordNotFound </span><span class="cov8" title="1">{
+                return err
+        }</span>
+
+        <span class="cov8" title="1">if existing != nil </span><span class="cov8" title="1">{
+                // 更新：保留 ID，更新其他字段
+                target.ID = existing.ID
+                // 使用 Select 明确指定要更新的字段，包括 boolean false 值
+                if err := r.db.Model(&amp;LLMTarget{}).Where("id = ?", target.ID).
+                        Select("*").
+                        Updates(target).Error; err != nil </span><span class="cov0" title="0">{
+                        r.logger.Error("failed to upsert (update) llm target",
+                                zap.String("url", target.URL),
+                                zap.Error(err))
+                        return fmt.Errorf("upsert llm target: %w", err)
+                }</span>
+                <span class="cov8" title="1">r.logger.Debug("llm target upserted (updated)",
+                        zap.String("url", target.URL))</span>
+        } else<span class="cov8" title="1"> {
+                // 插入：生成新 ID
+                if target.ID == "" </span><span class="cov0" title="0">{
+                        target.ID = uuid.NewString()
+                }</span>
+                // GORM gotcha: boolean false 值需要两步操作
+                // 1. 先 Create（会使用 default:true）
+                // 2. 再显式更新 boolean false 字段
+                <span class="cov8" title="1">needsEditableFix := !target.IsEditable
+                needsActiveFix := !target.IsActive
+
+                if err := r.db.Create(target).Error; err != nil </span><span class="cov0" title="0">{
+                        r.logger.Error("failed to upsert (insert) llm target",
+                                zap.String("url", target.URL),
+                                zap.Error(err))
+                        return fmt.Errorf("upsert llm target: %w", err)
+                }</span>
+
+                // 修复 boolean false 值
+                <span class="cov8" title="1">if needsEditableFix || needsActiveFix </span><span class="cov8" title="1">{
+                        updates := make(map[string]interface{})
+                        if needsEditableFix </span><span class="cov8" title="1">{
+                                updates["is_editable"] = false
+                        }</span>
+                        <span class="cov8" title="1">if needsActiveFix </span><span class="cov8" title="1">{
+                                updates["is_active"] = false
+                        }</span>
+                        <span class="cov8" title="1">if err := r.db.Model(&amp;LLMTarget{}).Where("id = ?", target.ID).Updates(updates).Error; err != nil </span><span class="cov0" title="0">{
+                                r.logger.Error("failed to fix boolean fields",
+                                        zap.String("id", target.ID),
+                                        zap.Error(err))
+                                return fmt.Errorf("fix boolean fields: %w", err)
+                        }</span>
+                }
+
+                <span class="cov8" title="1">r.logger.Debug("llm target upserted (inserted)",
+                        zap.String("url", target.URL))</span>
+        }
+
+        <span class="cov8" title="1">return nil</span>
+}
+
+// DeleteConfigTargetsNotInList 删除不在列表中的配置文件来源的 targets
+// 用于配置文件同步时清理已移除的 targets
+func (r *LLMTargetRepo) DeleteConfigTargetsNotInList(keepURLs []string) (int, error) <span class="cov8" title="1">{
+        query := r.db.Where("source = ?", "config")
+
+        // 如果 keepURLs 不为空，添加 NOT IN 条件
+        if len(keepURLs) &gt; 0 </span><span class="cov8" title="1">{
+                query = query.Where("url NOT IN ?", keepURLs)
+        }</span>
+
+        <span class="cov8" title="1">result := query.Delete(&amp;LLMTarget{})
+        if result.Error != nil </span><span class="cov8" title="1">{
+                r.logger.Error("failed to delete config targets not in list",
+                        zap.Int("keep_count", len(keepURLs)),
+                        zap.Error(result.Error))
+                return 0, fmt.Errorf("delete config targets not in list: %w", result.Error)
+        }</span>
+
+        <span class="cov8" title="1">deleted := int(result.RowsAffected)
+        if deleted &gt; 0 </span><span class="cov8" title="1">{
+                r.logger.Info("deleted config targets not in list",
+                        zap.Int("deleted", deleted),
+                        zap.Int("kept", len(keepURLs)))
+        }</span>
+
+        <span class="cov8" title="1">return deleted, nil</span>
+}
+</pre>
+		
+		<pre class="file" id="file5" style="display: none">package db
+
+import "time"
+
+// Group 用户分组（配额管理）
+type Group struct {
+        ID                  string  `gorm:"primarykey"`
+        Name                string  `gorm:"uniqueIndex;not null"`
+        DailyTokenLimit     *int64  // NULL = 无限制
+        MonthlyTokenLimit   *int64  // NULL = 无限制
+        RequestsPerMinute   *int    // NULL = 无限制（每分钟请求数 RPM）
+        MaxTokensPerRequest *int64  // NULL = 无限制（单次请求 max_tokens 上限）
+        ConcurrentRequests  *int    // NULL = 无限制（每用户最大并发请求数）
+        CreatedAt           time.Time
+}
+
+// User 系统用户
+type User struct {
+        ID           string     `gorm:"primarykey"`
+        Username     string     `gorm:"uniqueIndex;not null"`
+        PasswordHash string     `gorm:"not null"`
+        GroupID      *string    `gorm:"index"` // NULL 表示未分配分组
+        Group        Group      `gorm:"foreignKey:GroupID"`
+        IsActive     bool       `gorm:"default:true"`
+        AuthProvider string     `gorm:"default:'local'"` // "local" | "ldap"
+        ExternalID   string     `gorm:"index"`            // 外部系统唯一 ID（LDAP: uid）
+        CreatedAt    time.Time
+        LastLoginAt  *time.Time
+}
+
+// RefreshToken 刷新令牌（用于撤销）
+type RefreshToken struct {
+        JTI       string    `gorm:"primarykey"`
+        UserID    string    `gorm:"not null;index"`
+        ExpiresAt time.Time `gorm:"not null"`
+        Revoked   bool      `gorm:"default:false"`
+        CreatedAt time.Time
+}
+
+// UsageLog 用量日志（核心统计表）
+type UsageLog struct {
+        ID           uint      `gorm:"primarykey;autoIncrement"`
+        RequestID    string    `gorm:"uniqueIndex;not null"` // 幂等防重
+        UserID       string    `gorm:"not null;index"`
+        Model        string
+        InputTokens  int       `gorm:"default:0"`
+        OutputTokens int       `gorm:"default:0"`
+        TotalTokens  int       `gorm:"default:0"`
+        IsStreaming  bool      `gorm:"default:false"`
+        UpstreamURL  string
+        StatusCode   int
+        DurationMs   int64
+        CostUSD      float64   `gorm:"default:0"` // 估算费用（USD）
+        SourceNode   string    `gorm:"default:'local'"` // 数据来源节点 ID
+        Synced       bool      `gorm:"default:false;index"` // sp-2+ 用：是否已上报给 sp-1
+        CreatedAt    time.Time `gorm:"index"`
+}
+
+// Peer 集群中已注册的 s-proxy 节点（sp-1 专用）
+type Peer struct {
+        ID           string     `gorm:"primarykey"` // e.g. "sp-2"
+        Addr         string     `gorm:"uniqueIndex;not null"`
+        Weight       int        `gorm:"default:50"`
+        IsActive     bool       `gorm:"default:true"`
+        RegisteredAt time.Time
+        LastSeen     *time.Time
+}
+
+// APIKey 系统级 API Key（加密存储）
+type APIKey struct {
+        ID             string    `gorm:"primarykey"`
+        Name           string    `gorm:"uniqueIndex;not null"` // 标识名称（唯一）
+        EncryptedValue string    `gorm:"not null"`             // AES-256-GCM + base64
+        Provider       string    `gorm:"default:'anthropic'"`  // "anthropic" | "openai" | "ollama"
+        IsActive       bool      `gorm:"default:true"`
+        CreatedAt      time.Time
+}
+
+// APIKeyAssignment API Key 分配记录（用户级优先于分组级）
+type APIKeyAssignment struct {
+        ID       string  `gorm:"primarykey"`
+        APIKeyID string  `gorm:"not null;index"`
+        UserID   *string `gorm:"index"` // 用户级（优先）
+        GroupID  *string `gorm:"index"` // 分组级（兜底）
+}
+type AuditLog struct {
+        ID        uint      `gorm:"primarykey;autoIncrement"`
+        Operator  string    `gorm:"not null;index"` // 操作者（固定为 "admin"）
+        Action    string    `gorm:"not null;index"` // 操作类型，如 "user.create", "group.set_quota"
+        Target    string    // 操作对象（用户名、分组名等）
+        Detail    string    // 变更详情（JSON 或可读字符串）
+        CreatedAt time.Time `gorm:"index"`
+}
+
+// LLMBinding 用户或分组与特定 LLM target 的绑定关系。
+// 用于将请求路由到指定 LLM 上游，支持精细化流量分配。
+// 优先级：用户级绑定 &gt; 分组级绑定 &gt; 负载均衡。
+type LLMBinding struct {
+        ID        string     `gorm:"primarykey"`
+        TargetURL string     `gorm:"not null;index"` // LLM target URL（与 config.LLMTarget.URL 匹配）
+        UserID    *string    `gorm:"index"`          // 用户级绑定（优先，与 GroupID 互斥使用）
+        GroupID   *string    `gorm:"index"`          // 分组级绑定（兜底）
+        CreatedAt time.Time
+}
+
+// LLMTarget LLM 目标端点（支持配置文件和数据库双来源）
+type LLMTarget struct {
+        ID              string     `gorm:"primarykey"`
+        URL             string     `gorm:"uniqueIndex;not null"` // LLM 端点 URL
+        APIKeyID        *string    `gorm:"index"`                // 外键 → api_keys.id（可选）
+        Provider        string     `gorm:"default:'anthropic'"`  // "anthropic" | "openai" | "ollama"
+        Name            string     // 显示名称
+        Weight          int        `gorm:"default:1"`            // 负载均衡权重
+        HealthCheckPath string     // 健康检查路径
+        ModelMappingJSON string    `gorm:"column:model_mapping;default:'{}'"` // JSON 序列化的 model_mapping（Anthropic→Ollama 模型名映射）
+        Source          string     `gorm:"default:'database'"`   // "config" | "database"
+        IsEditable      bool       `gorm:"default:true"`         // false for config-sourced
+        IsActive        bool       `gorm:"default:true"`
+        CreatedAt       time.Time
+        UpdatedAt       time.Time
+}
+
+// TableName 方法（可选，用于显式指定表名）
+func (Group) TableName() string           <span class="cov8" title="1">{ return "groups" }</span>
+func (User) TableName() string            <span class="cov8" title="1">{ return "users" }</span>
+func (RefreshToken) TableName() string    <span class="cov8" title="1">{ return "refresh_tokens" }</span>
+func (UsageLog) TableName() string        <span class="cov8" title="1">{ return "usage_logs" }</span>
+func (Peer) TableName() string            <span class="cov8" title="1">{ return "peers" }</span>
+func (AuditLog) TableName() string        <span class="cov8" title="1">{ return "audit_logs" }</span>
+func (APIKey) TableName() string          <span class="cov8" title="1">{ return "api_keys" }</span>
+func (APIKeyAssignment) TableName() string <span class="cov8" title="1">{ return "api_key_assignments" }</span>
+func (LLMBinding) TableName() string      <span class="cov8" title="1">{ return "llm_bindings" }</span>
+func (LLMTarget) TableName() string       <span class="cov8" title="1">{ return "llm_targets" }</span>
+</pre>
+		
+		<pre class="file" id="file6" style="display: none">package db
+
+import (
+        "errors"
+        "fmt"
+        "time"
+
+        "go.uber.org/zap"
+        "gorm.io/gorm"
+)
+
+// RefreshTokenRepo 管理刷新令牌的持久化存储
+type RefreshTokenRepo struct {
+        db     *gorm.DB
+        logger *zap.Logger
+}
+
+// NewRefreshTokenRepo 创建 RefreshTokenRepo
+func NewRefreshTokenRepo(db *gorm.DB, logger *zap.Logger) *RefreshTokenRepo <span class="cov8" title="1">{
+        return &amp;RefreshTokenRepo{db: db, logger: logger.Named("token_repo")}
+}</span>
+
+// Create 持久化一条新的刷新令牌
+func (r *RefreshTokenRepo) Create(rt *RefreshToken) error <span class="cov8" title="1">{
+        if rt.CreatedAt.IsZero() </span><span class="cov8" title="1">{
+                rt.CreatedAt = time.Now()
+        }</span>
+        <span class="cov8" title="1">if err := r.db.Create(rt).Error; err != nil </span><span class="cov8" title="1">{
+                r.logger.Error("failed to create refresh token",
+                        zap.String("user_id", rt.UserID),
+                        zap.Error(err),
+                )
+                return fmt.Errorf("create refresh token: %w", err)
+        }</span>
+        <span class="cov8" title="1">r.logger.Debug("refresh token created",
+                zap.String("jti", rt.JTI),
+                zap.String("user_id", rt.UserID),
+                zap.Time("expires_at", rt.ExpiresAt),
+        )
+        return nil</span>
+}
+
+// GetByJTI 按 JTI 查询（不存在返回 nil, nil）
+func (r *RefreshTokenRepo) GetByJTI(jti string) (*RefreshToken, error) <span class="cov8" title="1">{
+        var rt RefreshToken
+        err := r.db.Where("jti = ?", jti).First(&amp;rt).Error
+        if err != nil </span><span class="cov8" title="1">{
+                if errors.Is(err, gorm.ErrRecordNotFound) </span><span class="cov8" title="1">{
+                        r.logger.Debug("refresh token not found", zap.String("jti", jti))
+                        return nil, nil
+                }</span>
+                <span class="cov8" title="1">r.logger.Error("failed to get refresh token", zap.String("jti", jti), zap.Error(err))
+                return nil, fmt.Errorf("get refresh token %q: %w", jti, err)</span>
+        }
+        <span class="cov8" title="1">return &amp;rt, nil</span>
+}
+
+// Revoke 将指定 JTI 的刷新令牌标记为已撤销
+func (r *RefreshTokenRepo) Revoke(jti string) error <span class="cov8" title="1">{
+        result := r.db.Model(&amp;RefreshToken{}).
+                Where("jti = ?", jti).
+                Update("revoked", true)
+        if result.Error != nil </span><span class="cov8" title="1">{
+                r.logger.Error("failed to revoke refresh token",
+                        zap.String("jti", jti),
+                        zap.Error(result.Error),
+                )
+                return fmt.Errorf("revoke refresh token %q: %w", jti, result.Error)
+        }</span>
+        <span class="cov8" title="1">r.logger.Info("refresh token revoked",
+                zap.String("jti", jti),
+                zap.Int64("rows_affected", result.RowsAffected),
+        )
+        return nil</span>
+}
+
+// RevokeAllForUser 撤销指定用户的所有刷新令牌（强制下线）
+func (r *RefreshTokenRepo) RevokeAllForUser(userID string) error <span class="cov8" title="1">{
+        result := r.db.Model(&amp;RefreshToken{}).
+                Where("user_id = ? AND revoked = ?", userID, false).
+                Update("revoked", true)
+        if result.Error != nil </span><span class="cov8" title="1">{
+                r.logger.Error("failed to revoke all tokens for user",
+                        zap.String("user_id", userID),
+                        zap.Error(result.Error),
+                )
+                return fmt.Errorf("revoke all tokens for user %q: %w", userID, result.Error)
+        }</span>
+        <span class="cov8" title="1">r.logger.Info("all refresh tokens revoked for user",
+                zap.String("user_id", userID),
+                zap.Int64("count", result.RowsAffected),
+        )
+        return nil</span>
+}
+
+// DeleteExpired 删除所有已过期的令牌（定期清理用）
+func (r *RefreshTokenRepo) DeleteExpired() (int64, error) <span class="cov8" title="1">{
+        result := r.db.Where("expires_at &lt; ?", time.Now()).Delete(&amp;RefreshToken{})
+        if result.Error != nil </span><span class="cov8" title="1">{
+                r.logger.Error("failed to delete expired tokens", zap.Error(result.Error))
+                return 0, fmt.Errorf("delete expired tokens: %w", result.Error)
+        }</span>
+        <span class="cov8" title="1">if result.RowsAffected &gt; 0 </span><span class="cov8" title="1">{
+                r.logger.Info("expired refresh tokens deleted", zap.Int64("count", result.RowsAffected))
+        }</span>
+        <span class="cov8" title="1">return result.RowsAffected, nil</span>
+}
+</pre>
+		
+		<pre class="file" id="file7" style="display: none">package db
+
+import (
+        "context"
+        "fmt"
+        "sync/atomic"
+        "time"
+
+        "go.opentelemetry.io/otel"
+        "go.opentelemetry.io/otel/attribute"
+        "go.uber.org/zap"
+        "gorm.io/gorm"
+        "gorm.io/gorm/clause"
+)
+
+// UsageFilter 用量查询条件
+type UsageFilter struct {
+        UserID  string
+        GroupID string
+        From    *time.Time
+        To      *time.Time
+        Model   string
+        Limit   int
+        Offset  int
+}
+
+// UsageRecord 用量写入数据（通过 channel 传递，不直接操作 DB）
+type UsageRecord struct {
+        RequestID    string
+        UserID       string
+        Model        string
+        InputTokens  int
+        OutputTokens int
+        IsStreaming  bool
+        UpstreamURL  string
+        StatusCode   int
+        DurationMs   int64
+        SourceNode   string
+        CreatedAt    time.Time
+}
+
+// CostFunc 费用计算函数类型（model, inputTokens, outputTokens → USD）
+type CostFunc func(model string, inputTokens, outputTokens int) float64
+
+// UsageWriter 异步批量写入用量日志
+type UsageWriter struct {
+        db         *gorm.DB
+        driver     string       // "sqlite" 或 "postgres"，从 DriverName(db) 获取
+        logger     *zap.Logger
+        ch         chan UsageRecord
+        bufferSize int
+        interval   time.Duration
+        done       chan struct{} // closed when runLoop exits
+        costFn     CostFunc     // 可选：用于计算 cost_usd（nil 则不计算）
+
+        dropped atomic.Int64 // 因 channel 满而丢弃的记录数（累计）
+}
+
+// NewUsageWriter 创建 UsageWriter
+// bufferSize: channel 容量，也是批量写入的最大条数
+// interval: 强制 flush 间隔
+func NewUsageWriter(db *gorm.DB, logger *zap.Logger, bufferSize int, interval time.Duration) *UsageWriter <span class="cov8" title="1">{
+        if bufferSize &lt;= 0 </span><span class="cov8" title="1">{
+                bufferSize = 1000 // 生产默认：200 并发 × 5s flush 间隔的 5 倍余量
+        }</span>
+        <span class="cov8" title="1">if interval &lt;= 0 </span><span class="cov8" title="1">{
+                interval = 5 * time.Second
+        }</span>
+        <span class="cov8" title="1">w := &amp;UsageWriter{
+                db:         db,
+                driver:     DriverName(db), // 方言适配：记录驱动名称供将来扩展使用
+                logger:     logger.Named("usage_writer"),
+                ch:         make(chan UsageRecord, bufferSize*2), // 双倍 buffer 避免频繁阻塞
+                bufferSize: bufferSize,
+                interval:   interval,
+                done:       make(chan struct{}),
+        }
+        return w</span>
+}
+
+// SetCostFunc 设置费用计算函数（可选；nil 时不计算费用）
+func (w *UsageWriter) SetCostFunc(fn CostFunc) <span class="cov8" title="1">{
+        w.costFn = fn
+}</span>
+
+// Start 启动后台写入 goroutine（ctx 取消时停止）
+func (w *UsageWriter) Start(ctx context.Context) <span class="cov8" title="1">{
+        w.logger.Info("usage writer started",
+                zap.Int("buffer_size", w.bufferSize),
+                zap.Duration("flush_interval", w.interval),
+        )
+        go func() </span><span class="cov8" title="1">{
+                w.runLoop(ctx)
+                close(w.done)
+        }</span>()
+}
+
+// Wait 阻塞直到后台 goroutine 退出（用于测试和 graceful shutdown）
+func (w *UsageWriter) Wait() <span class="cov8" title="1">{
+        &lt;-w.done
+}</span>
+
+// QueueDepth 返回当前 channel 中待处理的用量记录数量。
+// 此值反映背压（backpressure）：接近 channel 容量时应关注写入性能。
+func (w *UsageWriter) QueueDepth() int <span class="cov8" title="1">{
+        return len(w.ch)
+}</span>
+
+// DroppedCount 返回因 channel 满而被丢弃的记录总数（累计，单调递增）。
+// 非零值表明写入速度跟不上请求速率，应增大 write_buffer_size 或加快 flush_interval。
+func (w *UsageWriter) DroppedCount() int64 <span class="cov8" title="1">{
+        return w.dropped.Load()
+}</span>
+
+// Record 非阻塞写入一条用量记录到 channel
+// 如果 channel 已满，丢弃记录并记录警告（保证代理主路不阻塞）
+func (w *UsageWriter) Record(r UsageRecord) <span class="cov8" title="1">{
+        if r.CreatedAt.IsZero() </span><span class="cov8" title="1">{
+                r.CreatedAt = time.Now()
+        }</span>
+        // 没有 token 数据的记录仍然写入（记录错误请求），无需特殊处理
+        <span class="cov8" title="1">select </span>{
+        case w.ch &lt;- r:<span class="cov8" title="1">
+                w.logger.Debug("usage record queued",
+                        zap.String("request_id", r.RequestID),
+                        zap.String("user_id", r.UserID),
+                        zap.Int("input_tokens", r.InputTokens),
+                        zap.Int("output_tokens", r.OutputTokens),
+                )</span>
+        default:<span class="cov8" title="1">
+                total := w.dropped.Add(1)
+                w.logger.Warn("usage channel full, dropping record",
+                        zap.String("request_id", r.RequestID),
+                        zap.String("user_id", r.UserID),
+                        zap.Int64("total_dropped", total),
+                        zap.Int("queue_depth", len(w.ch)),
+                        zap.Int("queue_capacity", cap(w.ch)),
+                )</span>
+        }
+}
+
+// Flush 阻塞等待当前 channel 中所有记录写入完成（graceful shutdown 用）
+func (w *UsageWriter) Flush() <span class="cov8" title="1">{
+        w.logger.Info("flushing usage records", zap.Int("pending", len(w.ch)))
+        // 排空 channel 并写入
+        var batch []UsageRecord
+        for </span><span class="cov8" title="1">{
+                select </span>{
+                case r := &lt;-w.ch:<span class="cov8" title="1">
+                        batch = append(batch, r)</span>
+                default:<span class="cov8" title="1">
+                        goto done</span>
+                }
+        }
+done:
+        <span class="cov8" title="1">if len(batch) &gt; 0 </span><span class="cov8" title="1">{
+                w.writeBatch(batch)
+        }</span>
+        <span class="cov8" title="1">w.logger.Info("usage flush completed", zap.Int("flushed", len(batch)))</span>
+}
+
+// runLoop 后台写入主循环
+func (w *UsageWriter) runLoop(ctx context.Context) <span class="cov8" title="1">{
+        ticker := time.NewTicker(w.interval)
+        defer ticker.Stop()
+
+        // 每分钟检查一次丢弃计数，若有新增则打印一次 Error 日志（便于告警接入）
+        dropTicker := time.NewTicker(time.Minute)
+        defer dropTicker.Stop()
+        var lastDropped int64
+
+        var batch []UsageRecord
+
+        flush := func() </span><span class="cov8" title="1">{
+                if len(batch) == 0 </span><span class="cov8" title="1">{
+                        return
+                }</span>
+                <span class="cov8" title="1">w.writeBatch(batch)
+                batch = batch[:0]</span> // 复用底层数组
+        }
+
+        <span class="cov8" title="1">for </span><span class="cov8" title="1">{
+                select </span>{
+                case r := &lt;-w.ch:<span class="cov8" title="1">
+                        batch = append(batch, r)
+                        // 达到批量大小立即写入
+                        if len(batch) &gt;= w.bufferSize </span><span class="cov8" title="1">{
+                                flush()
+                        }</span>
+                case &lt;-ticker.C:<span class="cov8" title="1">
+                        flush()</span>
+                case &lt;-dropTicker.C:<span class="cov0" title="0">
+                        // 每分钟统计新增丢弃量，方便 ops 团队设置告警
+                        current := w.dropped.Load()
+                        if newDrops := current - lastDropped; newDrops &gt; 0 </span><span class="cov0" title="0">{
+                                w.logger.Error("usage records dropped in last minute — increase write_buffer_size or reduce flush_interval",
+                                        zap.Int64("dropped_this_minute", newDrops),
+                                        zap.Int64("total_dropped", current),
+                                        zap.Int("queue_depth", len(w.ch)),
+                                        zap.Int("queue_capacity", cap(w.ch)),
+                                )
+                                lastDropped = current
+                        }</span>
+                case &lt;-ctx.Done():<span class="cov8" title="1">
+                        // 停止时排空剩余记录
+                        w.logger.Info("usage writer stopping, draining channel")
+                drain:
+                        for </span><span class="cov8" title="1">{
+                                select </span>{
+                                case r := &lt;-w.ch:<span class="cov8" title="1">
+                                        batch = append(batch, r)</span>
+                                default:<span class="cov8" title="1">
+                                        break drain</span>
+                                }
+                        }
+                        <span class="cov8" title="1">flush()
+                        if total := w.dropped.Load(); total &gt; 0 </span><span class="cov8" title="1">{
+                                w.logger.Error("usage writer stopped with dropped records",
+                                        zap.Int64("total_dropped", total),
+                                )
+                        }</span>
+                        <span class="cov8" title="1">w.logger.Info("usage writer stopped")
+                        return</span>
+                }
+        }
+}
+
+// writeBatch 批量写入 DB（使用 INSERT OR IGNORE 保证幂等）
+func (w *UsageWriter) writeBatch(batch []UsageRecord) <span class="cov8" title="1">{
+        ctx := context.Background()
+        _, span := otel.Tracer("pairproxy.db").Start(ctx, "pairproxy.db.write")
+        span.SetAttributes(attribute.Int("batch_size", len(batch)))
+        defer span.End()
+
+        logs := make([]UsageLog, 0, len(batch))
+        for _, r := range batch </span><span class="cov8" title="1">{
+                total := r.InputTokens + r.OutputTokens
+                var cost float64
+                if w.costFn != nil </span><span class="cov8" title="1">{
+                        cost = w.costFn(r.Model, r.InputTokens, r.OutputTokens)
+                }</span>
+                <span class="cov8" title="1">logs = append(logs, UsageLog{
+                        RequestID:    r.RequestID,
+                        UserID:       r.UserID,
+                        Model:        r.Model,
+                        InputTokens:  r.InputTokens,
+                        OutputTokens: r.OutputTokens,
+                        TotalTokens:  total,
+                        IsStreaming:  r.IsStreaming,
+                        UpstreamURL:  r.UpstreamURL,
+                        StatusCode:   r.StatusCode,
+                        DurationMs:   r.DurationMs,
+                        CostUSD:      cost,
+                        SourceNode:   r.SourceNode,
+                        CreatedAt:    r.CreatedAt,
+                })</span>
+        }
+
+        // OnConflict(DoNothing) 实现 INSERT OR IGNORE 语义
+        <span class="cov8" title="1">result := w.db.Clauses(clause.OnConflict{DoNothing: true}).CreateInBatches(logs, 100)
+        if result.Error != nil </span><span class="cov0" title="0">{
+                w.logger.Error("failed to write usage batch",
+                        zap.Int("count", len(logs)),
+                        zap.Error(result.Error),
+                )
+                return
+        }</span>
+        <span class="cov8" title="1">w.logger.Debug("usage batch written",
+                zap.Int("attempted", len(logs)),
+                zap.Int64("inserted", result.RowsAffected),
+        )</span>
+}
+
+// TotalTokens 计算总 token 数（辅助方法，放在 UsageRecord 上）
+func (r *UsageRecord) TotalTokens() int <span class="cov8" title="1">{
+        return r.InputTokens + r.OutputTokens
+}</span>
+
+// ---------------------------------------------------------------------------
+// UsageRepo 用量查询仓库
+// ---------------------------------------------------------------------------
+
+// UsageRepo 提供用量日志的查询接口
+type UsageRepo struct {
+        db     *gorm.DB
+        logger *zap.Logger
+        driver string // "sqlite" 或 "postgres"，从 DriverName(db) 获取
+}
+
+// NewUsageRepo 创建 UsageRepo
+func NewUsageRepo(db *gorm.DB, logger *zap.Logger) *UsageRepo <span class="cov8" title="1">{
+        return &amp;UsageRepo{db: db, logger: logger.Named("usage_repo"), driver: DriverName(db)}
+}</span>
+
+// dateExpr 返回将时间戳列截断到日期的 SQL 表达式。
+// SQLite: DATE(col)
+// PostgreSQL: DATE_TRUNC('day', col)::DATE
+func (r *UsageRepo) dateExpr(col string) string <span class="cov8" title="1">{
+        if r.driver == "postgres" </span><span class="cov8" title="1">{
+                return fmt.Sprintf("DATE_TRUNC('day', %s)::DATE", col)
+        }</span>
+        <span class="cov8" title="1">return fmt.Sprintf("DATE(%s)", col)</span>
+}
+
+// monthsActiveExpr 返回从某列最小值到现在经过月数的 SQL 表达式。
+// SQLite: CAST((julianday('now') - julianday(MIN(col))) / 30 AS INTEGER)
+// PostgreSQL: CAST(EXTRACT(EPOCH FROM (NOW() - MIN(col))) / (30 * 86400) AS INTEGER)
+func (r *UsageRepo) monthsActiveExpr(col string) string <span class="cov8" title="1">{
+        if r.driver == "postgres" </span><span class="cov8" title="1">{
+                return fmt.Sprintf(
+                        "CAST(EXTRACT(EPOCH FROM (NOW() - MIN(%s))) / (30 * 86400) AS INTEGER)", col)
+        }</span>
+        <span class="cov8" title="1">return fmt.Sprintf(
+                "CAST((julianday('now') - julianday(MIN(%s))) / 30 AS INTEGER)", col)</span>
+}
+
+// Query 查询用量日志（支持多条件过滤）
+func (r *UsageRepo) Query(filter UsageFilter) ([]UsageLog, error) <span class="cov8" title="1">{
+        query := r.db.Model(&amp;UsageLog{})
+
+        if filter.UserID != "" </span><span class="cov8" title="1">{
+                query = query.Where("user_id = ?", filter.UserID)
+        }</span>
+        <span class="cov8" title="1">if filter.Model != "" </span><span class="cov8" title="1">{
+                query = query.Where("model = ?", filter.Model)
+        }</span>
+        <span class="cov8" title="1">if filter.From != nil </span><span class="cov8" title="1">{
+                query = query.Where("created_at &gt;= ?", *filter.From)
+        }</span>
+        <span class="cov8" title="1">if filter.To != nil </span><span class="cov8" title="1">{
+                query = query.Where("created_at &lt;= ?", *filter.To)
+        }</span>
+
+        <span class="cov8" title="1">limit := filter.Limit
+        if limit &lt;= 0 </span><span class="cov8" title="1">{
+                limit = 50
+        }</span>
+        <span class="cov8" title="1">query = query.Order("created_at DESC").Limit(limit).Offset(filter.Offset)
+
+        var logs []UsageLog
+        if err := query.Find(&amp;logs).Error; err != nil </span><span class="cov8" title="1">{
+                r.logger.Error("failed to query usage logs", zap.Error(err))
+                return nil, fmt.Errorf("query usage logs: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">r.logger.Debug("usage logs queried",
+                zap.String("user_id", filter.UserID),
+                zap.Int("count", len(logs)),
+        )
+        return logs, nil</span>
+}
+
+// SumTokens 聚合指定用户在时间范围内的 token 总量
+func (r *UsageRepo) SumTokens(userID string, from, to time.Time) (inputSum, outputSum int64, err error) <span class="cov8" title="1">{
+        type result struct {
+                InputSum  int64
+                OutputSum int64
+        }
+        var res result
+        err = r.db.Model(&amp;UsageLog{}).
+                Select("COALESCE(SUM(input_tokens), 0) as input_sum, COALESCE(SUM(output_tokens), 0) as output_sum").
+                Where("user_id = ? AND created_at &gt;= ? AND created_at &lt;= ?", userID, from, to).
+                Scan(&amp;res).Error
+        if err != nil </span><span class="cov8" title="1">{
+                r.logger.Error("failed to sum tokens",
+                        zap.String("user_id", userID),
+                        zap.Error(err),
+                )
+                return 0, 0, fmt.Errorf("sum tokens for user %q: %w", userID, err)
+        }</span>
+        <span class="cov8" title="1">return res.InputSum, res.OutputSum, nil</span>
+}
+
+// GlobalStats 全局用量统计
+type GlobalStats struct {
+        TotalInput   int64
+        TotalOutput  int64
+        TotalTokens  int64 // = TotalInput + TotalOutput
+        RequestCount int64
+        ErrorCount   int64
+}
+
+// GlobalSumTokens 计算时间段内所有用户的汇总统计
+func (r *UsageRepo) GlobalSumTokens(from, to time.Time) (GlobalStats, error) <span class="cov8" title="1">{
+        type rawResult struct {
+                TotalInput   int64
+                TotalOutput  int64
+                RequestCount int64
+                ErrorCount   int64
+        }
+        var res rawResult
+        err := r.db.Model(&amp;UsageLog{}).
+                Select(`COALESCE(SUM(input_tokens),0) as total_input,
+                        COALESCE(SUM(output_tokens),0) as total_output,
+                        COUNT(*) as request_count,
+                        SUM(CASE WHEN status_code != 200 THEN 1 ELSE 0 END) as error_count`).
+                Where("created_at &gt;= ? AND created_at &lt;= ?", from, to).
+                Scan(&amp;res).Error
+        if err != nil </span><span class="cov8" title="1">{
+                r.logger.Error("failed to get global stats", zap.Error(err))
+                return GlobalStats{}, fmt.Errorf("global sum tokens: %w", err)
+        }</span>
+        <span class="cov8" title="1">return GlobalStats{
+                TotalInput:   res.TotalInput,
+                TotalOutput:  res.TotalOutput,
+                TotalTokens:  res.TotalInput + res.TotalOutput,
+                RequestCount: res.RequestCount,
+                ErrorCount:   res.ErrorCount,
+        }, nil</span>
+}
+
+// UserStatRow 用户统计汇总行
+type UserStatRow struct {
+        UserID       string
+        TotalInput   int64
+        TotalOutput  int64
+        RequestCount int64
+}
+
+// UserStats 按用户聚合 token 用量，按用量降序，最多 limit 条
+func (r *UsageRepo) UserStats(from, to time.Time, limit int) ([]UserStatRow, error) <span class="cov8" title="1">{
+        if limit &lt;= 0 </span><span class="cov8" title="1">{
+                limit = 50
+        }</span>
+        <span class="cov8" title="1">var rows []UserStatRow
+        err := r.db.Model(&amp;UsageLog{}).
+                Select(`user_id,
+                        COALESCE(SUM(input_tokens),0) as total_input,
+                        COALESCE(SUM(output_tokens),0) as total_output,
+                        COUNT(*) as request_count`).
+                Where("created_at &gt;= ? AND created_at &lt;= ?", from, to).
+                Group("user_id").
+                Order("(COALESCE(SUM(input_tokens),0) + COALESCE(SUM(output_tokens),0)) DESC").
+                Limit(limit).
+                Scan(&amp;rows).Error
+        if err != nil </span><span class="cov8" title="1">{
+                r.logger.Error("failed to get user stats", zap.Error(err))
+                return nil, fmt.Errorf("user stats: %w", err)
+        }</span>
+        <span class="cov8" title="1">return rows, nil</span>
+}
+
+// ExportLogs 以流式方式导出时间段内的所有用量日志，每条记录调用一次 fn 回调。
+// 使用分批查询（pageSize 条/批）避免一次性加载全部数据占用大量内存。
+// fn 返回非 nil error 时立即停止遍历并返回该 error（可用于提前中断）。
+//
+// 参数 pageSize 为 0 时使用默认值 500。
+func (r *UsageRepo) ExportLogs(from, to time.Time, fn func(UsageLog) error) error <span class="cov8" title="1">{
+        const defaultPageSize = 500
+        pageSize := defaultPageSize
+        offset := 0
+
+        r.logger.Info("export logs started",
+                zap.Time("from", from),
+                zap.Time("to", to),
+        )
+
+        total := 0
+        for </span><span class="cov8" title="1">{
+                var batch []UsageLog
+                err := r.db.Model(&amp;UsageLog{}).
+                        Where("created_at &gt;= ? AND created_at &lt;= ?", from, to).
+                        Order("created_at ASC, id ASC").
+                        Limit(pageSize).
+                        Offset(offset).
+                        Find(&amp;batch).Error
+                if err != nil </span><span class="cov8" title="1">{
+                        r.logger.Error("export logs: query failed",
+                                zap.Int("offset", offset),
+                                zap.Error(err),
+                        )
+                        return fmt.Errorf("export logs query at offset %d: %w", offset, err)
+                }</span>
+                <span class="cov8" title="1">if len(batch) == 0 </span><span class="cov8" title="1">{
+                        break</span>
+                }
+                <span class="cov8" title="1">for _, log := range batch </span><span class="cov8" title="1">{
+                        if err := fn(log); err != nil </span><span class="cov8" title="1">{
+                                r.logger.Debug("export logs: callback interrupted",
+                                        zap.Int("exported_so_far", total),
+                                        zap.Error(err),
+                                )
+                                return err
+                        }</span>
+                        <span class="cov8" title="1">total++</span>
+                }
+                <span class="cov8" title="1">r.logger.Debug("export logs: batch done",
+                        zap.Int("batch_size", len(batch)),
+                        zap.Int("total_so_far", total),
+                        zap.Int("offset", offset),
+                )
+                if len(batch) &lt; pageSize </span><span class="cov8" title="1">{
+                        break</span> // 最后一批，不足 pageSize 条
+                }
+                <span class="cov8" title="1">offset += len(batch)</span>
+        }
+
+        <span class="cov8" title="1">r.logger.Info("export logs completed", zap.Int("total", total))
+        return nil</span>
+}
+
+// SumCostUSD 计算时间段内的总估算费用（USD）
+func (r *UsageRepo) SumCostUSD(from, to time.Time) (float64, error) <span class="cov8" title="1">{        var result struct{ Total float64 }
+        err := r.db.Model(&amp;UsageLog{}).
+                Select("COALESCE(SUM(cost_usd), 0) as total").
+                Where("created_at &gt;= ? AND created_at &lt;= ?", from, to).
+                Scan(&amp;result).Error
+        if err != nil </span><span class="cov8" title="1">{
+                r.logger.Error("failed to sum cost_usd", zap.Error(err))
+                return 0, fmt.Errorf("sum cost_usd: %w", err)
+        }</span>
+        <span class="cov8" title="1">return result.Total, nil</span>
+}
+
+// DeleteBefore 删除 created_at &lt; before 的使用日志，返回删除行数。
+func (r *UsageRepo) DeleteBefore(before time.Time) (int64, error) <span class="cov8" title="1">{
+        result := r.db.Where("created_at &lt; ?", before).Delete(&amp;UsageLog{})
+        if result.Error != nil </span><span class="cov8" title="1">{
+                r.logger.Error("failed to delete old usage logs",
+                        zap.Time("before", before),
+                        zap.Error(result.Error),
+                )
+                return 0, fmt.Errorf("delete usage logs before %s: %w", before.Format("2006-01-02"), result.Error)
+        }</span>
+        <span class="cov8" title="1">r.logger.Info("old usage logs deleted",
+                zap.Time("before", before),
+                zap.Int64("rows_deleted", result.RowsAffected),
+        )
+        return result.RowsAffected, nil</span>
+}
+
+// ListUnsynced 查询未上报给 sp-1 的记录（sp-2+ 使用）
+func (r *UsageRepo) ListUnsynced(limit int) ([]UsageLog, error) <span class="cov8" title="1">{
+        if limit &lt;= 0 </span><span class="cov8" title="1">{
+                limit = 200
+        }</span>
+        <span class="cov8" title="1">var logs []UsageLog
+        if err := r.db.Where("synced = ?", false).Order("created_at ASC").Limit(limit).Find(&amp;logs).Error; err != nil </span><span class="cov8" title="1">{
+                r.logger.Error("failed to list unsynced usage logs", zap.Error(err))
+                return nil, fmt.Errorf("list unsynced: %w", err)
+        }</span>
+        <span class="cov8" title="1">r.logger.Debug("unsynced usage logs fetched", zap.Int("count", len(logs)))
+        return logs, nil</span>
+}
+
+// MarkSynced 将指定 request_id 列表标记为已上报
+func (r *UsageRepo) MarkSynced(requestIDs []string) error <span class="cov8" title="1">{
+        if len(requestIDs) == 0 </span><span class="cov8" title="1">{
+                return nil
+        }</span>
+        <span class="cov8" title="1">result := r.db.Model(&amp;UsageLog{}).
+                Where("request_id IN ?", requestIDs).
+                Update("synced", true)
+        if result.Error != nil </span><span class="cov8" title="1">{
+                r.logger.Error("failed to mark usage as synced",
+                        zap.Int("count", len(requestIDs)),
+                        zap.Error(result.Error),
+                )
+                return fmt.Errorf("mark synced: %w", result.Error)
+        }</span>
+        <span class="cov8" title="1">r.logger.Debug("usage records marked synced",
+                zap.Int("requested", len(requestIDs)),
+                zap.Int64("updated", result.RowsAffected),
+        )
+        return nil</span>
+}
+
+// DailyTokenRow 按天聚合的 token 用量
+type DailyTokenRow struct {
+        Date         string `json:"date"`          // YYYY-MM-DD
+        InputTokens  int64  `json:"input_tokens"`
+        OutputTokens int64  `json:"output_tokens"`
+        TotalTokens  int64  `json:"total_tokens"`
+        RequestCount int64  `json:"request_count"`
+}
+
+// DailyTokens 返回指定时间段内按天聚合的 token 用量（全局或指定用户）
+// userID 为空时返回全局聚合，非空时返回该用户的聚合
+func (r *UsageRepo) DailyTokens(from, to time.Time, userID string) ([]DailyTokenRow, error) <span class="cov8" title="1">{
+        dateExpr := r.dateExpr("created_at")
+        query := r.db.Model(&amp;UsageLog{}).
+                Select(fmt.Sprintf(`%s as date,
+                        COALESCE(SUM(input_tokens), 0) as input_tokens,
+                        COALESCE(SUM(output_tokens), 0) as output_tokens,
+                        COALESCE(SUM(input_tokens + output_tokens), 0) as total_tokens,
+                        COUNT(*) as request_count`, dateExpr)).
+                Where("created_at &gt;= ? AND created_at &lt;= ?", from, to)
+
+        if userID != "" </span><span class="cov8" title="1">{
+                query = query.Where("user_id = ?", userID)
+        }</span>
+
+        <span class="cov8" title="1">var rows []DailyTokenRow
+        err := query.Group(dateExpr).
+                Order("date ASC").
+                Scan(&amp;rows).Error
+
+        if err != nil </span><span class="cov8" title="1">{
+                r.logger.Error("failed to get daily tokens",
+                        zap.String("user_id", userID),
+                        zap.Error(err),
+                )
+                return nil, fmt.Errorf("daily tokens: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">r.logger.Debug("daily tokens queried",
+                zap.String("user_id", userID),
+                zap.Int("days", len(rows)),
+        )
+        return rows, nil</span>
+}
+
+// DailyCostRow 按天聚合的费用
+type DailyCostRow struct {
+        Date    string  `json:"date"`     // YYYY-MM-DD
+        CostUSD float64 `json:"cost_usd"`
+}
+
+// UserAllTimeStat 用户历史累计统计（跨所有时间段）
+type UserAllTimeStat struct {
+        UserID      string `gorm:"column:user_id"`
+        TotalInput  int64  `gorm:"column:total_input"`
+        TotalOutput int64  `gorm:"column:total_output"`
+        TotalTokens int64  `gorm:"column:total_tokens"`
+        // SQLite 聚合函数（MIN/MAX）返回文本，用 string 接收，
+        // 由 GetUserAllTimeStats 负责解析为 time.Time。
+        FirstUsedAtRaw string `gorm:"column:first_used_at"`
+        LastUsedAtRaw  string `gorm:"column:last_used_at"`
+        DaysActive     int    `gorm:"column:days_active"`   // COUNT(DISTINCT DATE(created_at))：实际有记录的天数
+        MonthsActive   int    `gorm:"column:months_active"` // (julianday(now) - julianday(first_used_at)) / 30，向下取整
+
+        // 解析后的时间字段，由 GetUserAllTimeStats 填充
+        FirstUsedAt time.Time `gorm:"-"`
+        LastUsedAt  time.Time `gorm:"-"`
+}
+
+// GetUserAllTimeStats 获取所有用户的历史累计用量统计（按 user_id 聚合全量记录）。
+// 适用于 Dashboard 用户管理页面的统计列展示。
+// 返回结果按 total_tokens DESC 排序，方便前端直接使用。
+func (r *UsageRepo) GetUserAllTimeStats() ([]UserAllTimeStat, error) <span class="cov8" title="1">{
+        var stats []UserAllTimeStat
+        err := r.db.Model(&amp;UsageLog{}).
+                Select(fmt.Sprintf(`user_id,
+                        COALESCE(SUM(input_tokens), 0)          AS total_input,
+                        COALESCE(SUM(output_tokens), 0)         AS total_output,
+                        COALESCE(SUM(input_tokens + output_tokens), 0) AS total_tokens,
+                        MIN(created_at)                         AS first_used_at,
+                        MAX(created_at)                         AS last_used_at,
+                        COUNT(DISTINCT %s)                      AS days_active,
+                        %s                                      AS months_active`,
+                        r.dateExpr("created_at"),
+                        r.monthsActiveExpr("created_at"))).
+                Group("user_id").
+                Order("total_tokens DESC").
+                Scan(&amp;stats).Error
+        if err != nil </span><span class="cov8" title="1">{
+                r.logger.Error("failed to get user all-time stats", zap.Error(err))
+                return nil, fmt.Errorf("get user all-time stats: %w", err)
+        }</span>
+
+        // 解析 SQLite 返回的时间字符串（格式可能为 RFC3339 或 "2006-01-02 15:04:05.999999999+07:00"）
+        <span class="cov8" title="1">for i := range stats </span><span class="cov8" title="1">{
+                if raw := stats[i].FirstUsedAtRaw; raw != "" </span><span class="cov8" title="1">{
+                        if t, err := parseFlexTime(raw); err == nil </span><span class="cov8" title="1">{
+                                stats[i].FirstUsedAt = t
+                        }</span> else<span class="cov0" title="0"> {
+                                r.logger.Warn("failed to parse first_used_at", zap.String("raw", raw), zap.Error(err))
+                        }</span>
+                }
+                <span class="cov8" title="1">if raw := stats[i].LastUsedAtRaw; raw != "" </span><span class="cov8" title="1">{
+                        if t, err := parseFlexTime(raw); err == nil </span><span class="cov8" title="1">{
+                                stats[i].LastUsedAt = t
+                        }</span> else<span class="cov0" title="0"> {
+                                r.logger.Warn("failed to parse last_used_at", zap.String("raw", raw), zap.Error(err))
+                        }</span>
+                }
+        }
+
+        <span class="cov8" title="1">r.logger.Debug("user all-time stats queried", zap.Int("count", len(stats)))
+        return stats, nil</span>
+}
+
+// parseFlexTime 尝试多种 SQLite 时间格式解析。
+// GORM/mattn-go-sqlite3 以 RFC3339Nano、RFC3339 或 "2006-01-02 15:04:05" 等格式存储。
+func parseFlexTime(s string) (time.Time, error) <span class="cov8" title="1">{
+        layouts := []string{
+                time.RFC3339Nano,
+                time.RFC3339,
+                "2006-01-02T15:04:05.999999999-07:00",
+                "2006-01-02 15:04:05.999999999-07:00",
+                "2006-01-02 15:04:05-07:00",
+                "2006-01-02 15:04:05.999999999",
+                "2006-01-02 15:04:05",
+                "2006-01-02",
+        }
+        for _, layout := range layouts </span><span class="cov8" title="1">{
+                if t, err := time.Parse(layout, s); err == nil </span><span class="cov8" title="1">{
+                        return t, nil
+                }</span>
+        }
+        <span class="cov8" title="1">return time.Time{}, fmt.Errorf("cannot parse time %q with any known layout", s)</span>
+}
+
+// DailyCost 返回指定时间段内按天聚合的费用（全局或指定用户）
+func (r *UsageRepo) DailyCost(from, to time.Time, userID string) ([]DailyCostRow, error) <span class="cov8" title="1">{
+        dateExpr := r.dateExpr("created_at")
+        query := r.db.Model(&amp;UsageLog{}).
+                Select(fmt.Sprintf(`%s as date,
+                        COALESCE(SUM(cost_usd), 0) as cost_usd`, dateExpr)).
+                Where("created_at &gt;= ? AND created_at &lt;= ?", from, to)
+
+        if userID != "" </span><span class="cov8" title="1">{
+                query = query.Where("user_id = ?", userID)
+        }</span>
+
+        <span class="cov8" title="1">var rows []DailyCostRow
+        err := query.Group(dateExpr).
+                Order("date ASC").
+                Scan(&amp;rows).Error
+
+        if err != nil </span><span class="cov8" title="1">{
+                r.logger.Error("failed to get daily cost",
+                        zap.String("user_id", userID),
+                        zap.Error(err),
+                )
+                return nil, fmt.Errorf("daily cost: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">r.logger.Debug("daily cost queried",
+                zap.String("user_id", userID),
+                zap.Int("days", len(rows)),
+        )
+        return rows, nil</span>
+}
+</pre>
+		
+		<pre class="file" id="file8" style="display: none">package db
+
+import (
+        "errors"
+        "fmt"
+        "time"
+
+        "github.com/google/uuid"
+        "go.uber.org/zap"
+        "gorm.io/gorm"
+)
+
+// UserRepo 用户仓库
+type UserRepo struct {
+        db     *gorm.DB
+        logger *zap.Logger
+}
+
+// NewUserRepo 创建 UserRepo
+func NewUserRepo(db *gorm.DB, logger *zap.Logger) *UserRepo <span class="cov8" title="1">{
+        return &amp;UserRepo{db: db, logger: logger.Named("user_repo")}
+}</span>
+
+// Create 创建用户（自动生成 UUID）
+func (r *UserRepo) Create(u *User) error <span class="cov8" title="1">{
+        if u.ID == "" </span><span class="cov8" title="1">{
+                u.ID = uuid.New().String()
+        }</span>
+        <span class="cov8" title="1">if u.CreatedAt.IsZero() </span><span class="cov8" title="1">{
+                u.CreatedAt = time.Now()
+        }</span>
+        <span class="cov8" title="1">if err := r.db.Create(u).Error; err != nil </span><span class="cov8" title="1">{
+                r.logger.Error("failed to create user",
+                        zap.String("username", u.Username),
+                        zap.Error(err),
+                )
+                return fmt.Errorf("create user %q: %w", u.Username, err)
+        }</span>
+        <span class="cov8" title="1">groupID := ""
+        if u.GroupID != nil </span><span class="cov8" title="1">{
+                groupID = *u.GroupID
+        }</span>
+        <span class="cov8" title="1">r.logger.Info("user created",
+                zap.String("user_id", u.ID),
+                zap.String("username", u.Username),
+                zap.String("group_id", groupID),
+        )
+        return nil</span>
+}
+
+// GetByUsername 按用户名查询（含关联 Group）
+func (r *UserRepo) GetByUsername(username string) (*User, error) <span class="cov8" title="1">{
+        var u User
+        err := r.db.Preload("Group").Where("username = ?", username).First(&amp;u).Error
+        if err != nil </span><span class="cov8" title="1">{
+                if errors.Is(err, gorm.ErrRecordNotFound) </span><span class="cov8" title="1">{
+                        r.logger.Debug("user not found", zap.String("username", username))
+                        return nil, nil
+                }</span>
+                <span class="cov8" title="1">r.logger.Error("failed to get user by username",
+                        zap.String("username", username),
+                        zap.Error(err),
+                )
+                return nil, fmt.Errorf("get user %q: %w", username, err)</span>
+        }
+        <span class="cov8" title="1">return &amp;u, nil</span>
+}
+
+// GetByID 按 ID 查询（含关联 Group）
+func (r *UserRepo) GetByID(id string) (*User, error) <span class="cov8" title="1">{
+        var u User
+        err := r.db.Preload("Group").Where("id = ?", id).First(&amp;u).Error
+        if err != nil </span><span class="cov8" title="1">{
+                if errors.Is(err, gorm.ErrRecordNotFound) </span><span class="cov8" title="1">{
+                        r.logger.Debug("user not found", zap.String("user_id", id))
+                        return nil, nil
+                }</span>
+                <span class="cov8" title="1">r.logger.Error("failed to get user by id",
+                        zap.String("user_id", id),
+                        zap.Error(err),
+                )
+                return nil, fmt.Errorf("get user by id %q: %w", id, err)</span>
+        }
+        <span class="cov8" title="1">return &amp;u, nil</span>
+}
+
+// SetActive 设置用户启用/禁用状态
+func (r *UserRepo) SetActive(id string, active bool) error <span class="cov8" title="1">{
+        result := r.db.Model(&amp;User{}).Where("id = ?", id).Update("is_active", active)
+        if result.Error != nil </span><span class="cov8" title="1">{
+                r.logger.Error("failed to set user active",
+                        zap.String("user_id", id),
+                        zap.Bool("active", active),
+                        zap.Error(result.Error),
+                )
+                return fmt.Errorf("set user %q active=%v: %w", id, active, result.Error)
+        }</span>
+        <span class="cov8" title="1">r.logger.Info("user active status updated",
+                zap.String("user_id", id),
+                zap.Bool("active", active),
+        )
+        return nil</span>
+}
+
+// UpdateLastLogin 更新最后登录时间
+func (r *UserRepo) UpdateLastLogin(id string, at time.Time) error <span class="cov8" title="1">{
+        if err := r.db.Model(&amp;User{}).Where("id = ?", id).Update("last_login_at", at).Error; err != nil </span><span class="cov8" title="1">{
+                r.logger.Warn("failed to update last_login_at",
+                        zap.String("user_id", id),
+                        zap.Error(err),
+                )
+                // 非致命错误，不影响登录流程
+                return nil
+        }</span>
+        <span class="cov8" title="1">return nil</span>
+}
+
+// UpdatePassword 更新用户密码 hash
+func (r *UserRepo) UpdatePassword(id string, hash string) error <span class="cov8" title="1">{
+        result := r.db.Model(&amp;User{}).Where("id = ?", id).Update("password_hash", hash)
+        if result.Error != nil </span><span class="cov8" title="1">{
+                r.logger.Error("failed to update password",
+                        zap.String("user_id", id),
+                        zap.Error(result.Error),
+                )
+                return fmt.Errorf("update password for user %q: %w", id, result.Error)
+        }</span>
+        <span class="cov8" title="1">r.logger.Info("user password updated", zap.String("user_id", id))
+        return nil</span>
+}
+
+// GetByExternalID 按外部系统 ID 和认证提供者查询用户（LDAP JIT 配置用）。
+// 未找到时返回 nil, nil。
+func (r *UserRepo) GetByExternalID(provider, externalID string) (*User, error) <span class="cov8" title="1">{
+        var u User
+        err := r.db.Preload("Group").
+                Where("auth_provider = ? AND external_id = ?", provider, externalID).
+                First(&amp;u).Error
+        if err != nil </span><span class="cov8" title="1">{
+                if errors.Is(err, gorm.ErrRecordNotFound) </span><span class="cov8" title="1">{
+                        r.logger.Debug("user not found by external id",
+                                zap.String("provider", provider),
+                                zap.String("external_id", externalID),
+                        )
+                        return nil, nil
+                }</span>
+                <span class="cov8" title="1">r.logger.Error("failed to get user by external id",
+                        zap.String("provider", provider),
+                        zap.String("external_id", externalID),
+                        zap.Error(err),
+                )
+                return nil, fmt.Errorf("get user by external id (%s, %s): %w", provider, externalID, err)</span>
+        }
+        <span class="cov8" title="1">return &amp;u, nil</span>
+}
+
+// SetGroup 更新用户所属分组（groupID=nil 表示从分组移除）
+func (r *UserRepo) SetGroup(userID string, groupID *string) error <span class="cov8" title="1">{
+        updates := map[string]interface{}{"group_id": groupID}
+        if err := r.db.Model(&amp;User{}).Where("id = ?", userID).Updates(updates).Error; err != nil </span><span class="cov8" title="1">{
+                r.logger.Error("failed to set user group",
+                        zap.String("user_id", userID),
+                        zap.Any("group_id", groupID),
+                        zap.Error(err),
+                )
+                return fmt.Errorf("set group for user %q: %w", userID, err)
+        }</span>
+        <span class="cov8" title="1">r.logger.Info("user group updated",
+                zap.String("user_id", userID),
+                zap.Any("group_id", groupID),
+        )
+        return nil</span>
+}
+
+// ListByGroup 按分组列出用户（groupID="" 表示列出所有用户）
+func (r *UserRepo) ListByGroup(groupID string) ([]User, error) <span class="cov8" title="1">{
+        var users []User
+        query := r.db.Preload("Group")
+        if groupID != "" </span><span class="cov8" title="1">{
+                query = query.Where("group_id = ?", groupID)
+        }</span>
+        <span class="cov8" title="1">if err := query.Find(&amp;users).Error; err != nil </span><span class="cov8" title="1">{
+                r.logger.Error("failed to list users",
+                        zap.String("group_id", groupID),
+                        zap.Error(err),
+                )
+                return nil, fmt.Errorf("list users: %w", err)
+        }</span>
+        <span class="cov8" title="1">r.logger.Debug("users listed",
+                zap.String("group_id", groupID),
+                zap.Int("count", len(users)),
+        )
+        return users, nil</span>
+}
+
+// ---------------------------------------------------------------------------
+// GroupRepo 分组仓库
+// ---------------------------------------------------------------------------
+
+// GroupRepo 分组仓库
+type GroupRepo struct {
+        db     *gorm.DB
+        logger *zap.Logger
+}
+
+// NewGroupRepo 创建 GroupRepo
+func NewGroupRepo(db *gorm.DB, logger *zap.Logger) *GroupRepo <span class="cov8" title="1">{
+        return &amp;GroupRepo{db: db, logger: logger.Named("group_repo")}
+}</span>
+
+// Create 创建分组
+func (r *GroupRepo) Create(g *Group) error <span class="cov8" title="1">{
+        if g.ID == "" </span><span class="cov8" title="1">{
+                g.ID = uuid.New().String()
+        }</span>
+        <span class="cov8" title="1">if g.CreatedAt.IsZero() </span><span class="cov8" title="1">{
+                g.CreatedAt = time.Now()
+        }</span>
+        <span class="cov8" title="1">if err := r.db.Create(g).Error; err != nil </span><span class="cov8" title="1">{
+                r.logger.Error("failed to create group",
+                        zap.String("name", g.Name),
+                        zap.Error(err),
+                )
+                return fmt.Errorf("create group %q: %w", g.Name, err)
+        }</span>
+        <span class="cov8" title="1">r.logger.Info("group created",
+                zap.String("group_id", g.ID),
+                zap.String("name", g.Name),
+        )
+        return nil</span>
+}
+
+// GetByID 按 ID 查询分组
+func (r *GroupRepo) GetByID(id string) (*Group, error) <span class="cov8" title="1">{
+        var g Group
+        err := r.db.Where("id = ?", id).First(&amp;g).Error
+        if err != nil </span><span class="cov8" title="1">{
+                if errors.Is(err, gorm.ErrRecordNotFound) </span><span class="cov8" title="1">{
+                        return nil, nil
+                }</span>
+                <span class="cov8" title="1">return nil, fmt.Errorf("get group by id %q: %w", id, err)</span>
+        }
+        <span class="cov8" title="1">return &amp;g, nil</span>
+}
+
+// GetByName 按名称查询分组
+func (r *GroupRepo) GetByName(name string) (*Group, error) <span class="cov8" title="1">{
+        var g Group
+        err := r.db.Where("name = ?", name).First(&amp;g).Error
+        if err != nil </span><span class="cov8" title="1">{
+                if errors.Is(err, gorm.ErrRecordNotFound) </span><span class="cov8" title="1">{
+                        return nil, nil
+                }</span>
+                <span class="cov8" title="1">return nil, fmt.Errorf("get group by name %q: %w", name, err)</span>
+        }
+        <span class="cov8" title="1">return &amp;g, nil</span>
+}
+
+// SetQuota 设置分组配额（nil 表示无限制）
+func (r *GroupRepo) SetQuota(id string, daily, monthly *int64, rpm *int, maxReqTokens *int64, concurrent *int) error <span class="cov8" title="1">{
+        updates := map[string]interface{}{
+                "daily_token_limit":     daily,
+                "monthly_token_limit":   monthly,
+                "requests_per_minute":   rpm,
+                "max_tokens_per_request": maxReqTokens,
+                "concurrent_requests":   concurrent,
+        }
+        if err := r.db.Model(&amp;Group{}).Where("id = ?", id).Updates(updates).Error; err != nil </span><span class="cov8" title="1">{
+                r.logger.Error("failed to set group quota",
+                        zap.String("group_id", id),
+                        zap.Error(err),
+                )
+                return fmt.Errorf("set quota for group %q: %w", id, err)
+        }</span>
+        <span class="cov8" title="1">r.logger.Info("group quota updated",
+                zap.String("group_id", id),
+                zap.Any("daily_limit", daily),
+                zap.Any("monthly_limit", monthly),
+                zap.Any("rpm", rpm),
+                zap.Any("max_tokens_per_request", maxReqTokens),
+                zap.Any("concurrent_requests", concurrent),
+        )
+        return nil</span>
+}
+
+// Delete 删除分组（若分组内仍有用户则拒绝，除非 force=true）
+func (r *GroupRepo) Delete(id string, force bool) error <span class="cov8" title="1">{
+        if !force </span><span class="cov8" title="1">{
+                var count int64
+                if err := r.db.Model(&amp;User{}).Where("group_id = ?", id).Count(&amp;count).Error; err != nil </span><span class="cov8" title="1">{
+                        return fmt.Errorf("check group members: %w", err)
+                }</span>
+                <span class="cov8" title="1">if count &gt; 0 </span><span class="cov8" title="1">{
+                        return fmt.Errorf("group has %d user(s); use --force to delete anyway (users will become ungrouped)", count)
+                }</span>
+        }
+        // 若 force，先将组内用户的 group_id 清空
+        <span class="cov8" title="1">if force </span><span class="cov8" title="1">{
+                if err := r.db.Model(&amp;User{}).Where("group_id = ?", id).Update("group_id", nil).Error; err != nil </span><span class="cov0" title="0">{
+                        return fmt.Errorf("unassign users from group: %w", err)
+                }</span>
+        }
+        <span class="cov8" title="1">if err := r.db.Delete(&amp;Group{}, "id = ?", id).Error; err != nil </span><span class="cov0" title="0">{
+                r.logger.Error("failed to delete group", zap.String("group_id", id), zap.Error(err))
+                return fmt.Errorf("delete group %q: %w", id, err)
+        }</span>
+        <span class="cov8" title="1">r.logger.Info("group deleted", zap.String("group_id", id), zap.Bool("force", force))
+        return nil</span>
+}
+
+// GetActiveUsers 获取最近 N 天有活动的用户列表（按最后活动时间倒序）
+func (r *UserRepo) GetActiveUsers(days int) ([]User, error) <span class="cov8" title="1">{
+        cutoff := time.Now().AddDate(0, 0, -days)
+        var users []User
+
+        // 从 usage_logs 表查询有活动的用户，按最后活动时间倒序
+        err := r.db.Preload("Group").
+                Joins("INNER JOIN (SELECT DISTINCT user_id, MAX(created_at) as last_active FROM usage_logs WHERE created_at &gt;= ? GROUP BY user_id) ul ON users.id = ul.user_id", cutoff).
+                Order("ul.last_active DESC").
+                Find(&amp;users).Error
+
+        if err != nil </span><span class="cov8" title="1">{
+                r.logger.Error("failed to get active users",
+                        zap.Int("days", days),
+                        zap.Error(err),
+                )
+                return nil, fmt.Errorf("get active users (days=%d): %w", days, err)
+        }</span>
+
+        <span class="cov8" title="1">r.logger.Debug("active users retrieved",
+                zap.Int("days", days),
+                zap.Int("count", len(users)),
+        )
+        return users, nil</span>
+}
+
+// ListActive 返回所有 is_active=true 的用户列表，用于 API Key 验证遍历。
+func (r *UserRepo) ListActive() ([]User, error) <span class="cov8" title="1">{
+        var users []User
+        if err := r.db.Where("is_active = ?", true).Find(&amp;users).Error; err != nil </span><span class="cov8" title="1">{
+                r.logger.Error("failed to list active users", zap.Error(err))
+                return nil, fmt.Errorf("list active users: %w", err)
+        }</span>
+        <span class="cov8" title="1">r.logger.Debug("listed active users", zap.Int("count", len(users)))
+        return users, nil</span>
+}
+
+// ListAll 返回所有用户（含关联 Group），用于配置快照生成。
+func (r *UserRepo) ListAll() ([]User, error) <span class="cov8" title="1">{
+        return r.ListByGroup("")
+}</span>
+
+// List 列出所有分组
+func (r *GroupRepo) List() ([]Group, error) <span class="cov8" title="1">{
+        var groups []Group
+        if err := r.db.Find(&amp;groups).Error; err != nil </span><span class="cov8" title="1">{
+                return nil, fmt.Errorf("list groups: %w", err)
+        }</span>
+        <span class="cov8" title="1">return groups, nil</span>
+}
+</pre>
+		
+		</div>
+	</body>
+	<script>
+	(function() {
+		var files = document.getElementById('files');
+		var visible;
+		files.addEventListener('change', onChange, false);
+		function select(part) {
+			if (visible)
+				visible.style.display = 'none';
+			visible = document.getElementById(part);
+			if (!visible)
+				return;
+			files.value = part;
+			visible.style.display = 'block';
+			location.hash = part;
+		}
+		function onChange() {
+			select(files.value);
+			window.scrollTo(0, 0);
+		}
+		if (location.hash != "") {
+			select(location.hash.substr(1));
+		}
+		if (!visible) {
+			select("file0");
+		}
+	})();
+	</script>
+</html>

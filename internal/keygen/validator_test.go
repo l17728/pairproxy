@@ -1,6 +1,7 @@
 package keygen_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -13,7 +14,7 @@ import (
 // ---- IsValidFormat ----
 
 func TestIsValidFormat_Valid(t *testing.T) {
-	key, err := keygen.GenerateKey("alice")
+	key, err := keygen.GenerateKey("alice", testSecret)
 	require.NoError(t, err)
 	assert.True(t, keygen.IsValidFormat(key))
 }
@@ -34,130 +35,173 @@ func TestIsValidFormat_InvalidChars(t *testing.T) {
 	assert.False(t, keygen.IsValidFormat("sk-pp-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-aa"))
 }
 
-// ---- ValidateAndGetUser ----
+func TestIsValidFormat_EmptyString(t *testing.T) {
+	assert.False(t, keygen.IsValidFormat(""))
+}
 
-func TestValidateAndGetUser_Match(t *testing.T) {
-	key, err := keygen.GenerateKey("alice")
+func TestIsValidFormat_PrefixOnly(t *testing.T) {
+	assert.False(t, keygen.IsValidFormat("sk-pp-"))
+}
+
+// ---- ValidateAndGetUser (HMAC) ----
+
+func TestValidateAndGetUser_CorrectKey(t *testing.T) {
+	key, err := keygen.GenerateKey("alice", testSecret)
 	require.NoError(t, err)
 
 	users := []keygen.UserEntry{{ID: "u1", Username: "alice", IsActive: true}}
-	u, err := keygen.ValidateAndGetUser(key, users)
+	u, err := keygen.ValidateAndGetUser(key, users, testSecret)
 	require.NoError(t, err)
 	require.NotNil(t, u)
 	assert.Equal(t, "alice", u.Username)
+	assert.Equal(t, "u1", u.ID)
 }
 
-func TestValidateAndGetUser_NoMatch(t *testing.T) {
-	// 格式不合法的 key → 直接返回 (nil, nil)
+func TestValidateAndGetUser_WrongKey(t *testing.T) {
+	// bob 的 key 不应匹配 alice
+	key, err := keygen.GenerateKey("bob", testSecret)
+	require.NoError(t, err)
+
 	users := []keygen.UserEntry{{ID: "u1", Username: "alice", IsActive: true}}
-	u, err := keygen.ValidateAndGetUser("invalid-key", users)
+	u, err := keygen.ValidateAndGetUser(key, users, testSecret)
 	assert.NoError(t, err)
-	assert.Nil(t, u, "invalid format key should not match any user")
+	assert.Nil(t, u, "bob's key should not match alice")
 }
 
-func TestValidateAndGetUser_ValidFormatNoMatch(t *testing.T) {
-	// 生成 alice 的合法格式 key
-	key, err := keygen.GenerateKey("alice")
+func TestValidateAndGetUser_WrongSecret(t *testing.T) {
+	// 用 secret1 生成的 key，用 secret2 验证应失败
+	secret2 := []byte("different-secret-key-must-be-at-least-32-bytes!!")
+	key, err := keygen.GenerateKey("alice", testSecret)
 	require.NoError(t, err)
 
-	// 用户列表中只有 20 个 q 的用户名，其字母数字字符不可能出现在 alice 的 key 中
-	users := []keygen.UserEntry{
-		{ID: "u1", Username: "qqqqqqqqqqqqqqqqqqqq", IsActive: true}, // 20 q's — no overlap with alice's chars
-	}
-	u, err := keygen.ValidateAndGetUser(key, users)
+	users := []keygen.UserEntry{{ID: "u1", Username: "alice", IsActive: true}}
+	u, err := keygen.ValidateAndGetUser(key, users, secret2)
 	assert.NoError(t, err)
-	assert.Nil(t, u) // valid format, no match in fingerprint-matching loop
+	assert.Nil(t, u, "key generated with different secret must not match")
 }
 
-func TestValidateAndGetUser_InactiveSkipped(t *testing.T) {
-	key, err := keygen.GenerateKey("alice")
+func TestValidateAndGetUser_InvalidFormat(t *testing.T) {
+	users := []keygen.UserEntry{{ID: "u1", Username: "alice", IsActive: true}}
+	u, err := keygen.ValidateAndGetUser("invalid-key", users, testSecret)
+	assert.NoError(t, err)
+	assert.Nil(t, u, "invalid format key should fast-reject")
+}
+
+func TestValidateAndGetUser_InactiveUser(t *testing.T) {
+	key, err := keygen.GenerateKey("alice", testSecret)
 	require.NoError(t, err)
+
 	users := []keygen.UserEntry{
 		{ID: "u1", Username: "alice", IsActive: false},
 	}
-	u, err := keygen.ValidateAndGetUser(key, users)
+	u, err := keygen.ValidateAndGetUser(key, users, testSecret)
 	require.NoError(t, err)
 	assert.Nil(t, u, "inactive user must not be returned")
 }
 
-func TestValidateAndGetUser_LongestMatchWins(t *testing.T) {
-	key, err := keygen.GenerateKey("alice")
+func TestValidateAndGetUser_MultipleUsers_FindsCorrect(t *testing.T) {
+	key, err := keygen.GenerateKey("charlie", testSecret)
 	require.NoError(t, err)
+
 	users := []keygen.UserEntry{
 		{ID: "u1", Username: "alice", IsActive: true},
-		{ID: "u2", Username: "ali", IsActive: true},
+		{ID: "u2", Username: "bob", IsActive: true},
+		{ID: "u3", Username: "charlie", IsActive: true},
+		{ID: "u4", Username: "dave", IsActive: true},
 	}
-	u, err := keygen.ValidateAndGetUser(key, users)
+	u, err := keygen.ValidateAndGetUser(key, users, testSecret)
 	require.NoError(t, err)
 	require.NotNil(t, u)
-	assert.Equal(t, "alice", u.Username, "longest match must win")
+	assert.Equal(t, "charlie", u.Username)
+	assert.Equal(t, "u3", u.ID)
 }
 
-func TestValidateAndGetUser_RepeatedChars(t *testing.T) {
-	key, err := keygen.GenerateKey("aaab")
-	require.NoError(t, err)
-	users := []keygen.UserEntry{
-		{ID: "u1", Username: "aaab", IsActive: true},
+func TestValidateAndGetUser_100Users(t *testing.T) {
+	// 在 100 个用户中找到正确的用户
+	users := make([]keygen.UserEntry, 100)
+	for i := 0; i < 100; i++ {
+		users[i] = keygen.UserEntry{
+			ID:       fmt.Sprintf("u%d", i),
+			Username: fmt.Sprintf("user_%03d", i),
+			IsActive: true,
+		}
 	}
-	u, err := keygen.ValidateAndGetUser(key, users)
+
+	// 验证第 50 个用户的 key
+	key, err := keygen.GenerateKey("user_050", testSecret)
+	require.NoError(t, err)
+
+	u, err := keygen.ValidateAndGetUser(key, users, testSecret)
 	require.NoError(t, err)
 	require.NotNil(t, u)
-	assert.Equal(t, "aaab", u.Username)
+	assert.Equal(t, "user_050", u.Username)
 }
 
-func TestValidateAndGetUser_Collision(t *testing.T) {
-	// "abcd" 和 "dcba" 的字母数字字符集完全相同（各 1 个 a/b/c/d）
-	// 任何包含这 4 个字符的 key 都会同时匹配这两个用户名 → collision
-	// 构造一个明确包含 a, b, c, d 的 key
-	key := "sk-pp-abcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcd" // 6+48=54 chars, body all lowercase abcd×12
+func TestValidateAndGetUser_NoCollision_SameCharSet(t *testing.T) {
+	// 旧算法碰撞场景：alice123 和 321ecila 有相同字符集
+	// HMAC 算法下两者 key 不同，不会碰撞
 	users := []keygen.UserEntry{
-		{ID: "u1", Username: "abcd", IsActive: true},
-		{ID: "u2", Username: "dcba", IsActive: true},
+		{ID: "u1", Username: "alice123", IsActive: true},
+		{ID: "u2", Username: "321ecila", IsActive: true},
 	}
-	u, err := keygen.ValidateAndGetUser(key, users)
-	assert.Error(t, err, "same fingerprint length should return collision error")
-	assert.Contains(t, err.Error(), "collision")
+
+	key1, err := keygen.GenerateKey("alice123", testSecret)
+	require.NoError(t, err)
+	key2, err := keygen.GenerateKey("321ecila", testSecret)
+	require.NoError(t, err)
+	assert.NotEqual(t, key1, key2, "HMAC keys must differ for different usernames")
+
+	// key1 只匹配 alice123
+	u, err := keygen.ValidateAndGetUser(key1, users, testSecret)
+	require.NoError(t, err)
+	require.NotNil(t, u)
+	assert.Equal(t, "alice123", u.Username)
+
+	// key2 只匹配 321ecila
+	u, err = keygen.ValidateAndGetUser(key2, users, testSecret)
+	require.NoError(t, err)
+	require.NotNil(t, u)
+	assert.Equal(t, "321ecila", u.Username)
+}
+
+func TestValidateAndGetUser_EmptyUserList(t *testing.T) {
+	key, err := keygen.GenerateKey("alice", testSecret)
+	require.NoError(t, err)
+
+	u, err := keygen.ValidateAndGetUser(key, nil, testSecret)
+	assert.NoError(t, err)
+	assert.Nil(t, u)
+
+	u, err = keygen.ValidateAndGetUser(key, []keygen.UserEntry{}, testSecret)
+	assert.NoError(t, err)
 	assert.Nil(t, u)
 }
 
-// ---- ValidateUsername ----
+func TestValidateAndGetUser_GroupIDPreserved(t *testing.T) {
+	key, err := keygen.GenerateKey("alice", testSecret)
+	require.NoError(t, err)
 
-func TestValidateUsername_Valid(t *testing.T) {
-	assert.NoError(t, keygen.ValidateUsername("alice"))
-	assert.NoError(t, keygen.ValidateUsername("user123"))
-	assert.NoError(t, keygen.ValidateUsername("ab12"))
-}
-
-func TestValidateUsername_TooShort(t *testing.T) {
-	assert.Error(t, keygen.ValidateUsername("ab"))
-	assert.Error(t, keygen.ValidateUsername("abc"))
-}
-
-func TestValidateUsername_TooFewUniqueChars(t *testing.T) {
-	assert.Error(t, keygen.ValidateUsername("aaaa"))
-	assert.Error(t, keygen.ValidateUsername("1111"))
-	assert.Error(t, keygen.ValidateUsername("----"))
-}
-
-func TestValidateUsername_Valid_TwoUniqueChars(t *testing.T) {
-	assert.NoError(t, keygen.ValidateUsername("aabb"))
-}
-
-// ---- ContainsAllCharsWithCount ----
-
-func TestContainsAllCharsWithCount(t *testing.T) {
-	cases := []struct {
-		body   string
-		chars  []byte
-		expect bool
-	}{
-		{"alicexyz", []byte("alice"), true},
-		{"abcd", []byte("alice"), false},
-		{"aaabcd", []byte("aaab"), true},
-		{"aabcd", []byte("aaab"), false},
+	gid := "group1"
+	users := []keygen.UserEntry{
+		{ID: "u1", Username: "alice", IsActive: true, GroupID: &gid},
 	}
-	for _, tc := range cases {
-		result := keygen.ContainsAllCharsWithCount(tc.body, tc.chars)
-		assert.Equal(t, tc.expect, result, "body=%q chars=%q", tc.body, tc.chars)
+	u, err := keygen.ValidateAndGetUser(key, users, testSecret)
+	require.NoError(t, err)
+	require.NotNil(t, u)
+	require.NotNil(t, u.GroupID)
+	assert.Equal(t, "group1", *u.GroupID)
+}
+
+func TestValidateAndGetUser_Deterministic(t *testing.T) {
+	// 多次验证同一 key 应返回相同结果
+	key, err := keygen.GenerateKey("alice", testSecret)
+	require.NoError(t, err)
+
+	users := []keygen.UserEntry{{ID: "u1", Username: "alice", IsActive: true}}
+	for i := 0; i < 10; i++ {
+		u, err := keygen.ValidateAndGetUser(key, users, testSecret)
+		require.NoError(t, err)
+		require.NotNil(t, u, "iteration %d", i)
+		assert.Equal(t, "alice", u.Username, "iteration %d", i)
 	}
 }

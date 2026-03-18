@@ -2,14 +2,15 @@ package keygen_test
 
 // keygen_coverage_test.go — 补充覆盖以下函数的缺失分支：
 //   - NewKeyCache: size=0/负数 → 错误（lru.New 拒绝）
-//   - GenerateKey: 用户名全为特殊字符 → 错误
-//   - GenerateKey: 用户名超过 KeyBodyLen → 截断
-//   - randomPositions: count >= max → 返回所有下标
+//   - GenerateKey: 空用户名 → 错误
+//   - GenerateKey: secret 太短 → 错误
+//   - GenerateKey: 超长用户名 → 正常（HMAC 无长度限制）
 //   - ValidateAndGetUser: 无活跃用户 → nil, nil
-//   - ValidateAndGetUser: 多用户碰撞（相同指纹长度）→ collision error
 //   - ValidateAndGetUser: 不活跃用户被跳过
 //   - ValidateAndGetUser: 格式无效 → nil, nil（前缀不对/长度不对）
-//   - ContainsAllCharsWithCount: 大写字符转换、不足字符数 → false
+//   - ValidateAndGetUser: 正确 secret 匹配 / 错误 secret 不匹配
+//   - IsValidFormat: 各种格式检查
+//   - KeyCache: TTL 过期、重新写入
 
 import (
 	"strings"
@@ -50,24 +51,34 @@ func TestCoverage_NewKeyCache_ZeroTTL(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// GenerateKey — 用户名仅含特殊字符 → 错误
+// GenerateKey — 空用户名 → 错误
 // ---------------------------------------------------------------------------
 
-func TestCoverage_GenerateKey_NoAlphanumericChars(t *testing.T) {
-	_, err := keygen.GenerateKey("---!!!")
+func TestCoverage_GenerateKey_EmptyUsername(t *testing.T) {
+	_, err := keygen.GenerateKey("", testSecret)
 	if err == nil {
-		t.Error("expected error for username with no alphanumeric chars")
+		t.Error("expected error for empty username")
 	}
 }
 
 // ---------------------------------------------------------------------------
-// GenerateKey — 用户名超长（超过 KeyBodyLen 字符）→ 截断后仍成功
+// GenerateKey — secret 太短 → 错误
+// ---------------------------------------------------------------------------
+
+func TestCoverage_GenerateKey_ShortSecret(t *testing.T) {
+	_, err := keygen.GenerateKey("alice", []byte("short"))
+	if err == nil {
+		t.Error("expected error for short secret")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GenerateKey — 超长用户名 → 正常（HMAC 无长度限制）
 // ---------------------------------------------------------------------------
 
 func TestCoverage_GenerateKey_LongUsername(t *testing.T) {
-	// 生成超过 48 个字母数字字符的用户名
 	longName := strings.Repeat("a", keygen.KeyBodyLen+10)
-	key, err := keygen.GenerateKey(longName)
+	key, err := keygen.GenerateKey(longName, testSecret)
 	if err != nil {
 		t.Fatalf("unexpected error for long username: %v", err)
 	}
@@ -77,40 +88,37 @@ func TestCoverage_GenerateKey_LongUsername(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// GenerateKey — 随机性覆盖（randomChar 和 randomPositions 被隐式调用）
+// GenerateKey — 确定性验证（多次生成相同 key）
 // ---------------------------------------------------------------------------
 
-func TestCoverage_GenerateKey_RandomnessVerification(t *testing.T) {
-	// 生成大量 key，验证每个 key 都是唯一的（充分利用随机函数）
-	seen := make(map[string]bool)
+func TestCoverage_GenerateKey_DeterministicVerification(t *testing.T) {
+	key1, err := keygen.GenerateKey("testuser123", testSecret)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	for i := 0; i < 50; i++ {
-		key, err := keygen.GenerateKey("testuser123")
+		key, err := keygen.GenerateKey("testuser123", testSecret)
 		if err != nil {
 			t.Fatalf("iter %d: unexpected error: %v", i, err)
 		}
-		seen[key] = true
-	}
-	if len(seen) < 40 {
-		t.Errorf("expected high uniqueness across 50 generations, got %d unique keys", len(seen))
+		if key != key1 {
+			t.Errorf("iter %d: key mismatch (HMAC should be deterministic)", i)
+		}
 	}
 }
 
 // ---------------------------------------------------------------------------
-// randomPositions — count >= max（通过超长用户名间接触发）
+// GenerateKey — 特殊字符用户名（HMAC 接受任意字符串）
 // ---------------------------------------------------------------------------
 
-func TestCoverage_GenerateKey_FingerprintFillsBody(t *testing.T) {
-	// 用户名恰好 48 个字母数字字符，count == max
-	name := strings.Repeat("ab", keygen.KeyBodyLen/2) // 48 chars
-	key, err := keygen.GenerateKey(name)
+func TestCoverage_GenerateKey_SpecialCharsUsername(t *testing.T) {
+	// 旧算法对纯特殊字符用户名报错，HMAC 算法接受任意非空字符串
+	key, err := keygen.GenerateKey("---!!!", testSecret)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("HMAC should accept any non-empty username, got error: %v", err)
 	}
-	// key 应该包含用户名的所有字符
-	body := strings.ToLower(key[len(keygen.KeyPrefix):])
-	chars := keygen.ExtractAlphanumeric(name)
-	if !keygen.ContainsAllCharsWithCount(body, chars) {
-		t.Error("key body should contain all username chars when count == max")
+	if len(key) != keygen.KeyTotalLen {
+		t.Errorf("key length = %d, want %d", len(key), keygen.KeyTotalLen)
 	}
 }
 
@@ -122,7 +130,7 @@ func TestCoverage_ValidateAndGetUser_InvalidPrefix(t *testing.T) {
 	users := []keygen.UserEntry{
 		{ID: "u1", Username: "alice", IsActive: true},
 	}
-	got, err := keygen.ValidateAndGetUser("sk-openai-abc123", users)
+	got, err := keygen.ValidateAndGetUser("sk-openai-abc123", users, testSecret)
 	if err != nil {
 		t.Errorf("expected nil error for invalid format, got %v", err)
 	}
@@ -139,9 +147,8 @@ func TestCoverage_ValidateAndGetUser_WrongLength(t *testing.T) {
 	users := []keygen.UserEntry{
 		{ID: "u1", Username: "alice", IsActive: true},
 	}
-	// 前缀正确但主体长度不对
 	shortKey := keygen.KeyPrefix + "short"
-	got, err := keygen.ValidateAndGetUser(shortKey, users)
+	got, err := keygen.ValidateAndGetUser(shortKey, users, testSecret)
 	if err != nil {
 		t.Errorf("expected nil error for wrong length, got %v", err)
 	}
@@ -155,11 +162,11 @@ func TestCoverage_ValidateAndGetUser_WrongLength(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCoverage_ValidateAndGetUser_EmptyUsers(t *testing.T) {
-	key, err := keygen.GenerateKey("alice")
+	key, err := keygen.GenerateKey("alice", testSecret)
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
-	got, err := keygen.ValidateAndGetUser(key, nil)
+	got, err := keygen.ValidateAndGetUser(key, nil, testSecret)
 	if err != nil {
 		t.Errorf("expected nil error for empty users, got %v", err)
 	}
@@ -173,14 +180,14 @@ func TestCoverage_ValidateAndGetUser_EmptyUsers(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCoverage_ValidateAndGetUser_InactiveUserSkipped(t *testing.T) {
-	key, err := keygen.GenerateKey("alice")
+	key, err := keygen.GenerateKey("alice", testSecret)
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
 	users := []keygen.UserEntry{
 		{ID: "u1", Username: "alice", IsActive: false}, // 不活跃
 	}
-	got, validErr := keygen.ValidateAndGetUser(key, users)
+	got, validErr := keygen.ValidateAndGetUser(key, users, testSecret)
 	if validErr != nil {
 		t.Errorf("expected nil error, got %v", validErr)
 	}
@@ -190,92 +197,65 @@ func TestCoverage_ValidateAndGetUser_InactiveUserSkipped(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// ValidateAndGetUser — 碰撞检测（两个相同指纹长度的用户匹配同一 key）
+// ValidateAndGetUser — 错误 secret 不匹配
 // ---------------------------------------------------------------------------
 
-func TestCoverage_ValidateAndGetUser_Collision(t *testing.T) {
-	key, err := keygen.GenerateKey("alice")
+func TestCoverage_ValidateAndGetUser_WrongSecret(t *testing.T) {
+	key, err := keygen.GenerateKey("alice", testSecret)
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
-	body := strings.ToLower(key[len(keygen.KeyPrefix):])
-
-	// 构造两个用户，使他们的 ExtractAlphanumeric 字符都在 key body 中
-	// 用非常短的用户名（单字母），使两个用户的指纹长度相同
-	// 找一个在 body 中存在的字母
-	var matchChar byte
-	for _, c := range body {
-		if c >= 'a' && c <= 'z' {
-			matchChar = byte(c)
-			break
-		}
-	}
-	if matchChar == 0 {
-		t.Skip("no lowercase letter found in key body, skip collision test")
-	}
-
-	user1Name := string([]byte{matchChar, matchChar, matchChar, matchChar}) // 4-char same-char
-	user2Name := string([]byte{matchChar, matchChar, matchChar, matchChar}) // identical fingerprint
-
-	// 这两个用户的 ExtractAlphanumeric 相同（相同字符序列），会产生碰撞
-	// 注意：只有当两个 UserEntry 有不同 ID 但相同指纹长度时才算碰撞
+	wrongSecret := []byte("wrong-secret-key-must-be-at-least-32-bytes-long!!")
 	users := []keygen.UserEntry{
-		{ID: "u1", Username: user1Name, IsActive: true},
-		{ID: "u2", Username: user2Name + "x", IsActive: true}, // 稍微不同以产生相同长度
+		{ID: "u1", Username: "alice", IsActive: true},
 	}
-
-	// 不同用户名但相同 alphanumeric 字符数量的碰撞依赖于 key 包含两者的 fingerprint
-	// 这是可能发生的，但不容易在单次测试中强制触发
-	// 我们主要验证函数不 panic 即可
-	got, _ := keygen.ValidateAndGetUser(key, users)
-	_ = got // 可能是 nil、一个用户、或碰撞 error
-}
-
-// ---------------------------------------------------------------------------
-// ContainsAllCharsWithCount — 大写字符被正确转换
-// ---------------------------------------------------------------------------
-
-func TestCoverage_ContainsAllCharsWithCount_UppercaseConversion(t *testing.T) {
-	// s 含大写字母，chars 含对应小写字母
-	s := "ABCDEF"
-	chars := []byte("abcdef")
-	if !keygen.ContainsAllCharsWithCount(s, chars) {
-		t.Error("uppercase chars in s should be converted to lowercase for comparison")
+	got, err := keygen.ValidateAndGetUser(key, users, wrongSecret)
+	if err != nil {
+		t.Errorf("expected nil error, got %v", err)
+	}
+	if got != nil {
+		t.Errorf("expected nil user with wrong secret, got %v", got)
 	}
 }
 
 // ---------------------------------------------------------------------------
-// ContainsAllCharsWithCount — 字符数量不足 → false
+// ValidateAndGetUser — HMAC 无碰撞（旧算法碰撞场景）
 // ---------------------------------------------------------------------------
 
-func TestCoverage_ContainsAllCharsWithCount_InsufficientCount(t *testing.T) {
-	// s 只有 1 个 'a'，但 chars 需要 3 个 'a'
-	s := "abcdef"
-	chars := []byte("aaabbb")
-	if keygen.ContainsAllCharsWithCount(s, chars) {
-		t.Error("should return false when char count in s is less than required")
+func TestCoverage_ValidateAndGetUser_NoCollision(t *testing.T) {
+	// 旧算法碰撞场景：abcd 和 dcba 有相同字符集
+	// HMAC 算法下两者 key 不同，各自只匹配自己
+	users := []keygen.UserEntry{
+		{ID: "u1", Username: "abcd", IsActive: true},
+		{ID: "u2", Username: "dcba", IsActive: true},
 	}
-}
 
-// ---------------------------------------------------------------------------
-// ContainsAllCharsWithCount — 完全匹配
-// ---------------------------------------------------------------------------
-
-func TestCoverage_ContainsAllCharsWithCount_ExactMatch(t *testing.T) {
-	s := "aaabbb"
-	chars := []byte("aaabbb")
-	if !keygen.ContainsAllCharsWithCount(s, chars) {
-		t.Error("should return true when s contains exactly the required chars")
+	key1, err := keygen.GenerateKey("abcd", testSecret)
+	if err != nil {
+		t.Fatalf("GenerateKey abcd: %v", err)
 	}
-}
+	key2, err := keygen.GenerateKey("dcba", testSecret)
+	if err != nil {
+		t.Fatalf("GenerateKey dcba: %v", err)
+	}
+	if key1 == key2 {
+		t.Fatal("HMAC keys for different usernames must differ")
+	}
 
-// ---------------------------------------------------------------------------
-// ContainsAllCharsWithCount — 空 chars → true
-// ---------------------------------------------------------------------------
+	got1, err := keygen.ValidateAndGetUser(key1, users, testSecret)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if got1 == nil || got1.Username != "abcd" {
+		t.Errorf("key1 should match abcd, got %v", got1)
+	}
 
-func TestCoverage_ContainsAllCharsWithCount_EmptyChars(t *testing.T) {
-	if !keygen.ContainsAllCharsWithCount("anything", []byte{}) {
-		t.Error("empty chars should always return true")
+	got2, err := keygen.ValidateAndGetUser(key2, users, testSecret)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if got2 == nil || got2.Username != "dcba" {
+		t.Errorf("key2 should match dcba, got %v", got2)
 	}
 }
 

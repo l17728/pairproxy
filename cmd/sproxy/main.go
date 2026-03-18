@@ -775,7 +775,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 	// 构建用户查询适配器和直连处理器（在此预构建 handler）
 	dbUserLister := proxy.NewDBUserLister(userRepo)
-	directHandler := proxy.NewDirectProxyHandler(logger, sp, dbUserLister, apiKeyCache)
+	directHandler := proxy.NewDirectProxyHandler(logger, sp, dbUserLister, apiKeyCache, cfg.Auth.KeygenSecret)
 	openAIDirectHandler := directHandler.HandlerOpenAI()
 	anthropicDirectHandler := directHandler.HandlerAnthropic()
 
@@ -821,7 +821,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	logger.Info("hybrid route registered", zap.String("path", "/v1/"), zap.String("modes", "cproxy+direct"))
 
 	// Key 生成 WebUI（用户自助服务）
-	keygenAPIHandler := api.NewKeygenHandler(logger, userRepo, jwtMgr)
+	keygenAPIHandler := api.NewKeygenHandler(logger, userRepo, jwtMgr, cfg.Auth.KeygenSecret)
 	keygenAPIHandler.SetWorkerMode(isWorker)
 	keygenAPIHandler.RegisterRoutes(mux)
 	logger.Info("keygen WebUI registered at /keygen/")

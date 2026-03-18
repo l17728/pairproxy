@@ -170,6 +170,7 @@ type LDAPConfig struct {
 // SProxyAuth s-proxy JWT 配置
 type SProxyAuth struct {
 	JWTSecret       string        `yaml:"jwt_secret"`        // 支持 ${ENV_VAR}
+	KeygenSecret    string        `yaml:"keygen_secret"`     // API Key HMAC 签名密钥，支持 ${ENV_VAR}，至少 32 字符
 	AccessTokenTTL  time.Duration `yaml:"access_token_ttl"`  // 默认 24h
 	RefreshTokenTTL time.Duration `yaml:"refresh_token_ttl"` // 默认 168h (7d)
 	Provider        string        `yaml:"provider"`          // "local"（默认）| "ldap"
@@ -250,6 +251,13 @@ func (c *SProxyFullConfig) Validate() error {
 	} else if len(c.Auth.JWTSecret) < 32 {
 		errs = append(errs, "auth.jwt_secret should be at least 32 characters for security (current length is too short)")
 	}
+
+	if c.Auth.KeygenSecret == "" {
+		errs = append(errs, "auth.keygen_secret is required (set ${KEYGEN_SECRET} or provide the value directly)")
+	} else if len(c.Auth.KeygenSecret) < 32 {
+		errs = append(errs, "auth.keygen_secret should be at least 32 characters for security (current length is too short)")
+	}
+
 	switch c.Database.Driver {
 	case "postgres":
 		if c.Database.DSN == "" && (c.Database.Host == "" || c.Database.User == "" || c.Database.DBName == "") {

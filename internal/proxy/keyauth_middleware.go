@@ -35,6 +35,7 @@ func NewKeyAuthMiddleware(
 	logger *zap.Logger,
 	users ActiveUserLister,
 	cache *keygen.KeyCache,
+	keygenSecret string,
 	next http.Handler,
 ) http.Handler {
 	log := logger.Named("key_auth")
@@ -113,7 +114,7 @@ func NewKeyAuthMiddleware(
 				return
 			}
 
-			matched, valErr := keygen.ValidateAndGetUser(token, activeUsers)
+			matched, valErr := keygen.ValidateAndGetUser(token, activeUsers, []byte(keygenSecret))
 			if valErr != nil {
 				log.Warn("direct auth: key collision",
 					zap.String("request_id", reqID),

@@ -25,15 +25,17 @@ type KeygenHandler struct {
 	logger       *zap.Logger
 	userRepo     *db.UserRepo
 	jwtMgr       *auth.Manager
+	keygenSecret string
 	isWorkerNode bool
 }
 
 // NewKeygenHandler 创建 KeygenHandler。
-func NewKeygenHandler(logger *zap.Logger, userRepo *db.UserRepo, jwtMgr *auth.Manager) *KeygenHandler {
+func NewKeygenHandler(logger *zap.Logger, userRepo *db.UserRepo, jwtMgr *auth.Manager, keygenSecret string) *KeygenHandler {
 	return &KeygenHandler{
-		logger:   logger.Named("keygen_handler"),
-		userRepo: userRepo,
-		jwtMgr:   jwtMgr,
+		logger:       logger.Named("keygen_handler"),
+		userRepo:     userRepo,
+		jwtMgr:       jwtMgr,
+		keygenSecret: keygenSecret,
 	}
 }
 
@@ -130,7 +132,7 @@ func (h *KeygenHandler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 生成 API Key
-	apiKey, err := keygen.GenerateKey(req.Username)
+	apiKey, err := keygen.GenerateKey(req.Username, []byte(h.keygenSecret))
 	if err != nil {
 		h.logger.Error("keygen login: key generation failed",
 			zap.String("username", req.Username), zap.Error(err))
@@ -187,7 +189,7 @@ func (h *KeygenHandler) handleRegenerate(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	apiKey, err := keygen.GenerateKey(claims.Username)
+	apiKey, err := keygen.GenerateKey(claims.Username, []byte(h.keygenSecret))
 	if err != nil {
 		h.logger.Error("keygen regenerate: key generation failed",
 			zap.String("username", claims.Username), zap.Error(err))

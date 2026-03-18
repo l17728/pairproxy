@@ -17,6 +17,9 @@ import (
 	"github.com/l17728/pairproxy/internal/proxy"
 )
 
+// 测试用 HMAC 密钥
+var testKeygenSecret = "test-keygen-secret-must-be-at-least-32-bytes!!"
+
 // fakeUserLookup 实现 ActiveUserLister 接口（测试用）
 type fakeUserLookup struct {
 	users         []keygen.UserEntry
@@ -50,7 +53,7 @@ func (f *fakeUserLookup) IsUserActive(userID string) (bool, error) {
 
 func makeAliceKey(t *testing.T) string {
 	t.Helper()
-	k, err := keygen.GenerateKey("alice")
+	k, err := keygen.GenerateKey("alice", []byte(testKeygenSecret))
 	require.NoError(t, err)
 	return k
 }
@@ -70,7 +73,7 @@ func TestKeyAuthMiddleware_OpenAI_BearerFormat(t *testing.T) {
 		w.WriteHeader(200)
 	})
 
-	mw := proxy.NewKeyAuthMiddleware(logger, users, cache, next)
+	mw := proxy.NewKeyAuthMiddleware(logger, users, cache, testKeygenSecret, next)
 	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
 	req.Header.Set("Authorization", "Bearer "+key)
 	rr := httptest.NewRecorder()
@@ -96,7 +99,7 @@ func TestKeyAuthMiddleware_Anthropic_XApiKeyFormat(t *testing.T) {
 		w.WriteHeader(200)
 	})
 
-	mw := proxy.NewKeyAuthMiddleware(zap.NewNop(), users, cache, next)
+	mw := proxy.NewKeyAuthMiddleware(zap.NewNop(), users, cache, testKeygenSecret, next)
 	req := httptest.NewRequest("POST", "/anthropic/v1/messages", nil)
 	req.Header.Set("x-api-key", key)
 	rr := httptest.NewRecorder()
@@ -112,7 +115,7 @@ func TestKeyAuthMiddleware_MissingAuth(t *testing.T) {
 	cache, err := keygen.NewKeyCache(10, time.Minute)
 	require.NoError(t, err)
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) })
-	mw := proxy.NewKeyAuthMiddleware(zap.NewNop(), users, cache, next)
+	mw := proxy.NewKeyAuthMiddleware(zap.NewNop(), users, cache, testKeygenSecret, next)
 
 	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
 	rr := httptest.NewRecorder()
@@ -125,7 +128,7 @@ func TestKeyAuthMiddleware_InvalidFormat(t *testing.T) {
 	cache, err := keygen.NewKeyCache(10, time.Minute)
 	require.NoError(t, err)
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) })
-	mw := proxy.NewKeyAuthMiddleware(zap.NewNop(), users, cache, next)
+	mw := proxy.NewKeyAuthMiddleware(zap.NewNop(), users, cache, testKeygenSecret, next)
 
 	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
 	req.Header.Set("Authorization", "Bearer sk-openai-notapairproxykey")
@@ -144,7 +147,7 @@ func TestKeyAuthMiddleware_InvalidUser(t *testing.T) {
 	cache, err := keygen.NewKeyCache(10, time.Minute)
 	require.NoError(t, err)
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) })
-	mw := proxy.NewKeyAuthMiddleware(zap.NewNop(), users, cache, next)
+	mw := proxy.NewKeyAuthMiddleware(zap.NewNop(), users, cache, testKeygenSecret, next)
 
 	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
 	req.Header.Set("Authorization", "Bearer "+key)
@@ -168,7 +171,7 @@ func TestKeyAuthMiddleware_CacheHit(t *testing.T) {
 		gotClaims = proxy.ClaimsFromContext(r.Context())
 		w.WriteHeader(200)
 	})
-	mw := proxy.NewKeyAuthMiddleware(zap.NewNop(), users, cache, next)
+	mw := proxy.NewKeyAuthMiddleware(zap.NewNop(), users, cache, testKeygenSecret, next)
 
 	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
 	req.Header.Set("Authorization", "Bearer "+key)
@@ -198,7 +201,7 @@ func TestKeyAuthMiddleware_ListActiveError(t *testing.T) {
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	handler := proxy.NewKeyAuthMiddleware(zap.NewNop(), users, cache, next)
+	handler := proxy.NewKeyAuthMiddleware(zap.NewNop(), users, cache, testKeygenSecret, next)
 
 	// 提供合法格式的 key，使其通过格式校验后触发 ListActive
 	key := "sk-pp-" + strings.Repeat("a", 48)
@@ -210,11 +213,11 @@ func TestKeyAuthMiddleware_ListActiveError(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 }
 
-func TestKeyAuthMiddleware_KeyCollision(t *testing.T) {
+func TestKeyAuthMiddleware_FabricatedKey_NoMatch(t *testing.T) {
 	cache, err := keygen.NewKeyCache(10, time.Minute)
 	require.NoError(t, err)
 
-	// "abcd" 和 "dcba" 的字母数字字符集完全相同（各 1 个 a/b/c/d）→ 碰撞
+	// HMAC 算法下，伪造的合法格式 key 不会匹配任何用户
 	users := &fakeUserLookup{users: []keygen.UserEntry{
 		{ID: "u1", Username: "abcd", IsActive: true},
 		{ID: "u2", Username: "dcba", IsActive: true},
@@ -222,9 +225,9 @@ func TestKeyAuthMiddleware_KeyCollision(t *testing.T) {
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	handler := proxy.NewKeyAuthMiddleware(zap.NewNop(), users, cache, next)
+	handler := proxy.NewKeyAuthMiddleware(zap.NewNop(), users, cache, testKeygenSecret, next)
 
-	// 包含 a,b,c,d 的合法格式 key（6+48=54 字符）
+	// 伪造的合法格式 key（6+48=54 字符），不是任何用户的 HMAC key
 	key := "sk-pp-abcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcd"
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 	req.Header.Set("Authorization", "Bearer "+key)
@@ -248,7 +251,7 @@ func TestKeyAuthMiddleware_GroupID(t *testing.T) {
 		gotClaims = proxy.ClaimsFromContext(r.Context())
 		w.WriteHeader(200)
 	})
-	mw := proxy.NewKeyAuthMiddleware(zap.NewNop(), users, cache, next)
+	mw := proxy.NewKeyAuthMiddleware(zap.NewNop(), users, cache, testKeygenSecret, next)
 	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
 	req.Header.Set("Authorization", "Bearer "+key)
 	rr := httptest.NewRecorder()
@@ -279,7 +282,7 @@ func TestKeyAuthMiddleware_CacheHit_UserDisabled(t *testing.T) {
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	mw := proxy.NewKeyAuthMiddleware(zap.NewNop(), users, cache, next)
+	mw := proxy.NewKeyAuthMiddleware(zap.NewNop(), users, cache, testKeygenSecret, next)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 	req.Header.Set("Authorization", "Bearer "+key)
@@ -302,7 +305,7 @@ func TestKeyAuthMiddleware_CacheHit_UserDisabled_CacheEvicted(t *testing.T) {
 	require.NoError(t, err)
 	cache.Set(key, &keygen.CachedUser{UserID: "u1", Username: "alice"})
 
-	mw := proxy.NewKeyAuthMiddleware(zap.NewNop(), users, cache,
+	mw := proxy.NewKeyAuthMiddleware(zap.NewNop(), users, cache, testKeygenSecret,
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) }))
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
@@ -330,7 +333,7 @@ func TestKeyAuthMiddleware_CacheHit_ActiveUser_Passes(t *testing.T) {
 		reached = true
 		w.WriteHeader(200)
 	})
-	mw := proxy.NewKeyAuthMiddleware(zap.NewNop(), users, cache, next)
+	mw := proxy.NewKeyAuthMiddleware(zap.NewNop(), users, cache, testKeygenSecret, next)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 	req.Header.Set("Authorization", "Bearer "+key)
@@ -353,7 +356,7 @@ func TestKeyAuthMiddleware_CacheHit_IsActiveError(t *testing.T) {
 	require.NoError(t, err)
 	cache.Set(key, &keygen.CachedUser{UserID: "u1", Username: "alice"})
 
-	mw := proxy.NewKeyAuthMiddleware(zap.NewNop(), users, cache,
+	mw := proxy.NewKeyAuthMiddleware(zap.NewNop(), users, cache, testKeygenSecret,
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) }))
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)

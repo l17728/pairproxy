@@ -26,7 +26,7 @@ func setupKeygenTest(t *testing.T) (*api.KeygenHandler, *db.UserRepo) {
 	userRepo := db.NewUserRepo(gdb, logger)
 	jwtMgr, err := auth.NewManager(logger, "test-secret-key-for-testing-only")
 	require.NoError(t, err)
-	h := api.NewKeygenHandler(logger, userRepo, jwtMgr)
+	h := api.NewKeygenHandler(logger, userRepo, jwtMgr, "test-keygen-secret-must-be-at-least-32-bytes!!")
 	return h, userRepo
 }
 
@@ -131,7 +131,7 @@ func TestKeygenRegenerate_Success(t *testing.T) {
 	require.NoError(t, json.Unmarshal(regenRR.Body.Bytes(), &regenResp))
 	newKey := regenResp["key"].(string)
 	assert.Contains(t, newKey, "sk-pp-")
-	assert.NotEqual(t, firstKey, newKey, "regenerated key should differ from original")
+	assert.Equal(t, firstKey, newKey, "HMAC-based regenerate should return same key (deterministic)")
 }
 
 func TestKeygenRegenerate_Unauthorized(t *testing.T) {
