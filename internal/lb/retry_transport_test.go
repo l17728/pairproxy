@@ -314,3 +314,217 @@ func TestRetryTransport_BodyRestoredOnRetry(t *testing.T) {
 		t.Errorf("retry body = %q, want %q", inner.bodies[1], requestBody)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// TestRetryTransport_RetryOnStatus_429
+// ---------------------------------------------------------------------------
+
+// TestRetryTransport_RetryOnStatus_429 验证配置了 RetryOnStatus:[429] 后，
+// 429 响应触发 try-next 并在第二个 target 成功。
+func TestRetryTransport_RetryOnStatus_429(t *testing.T) {
+	r1 := makeResp(429, `{"error":"rate_limit_exceeded"}`)
+	r2 := makeResp(200, `{"id":"msg_ok"}`)
+	inner := &mockRoundTripper{
+		responses: []*http.Response{r1, r2},
+	}
+
+	pickCalled := 0
+	rt := &RetryTransport{
+		Inner:         inner,
+		MaxRetries:    2,
+		RetryOnStatus: []int{429},
+		PickNext: func(_ string, tried []string) (*LLMTargetInfo, error) {
+			pickCalled++
+			return &LLMTargetInfo{URL: "http://t2", APIKey: "k2"}, nil
+		},
+		OnFailure: func(_ string) {},
+		OnSuccess: func(_ string) {},
+		Logger:    zaptest.NewLogger(t),
+	}
+
+	req, _ := http.NewRequest(http.MethodPost, "http://t1/v1/messages", bytes.NewBufferString(`{}`))
+	resp, err := rt.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("expected success on second target: %v", err)
+	}
+	resp.Body.Close()
+
+	if inner.calls != 2 {
+		t.Errorf("expected 2 calls, got %d", inner.calls)
+	}
+	if pickCalled != 1 {
+		t.Errorf("expected PickNext called once, got %d", pickCalled)
+	}
+}
+
+// TestRetryTransport_RetryOnStatus_429_AllExhausted 验证所有 target 均返回 429 时，
+// 重试耗尽后返回错误（不会无限循环）。
+func TestRetryTransport_RetryOnStatus_429_AllExhausted(t *testing.T) {
+	r1 := makeResp(429, `{"error":"rate_limit"}`)
+	r2 := makeResp(429, `{"error":"rate_limit"}`)
+	inner := &mockRoundTripper{
+		responses: []*http.Response{r1, r2},
+	}
+
+	pickCount := 0
+	rt := &RetryTransport{
+		Inner:         inner,
+		MaxRetries:    1,
+		RetryOnStatus: []int{429},
+		PickNext: func(_ string, tried []string) (*LLMTargetInfo, error) {
+			pickCount++
+			if pickCount > 1 {
+				return nil, ErrNoHealthyTarget
+			}
+			return &LLMTargetInfo{URL: "http://t2", APIKey: ""}, nil
+		},
+		OnFailure: func(_ string) {},
+		Logger:    zaptest.NewLogger(t),
+	}
+
+	req, _ := http.NewRequest(http.MethodPost, "http://t1/v1/messages", nil)
+	_, err := rt.RoundTrip(req)
+	if err == nil {
+		t.Fatal("expected error when all targets return 429")
+	}
+}
+
+// TestRetryTransport_RetryOnStatus_Disabled 验证未配置 RetryOnStatus 时，
+// 429 不触发重试（向后兼容）。
+func TestRetryTransport_RetryOnStatus_Disabled(t *testing.T) {
+	r1 := makeResp(429, `{"error":"rate_limit"}`)
+	inner := &mockRoundTripper{
+		responses: []*http.Response{r1},
+	}
+
+	rt := &RetryTransport{
+		Inner:      inner,
+		MaxRetries: 2,
+		// RetryOnStatus 未设置 → 429 直接返回
+		PickNext: func(_ string, _ []string) (*LLMTargetInfo, error) {
+			return &LLMTargetInfo{URL: "http://t2"}, nil
+		},
+		Logger: zaptest.NewLogger(t),
+	}
+
+	req, _ := http.NewRequest(http.MethodPost, "http://t1/v1/messages", nil)
+	resp, err := rt.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("expected response returned directly: %v", err)
+	}
+	if resp.StatusCode != 429 {
+		t.Errorf("expected 429 returned directly, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+	if inner.calls != 1 {
+		t.Errorf("expected 1 call (no retry), got %d", inner.calls)
+	}
+}
+
+// TestRetryTransport_RetryOnStatus_TriedListPropagated 验证 429 重试时，
+// 首个 target URL 已加入 tried 列表，PickNext 不会重复选取同一 target。
+func TestRetryTransport_RetryOnStatus_TriedListPropagated(t *testing.T) {
+	r1 := makeResp(429, `{"error":"rate_limit"}`)
+	r2 := makeResp(200, `{"id":"msg_ok"}`)
+	inner := &mockRoundTripper{
+		responses: []*http.Response{r1, r2},
+	}
+
+	var capturedTried []string
+	rt := &RetryTransport{
+		Inner:         inner,
+		MaxRetries:    2,
+		RetryOnStatus: []int{429},
+		PickNext: func(_ string, tried []string) (*LLMTargetInfo, error) {
+			capturedTried = append([]string{}, tried...)
+			return &LLMTargetInfo{URL: "http://t2"}, nil
+		},
+		OnFailure: func(_ string) {},
+		OnSuccess: func(_ string) {},
+		Logger:    zaptest.NewLogger(t),
+	}
+
+	req, _ := http.NewRequest(http.MethodPost, "http://t1/v1/messages", nil)
+	resp, err := rt.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	resp.Body.Close()
+
+	if len(capturedTried) != 1 || capturedTried[0] != "http://t1" {
+		t.Errorf("tried = %v, want [http://t1]", capturedTried)
+	}
+}
+
+// TestRetryTransport_RetryOnStatus_OnFailureCalled 验证 429 触发重试时 OnFailure 被调用（被动熔断应感知）。
+func TestRetryTransport_RetryOnStatus_OnFailureCalled(t *testing.T) {
+	r1 := makeResp(429, `{"error":"rate_limit"}`)
+	r2 := makeResp(200, `{"id":"msg_ok"}`)
+	inner := &mockRoundTripper{
+		responses: []*http.Response{r1, r2},
+	}
+
+	failureCalled := 0
+	successCalled := 0
+	rt := &RetryTransport{
+		Inner:         inner,
+		MaxRetries:    2,
+		RetryOnStatus: []int{429},
+		PickNext: func(_ string, _ []string) (*LLMTargetInfo, error) {
+			return &LLMTargetInfo{URL: "http://t2"}, nil
+		},
+		OnFailure: func(_ string) { failureCalled++ },
+		OnSuccess: func(_ string) { successCalled++ },
+		Logger:    zaptest.NewLogger(t),
+	}
+
+	req, _ := http.NewRequest(http.MethodPost, "http://t1/v1/messages", nil)
+	resp, err := rt.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	resp.Body.Close()
+
+	if failureCalled != 1 {
+		t.Errorf("OnFailure called %d times, want 1", failureCalled)
+	}
+	if successCalled != 1 {
+		t.Errorf("OnSuccess called %d times, want 1", successCalled)
+	}
+}
+
+// TestRetryTransport_RetryOnStatus_MultipleStatusCodes 验证 RetryOnStatus 支持多个状态码（如 503+429）。
+func TestRetryTransport_RetryOnStatus_MultipleStatusCodes(t *testing.T) {
+	r1 := makeResp(503, `{"error":"service_unavailable"}`)
+	r2 := makeResp(429, `{"error":"rate_limit"}`)
+	r3 := makeResp(200, `{"id":"msg_ok"}`)
+	inner := &mockRoundTripper{
+		responses: []*http.Response{r1, r2, r3},
+	}
+
+	pickCount := 0
+	rt := &RetryTransport{
+		Inner:         inner,
+		MaxRetries:    3,
+		RetryOnStatus: []int{429, 503},
+		PickNext: func(_ string, _ []string) (*LLMTargetInfo, error) {
+			pickCount++
+			urls := []string{"http://t2", "http://t3"}
+			return &LLMTargetInfo{URL: urls[pickCount-1]}, nil
+		},
+		OnFailure: func(_ string) {},
+		OnSuccess: func(_ string) {},
+		Logger:    zaptest.NewLogger(t),
+	}
+
+	req, _ := http.NewRequest(http.MethodPost, "http://t1/v1/messages", nil)
+	resp, err := rt.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	resp.Body.Close()
+
+	if inner.calls != 3 {
+		t.Errorf("expected 3 calls (503->429->200), got %d", inner.calls)
+	}
+}

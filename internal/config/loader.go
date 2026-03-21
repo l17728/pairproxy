@@ -256,6 +256,29 @@ func applySProxyDefaults(cfg *SProxyFullConfig) {
 	if cfg.Log.Level == "" {
 		cfg.Log.Level = "info"
 	}
+	// Corpus 语料采集默认值
+	if cfg.Corpus.Path == "" {
+		cfg.Corpus.Path = "./corpus/"
+	}
+	if cfg.Corpus.MaxFileSize == "" {
+		cfg.Corpus.MaxFileSize = "200MB"
+	}
+	if cfg.Corpus.BufferSize == 0 {
+		cfg.Corpus.BufferSize = 1000
+	}
+	if cfg.Corpus.FlushInterval == 0 {
+		cfg.Corpus.FlushInterval = 5 * time.Second
+	}
+	if cfg.Corpus.MinOutputTokens == 0 {
+		cfg.Corpus.MinOutputTokens = 50
+	}
+	// SemanticRouter 语义路由默认值
+	if cfg.SemanticRouter.ClassifierTimeout == 0 {
+		cfg.SemanticRouter.ClassifierTimeout = 3 * time.Second
+	}
+	if cfg.SemanticRouter.ClassifierModel == "" {
+		cfg.SemanticRouter.ClassifierModel = "claude-haiku-3-5"
+	}
 	// 设置默认 LLM target 权重
 	for i := range cfg.LLM.Targets {
 		if cfg.LLM.Targets[i].Weight == 0 {

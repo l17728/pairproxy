@@ -1,6 +1,6 @@
 # PairProxy 用户手册
 
-**版本 v2.15.0**
+**版本 v2.17.0**
 
 ---
 
@@ -46,6 +46,8 @@
 - [§28 PostgreSQL 数据库支持（v2.13.0）](#28-postgresql-数据库支持v2130)
 - [§29 PostgreSQL 对等节点模式（v2.14.0）](#29-postgresql-对等节点模式v2140)
 - [§30 已知问题与修复](#30-已知问题与修复)
+- [§32 训练语料采集（Corpus）](#32-训练语料采集corpusv2160)
+- [§34 语义路由（Semantic Router）（v2.18.0）](#34-语义路由semantic-routerv2180)
 
 ---
 
@@ -2598,6 +2600,7 @@ llm:
   lb_strategy: weighted_random   # 目前仅支持 weighted_random
   # request_timeout: 120s   # 预留字段（当前版本不控制流式请求时长）
   max_retries: 2                 # 首次尝试失败后的最大重试次数（默认 2）
+  retry_on_status: [429]         # 触发 try-next 的额外状态码（默认空=仅重试5xx/连接错误）
   recovery_delay: 60s            # 熔断后自动恢复延迟（默认 60s，0=禁用自动恢复）
 
   targets:
@@ -2621,6 +2624,7 @@ llm:
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `max_retries` | 2 | 首次失败后最多重试几次换目标 |
+| `retry_on_status` | `[]` | 除5xx/连接错误外触发 try-next 的状态码，如 `[429]` 可实现配额耗尽自动切换 |
 | `recovery_delay` | 60s | 熔断后多久自动重置为健康（0=不自动恢复） |
 | `weight` | 1 | 负载均衡权重；权重越高被选中概率越大 |
 | `health_check_path` | 空 | 主动健康检查路径；空=不主动检查，依赖被动熔断 |
@@ -4891,6 +4895,393 @@ systemctl start sproxy
 - **验收报告**：`docs/ACCEPTANCE_REPORT.md` v2.15.0 章节
 - **API 文档**：`docs/API.md` §Direct Proxy 章节
 - **安全建议**：§13 安全建议（keygen_secret 管理）
+
+---
+
+## 32. 训练语料采集（Corpus）（v2.16.0）
+
+### 32.1 功能概述
+
+Corpus 模块在代理请求的热路径上异步采集 LLM 请求/响应对，输出为 JSONL 格式的训练语料文件，可直接用于模型蒸馏（distillation）或微调（fine-tuning）。
+
+**核心特性**：
+- 零阻塞：channel + worker goroutine 异步写入，不影响代理延迟
+- 质量过滤：自动过滤错误响应、短回复、指定分组
+- 多 Provider：支持 Anthropic / OpenAI / Ollama 三种 SSE 格式解析
+- 文件轮转：按日期分目录，按大小自动轮转
+- 双模型字段：记录 `model_requested`（客户端请求）和 `model_actual`（LLM 实际返回）
+
+### 32.2 配置
+
+在 `sproxy.yaml` 中添加 `corpus` 段：
+
+```yaml
+corpus:
+  enabled: true                    # 默认 false
+  path: "./corpus/"                # 输出目录
+  instance_id: ""                  # 空 = 从监听端口自动推导
+  max_file_size: "200MB"           # 单文件上限，触发轮转
+  buffer_size: 1000                # channel 容量
+  flush_interval: 5s               # 定时 flush 间隔
+  min_output_tokens: 50            # 低于此值的响应被过滤
+  exclude_groups:                  # 排除的分组（不采集）
+    - "test"
+    - "debug"
+```
+
+### 32.3 输出格式
+
+文件路径：`<path>/<date>/sproxy_<instance>.jsonl`
+
+示例：`./corpus/2026-03-21/sproxy_9000.jsonl`
+
+每行一条 JSON 记录：
+
+```json
+{
+  "id": "cr_1711036800_a1b2",
+  "timestamp": "2026-03-21T16:00:00Z",
+  "instance": "9000",
+  "user": "alice",
+  "group": "engineering",
+  "model_requested": "claude-sonnet-4-20250514",
+  "model_actual": "claude-sonnet-4-20250514",
+  "target": "https://api.anthropic.com",
+  "provider": "anthropic",
+  "messages": [
+    {"role": "user", "content": "What is 2+2?"},
+    {"role": "assistant", "content": "The answer is 4."}
+  ],
+  "input_tokens": 100,
+  "output_tokens": 200,
+  "duration_ms": 1500
+}
+```
+
+### 32.4 质量过滤
+
+采集器在提交记录前应用以下过滤规则（按顺序）：
+
+| 过滤条件 | 说明 | 配置项 |
+|---------|------|--------|
+| HTTP 状态码 ≥ 400 | 错误响应不采集 | 内置，不可关闭 |
+| 排除分组 | 指定分组的请求不采集 | `exclude_groups` |
+| 输出 token 不足 | 短回复不采集 | `min_output_tokens` |
+| 空 assistant 文本 | 无有效输出不采集 | 内置，不可关闭 |
+
+每条被过滤的记录都会输出 DEBUG 日志，包含过滤原因和记录 ID。
+
+### 32.5 文件轮转
+
+- **按日期**：每天 UTC 00:00 自动切换到新目录（`2026-03-21/`、`2026-03-22/`...）
+- **按大小**：单文件超过 `max_file_size` 后自动轮转，文件名追加序号（`sproxy_9000_001.jsonl`）
+- **优雅关闭**：sproxy 停止时 drain channel 中剩余记录，确保不丢数据
+
+### 32.6 运维
+
+```bash
+# 查看今日语料文件
+ls -lh ./corpus/$(date -u +%Y-%m-%d)/
+
+# 统计今日采集记录数
+wc -l ./corpus/$(date -u +%Y-%m-%d)/*.jsonl
+
+# 验证 JSON 格式
+head -1 ./corpus/2026-03-21/sproxy_9000.jsonl | python3 -m json.tool
+
+# 清理 30 天前的语料
+find ./corpus/ -type d -mtime +30 -exec rm -rf {} +
+```
+
+### 32.7 注意事项
+
+- Corpus 文件包含完整对话内容（用户输入 + LLM 输出），注意数据安全和合规
+- channel 满时记录会被丢弃（WARN 日志），可通过增大 `buffer_size` 缓解
+- 建议在生产环境中配置 `exclude_groups` 排除测试/调试分组
+- 与对话追踪（track）功能独立，两者可同时启用
+
+---
+
+## 33. LLM 故障转移增强：retry_on_status（v2.17.0）
+
+**版本**：v2.17.0
+
+### 33.1 功能概述
+
+`retry_on_status` 让 sproxy 在 LLM 上游返回指定 HTTP 状态码时，自动切换到下一个可用 target，实现请求级故障转移。
+
+**典型场景**：
+- 3 个 GLM-4 集群，第一个返回 429（配额耗尽）→ 自动切换到第二个
+- 不是降级，而是找到同等能力的可用端点
+- 每次请求遍历所有 target 一次，找到可用的即停止
+
+### 33.2 配置
+
+在 `sproxy.yaml` 的 `llm:` 段添加：
+
+```yaml
+llm:
+  max_retries: 2                 # 最多额外重试几次（不含首次）
+  retry_on_status: [429]         # 触发 try-next 的状态码；默认空=关闭
+  recovery_delay: 60s
+
+  targets:
+    - url: "https://glm-cluster-1.example.com"
+      api_key: "${GLM_KEY_1}"
+    - url: "https://glm-cluster-2.example.com"
+      api_key: "${GLM_KEY_2}"
+    - url: "https://glm-cluster-3.example.com"
+      api_key: "${GLM_KEY_3}"
+```
+
+**参数说明**：
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `retry_on_status` | `[]`（空） | 触发 try-next 的额外 HTTP 状态码列表。空=仅对 5xx 和连接错误重试（旧行为） |
+| `max_retries` | `2` | 最多额外重试次数（不含首次尝试）。设为 `len(targets)-1` 可遍历全部 |
+
+### 33.3 工作原理
+
+```
+请求到达
+   ↓
+[Target 1] → 429（配额耗尽）
+   ↓ 触发 try-next，Target 1 加入 tried 列表
+[Target 2] → 429（也耗尽）
+   ↓ 触发 try-next，Target 2 加入 tried 列表
+[Target 3] → 200（成功）✅
+```
+
+- 每个 target 最多尝试一次（tried 列表去重）
+- `max_retries` 控制最多切换次数，设为 `N-1` 可遍历全部 N 个 target
+- 全部耗尽时返回错误，包含最后一次的状态码
+
+### 33.4 与被动熔断的配合
+
+429 触发 try-next 的同时，`OnFailure` 回调会被调用，触发被动熔断计数。若同一 target 连续多次 429，该 target 会被健康检查器标记为不健康，后续请求直接跳过（双重保护）。
+
+### 33.5 日志示例
+
+```
+WARN  llm request failed, retrying with next target
+      attempt=1 max_retries=2 failed_target=https://glm-1.example.com
+      next_target=https://glm-2.example.com reason="HTTP 429"
+
+WARN  llm request failed, retrying with next target
+      attempt=2 max_retries=2 failed_target=https://glm-2.example.com
+      next_target=https://glm-3.example.com reason="HTTP 429"
+```
+
+全部耗尽时：
+```
+ERROR all 3 LLM targets exhausted (last target=https://glm-3.example.com, last status=429)
+```
+
+### 33.6 向后兼容
+
+`retry_on_status` 默认为空列表，不配置时行为与 v2.16.0 完全一致：
+- 只对 5xx 和连接错误重试
+- 4xx（含 429）直接返回给客户端
+
+### 33.7 注意事项
+
+- `max_retries` 应设为 `len(targets) - 1`，否则可能在遍历完所有 target 前就停止重试
+- 429 同时触发被动熔断，高频 429 会导致 target 被标记为不健康，需配合 `recovery_delay` 使用
+- 流式请求（SSE）在建立连接前完成 try-next，切换对客户端透明
+- 不建议将 400（Bad Request）加入 `retry_on_status`，换 target 无法解决请求参数问题
+
+---
+
+## 34. 语义路由（Semantic Router）（v2.18.0）
+
+**版本**：v2.18.0
+
+### 34.1 功能概述
+
+语义路由根据请求 messages 的**语义意图**，在现有负载均衡候选池内做二次筛选，将请求路由到最合适的 LLM target。
+
+**典型场景**：
+- 代码生成/调试任务 → 路由到高代码能力模型（如 Claude Sonnet、DeepSeek Coder）
+- 通用对话/简单 Q&A → 路由到低成本模型（如 Claude Haiku）
+- 任何分类失败或超时 → 降级到完整候选池（LB 兜底），保证可用性
+
+**核心设计**：
+- 分类器 LLM 调用复用现有 LB（不需要单独配置分类器端点）
+- 通过 context 标记防止分类器子请求递归触发语义路由
+- 规则来自 YAML 配置 + 数据库（DB 同名规则优先于 YAML）
+- 仅对无显式 LLM 绑定的用户生效（绑定用户直接走绑定 target）
+
+### 34.2 配置
+
+在 `sproxy.yaml` 中添加 `semantic_router` 段：
+
+```yaml
+semantic_router:
+  enabled: true                    # 默认 false，需显式启用
+  classifier_timeout: 3s           # 分类器调用超时（默认 3s）
+  classifier_model: "claude-haiku-3-5"  # 分类器使用的模型名（默认 claude-haiku-3-5）
+
+  # YAML 默认规则（DB 同名规则会覆盖这些）
+  routes:
+    - name: code_tasks
+      description: "Requests involving code generation, debugging, refactoring, or technical programming"
+      target_urls:
+        - "https://api.anthropic.com"
+        - "https://deepseek-api.example.com"
+      priority: 10                 # 数值越大优先级越高
+
+    - name: general_chat
+      description: "General conversation, simple Q&A, or creative writing"
+      target_urls:
+        - "https://haiku-endpoint.example.com"
+      priority: 5
+```
+
+**参数说明**：
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `enabled` | `false` | 是否启用语义路由。false 时完全跳过，无性能影响 |
+| `classifier_timeout` | `3s` | 分类器 LLM 调用超时。超时后降级到完整候选池 |
+| `classifier_model` | `claude-haiku-3-5` | 分类器使用的模型名。建议用低延迟模型 |
+| `routes[].name` | — | 规则唯一名称（DB 同名规则覆盖 YAML 规则） |
+| `routes[].description` | — | 自然语言描述，送给分类器 LLM 做意图匹配 |
+| `routes[].target_urls` | — | 匹配后缩窄的候选 target URL 列表 |
+| `routes[].priority` | `0` | 数值越大越优先（降序排列后送入 prompt） |
+
+### 34.3 工作原理
+
+```
+请求到达 → 认证 + 配额检查
+   ↓
+读取请求 body 中的 messages（最近 5 条）
+   ↓
+[SemanticRouter] 构建分类 prompt → 调用分类器 LLM
+   ├─ 匹配规则 → 缩窄候选池（仅保留该规则的 target_urls）
+   ├─ 无匹配 (-1) → 使用完整候选池
+   └─ 超时/错误 → 使用完整候选池（降级）
+   ↓
+在最终候选池内，由 LB 选取 target 转发
+```
+
+**关键行为矩阵**：
+
+| 场景 | 行为 |
+|------|------|
+| 分类器返回有效规则索引 | 使用该规则的 `target_urls` 缩窄候选池 |
+| 分类器返回 -1（无匹配） | fallback，使用完整候选池 |
+| 分类器调用失败 / 超时 | fallback，使用完整候选池 |
+| 分类器子请求（防递归） | 跳过语义路由，直接使用完整候选池 |
+| 无激活规则（DB 和 YAML 均为空） | 跳过语义路由 |
+| `semantic_router.enabled: false` | 跳过语义路由 |
+| 用户有 LLM 绑定（bindingResolver） | 跳过语义路由，直接使用绑定 target |
+
+### 34.4 数据库规则管理（Admin CLI）
+
+```bash
+# 新增路由规则
+./sproxy admin route add code_tasks \
+  --description "Code generation and debugging tasks" \
+  --targets "https://api.anthropic.com,https://deepseek.example.com" \
+  --priority 10
+
+# 列出所有规则
+./sproxy admin route list
+
+# 更新规则
+./sproxy admin route update code_tasks \
+  --description "Updated description" \
+  --targets "https://api.anthropic.com"
+
+# 删除规则
+./sproxy admin route delete code_tasks
+
+# 启用/禁用规则
+./sproxy admin route enable code_tasks
+./sproxy admin route disable code_tasks
+```
+
+### 34.5 REST API
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/api/admin/semantic-routes` | 列出所有规则 |
+| `POST` | `/api/admin/semantic-routes` | 创建规则 |
+| `GET` | `/api/admin/semantic-routes/{id}` | 查询单个规则 |
+| `PUT` | `/api/admin/semantic-routes/{id}` | 更新规则 |
+| `DELETE` | `/api/admin/semantic-routes/{id}` | 删除规则 |
+| `POST` | `/api/admin/semantic-routes/{id}/enable` | 启用规则 |
+| `POST` | `/api/admin/semantic-routes/{id}/disable` | 禁用规则 |
+
+**创建规则示例**：
+```bash
+curl -X POST http://localhost:9000/api/admin/semantic-routes \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "code_tasks",
+    "description": "Code generation, debugging, and refactoring",
+    "target_urls": ["https://api.anthropic.com"],
+    "priority": 10
+  }'
+```
+
+写操作后规则会**自动热更新**到运行中的 SemanticRouter，无需重启服务。
+
+### 34.6 数据库 Schema
+
+```sql
+CREATE TABLE semantic_routes (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL UNIQUE,
+    description TEXT NOT NULL,
+    target_urls TEXT NOT NULL DEFAULT '[]',  -- JSON array of target URLs
+    priority    INTEGER DEFAULT 0,
+    is_active   INTEGER DEFAULT 1,
+    source      TEXT DEFAULT 'database',     -- "config" | "database"
+    created_at  DATETIME,
+    updated_at  DATETIME
+);
+```
+
+规则加载优先级：**数据库规则 > YAML 规则**（同名时 DB 覆盖 YAML）。
+
+### 34.7 日志示例
+
+分类成功：
+```
+INFO  semantic router: rule matched
+      rule_name=code_tasks  rule_id=abc123  candidates=2
+
+INFO  semantic router: candidate pool narrowed
+      request_id=req-456  candidates=2
+```
+
+分类失败降级：
+```
+WARN  semantic router: classifier failed, fallback to full pool
+      error="classifier http call: context deadline exceeded"
+```
+
+跳过语义路由：
+```
+DEBUG semantic router: skipped, binding resolver active
+      request_id=req-789  user_id=user1
+```
+
+### 34.8 向后兼容
+
+`semantic_router.enabled` 默认为 `false`，不配置时行为与 v2.17.0 完全一致。已有的用户绑定、负载均衡、provider 路由等逻辑不受影响。
+
+### 34.9 注意事项
+
+- 分类器调用会增加约 0.5~3s 延迟（取决于所用模型和网络），建议使用低延迟模型（如 `claude-haiku-3-5`）
+- `classifier_timeout` 应设置为可接受的最大延迟，超时后自动降级
+- `target_urls` 中的 URL 必须是已配置在 `llm.targets` 中的有效 target
+- 仅对有 `messages` 字段的请求（如 `/v1/messages`、`/v1/chat/completions`）生效
+- 分类器子请求通过 context 标记防递归，不会无限循环
+- 数据库规则通过 REST API 或 CLI 修改后立即热更新，无需重启
 
 ---
 

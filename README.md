@@ -50,6 +50,7 @@
 | **趋势图表（F-10）** | Dashboard 概览页显示 Token 用量趋势、费用趋势、Top 5 用户图表，支持 7/30/90 天切换 |
 | **用户自助页面（F-10）** | 普通用户可查看自己的配额状态、用量历史，访问 `/dashboard/my-usage` 或调用 `/api/user/*` API |
 | **对话内容追踪** | 按用户隔离记录完整对话内容（JSON 文件），支持非流式和 SSE 流式双路径捕获，`sproxy admin track` 管理 |
+| **训练语料采集** | 异步采集 LLM 请求/响应对为 JSONL 训练语料，质量过滤（错误/短回复/排除分组），按日期+大小文件轮转，`corpus:` 配置段启用 |
 | **动态 LLM Target 管理** | 配置文件 + 数据库双来源，支持运行时增删 LLM 节点，用户/分组级绑定，自动健康检查与负载均衡 |
 | **告警页面** | Dashboard 实时 WARN/ERROR 日志查看器，通过 SSE 推送，无需刷新 |
 | **批量导入** | `sproxy admin import <file>` 从模板文件批量创建分组/用户，支持 `--dry-run` 预览和 WebUI 操作 |
@@ -61,6 +62,9 @@
 | **Peer Mode 对等节点（v2.14.0）** | PG 模式下自动启用 `role: "peer"`；所有节点完全对等，任意节点可处理管理操作；`PGPeerRegistry` 通过 `peers` 表实现分布式节点发现（心跳/驱逐/优雅注销）；无写封锁、无 ConfigSyncer、无 Reporter |
 | **ConfigSyncer URL 冲突修复（v2.14.1）** | 修复 SQLite 集群模式下 Worker 节点 ConfigSyncer 同步 LLM targets 时 UNIQUE constraint 错误；冲突键从 `ON CONFLICT(id)` 改为 `ON CONFLICT(url)` |
 | **HMAC-SHA256 Keygen（v2.15.0）** | 替换指纹嵌入算法，消除碰撞漏洞（alice123 vs 321ecila）；HMAC-SHA256 + Base62 编码（48字符）；确定性生成（相同用户名+secret→相同key）；256位安全强度（碰撞概率 < 2^-143）；配置新增 `auth.keygen_secret` 必填字段（≥32字符）；Breaking Change：所有旧 sk-pp- key 立即失效 |
+| **训练语料采集 Corpus（v2.16.0）** | 异步采集 LLM 请求/响应对为 JSONL 训练语料；质量过滤（错误响应、短回复、排除分组）；支持 Anthropic/OpenAI/Ollama 三种 SSE 格式；按日期+大小自动文件轮转；记录 `model_requested` 和 `model_actual` 双模型字段；零阻塞热路径（channel + worker goroutine） |
+| **LLM 故障转移增强（v2.17.0）** | 新增 `llm.retry_on_status` 配置，支持对指定 HTTP 状态码（如 429 配额耗尽）触发 try-next；遍历所有 target 一次，找到可用端点；空列表默认关闭，完全向后兼容；每次重试打印结构化日志（reason=HTTP 429 / connection error）；失败 target 加入 tried 列表防止重复尝试 |
+| **语义路由（v2.18.0）** | 根据请求 messages 语义意图缩窄 LLM 候选池；分类器复用现有 LB（防递归）；规则来自 YAML + DB（DB 优先，热更新）；`sproxy admin route` CLI + REST API `/api/admin/semantic-routes` 管理规则；任何分类失败自动降级到完整候选池；仅对无绑定用户生效；`semantic_router:` 配置段启用 |
 
 ---
 
@@ -346,6 +350,13 @@ cluster:
 dashboard:
   enabled: true
 
+# 训练语料采集（可选，默认关闭）
+corpus:
+  enabled: false
+  path: "./corpus/"
+  min_output_tokens: 50
+  # exclude_groups: ["test"]
+
 pricing:
   default_input_per_1k: 0.003
   default_output_per_1k: 0.015
@@ -577,6 +588,7 @@ pairproxy/
 │   ├── metrics/              # Prometheus 格式 /metrics 端点
 │   ├── alert/                # Webhook 告警通知器
 │   ├── track/                # 对话内容追踪（按用户隔离的 JSON 文件记录）
+│   ├── corpus/               # 训练语料采集（JSONL 格式，用于模型蒸馏）
 │   ├── config/               # YAML 配置加载（支持 ${ENV_VAR} 展开）
 │   └── version/              # 版本信息
 ├── config/

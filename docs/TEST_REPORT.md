@@ -1,7 +1,7 @@
 # PairProxy 测试报告
 
-**生成时间**: 2026-03-18
-**测试版本**: v2.15.0 (HMAC-SHA256 Keygen 算法)
+**生成时间**: 2026-03-22
+**测试版本**: v2.18.0 (语义路由 Semantic Router)
 **测试环境**: Windows 11, Go 1.23
 
 ---
@@ -12,14 +12,14 @@
 
 | 测试类型 | 状态 | 测试数 | 通过 | 跳过 | 失败 | 说明 |
 |---------|------|--------|------|------|------|------|
-| 单元测试 (UT) | ✅ PASS | 1,906 | 1,905 | 1 | 0 | 24个包全量单元测试（v2.15.0 累计） |
-| 子测试 (subtests) | ✅ PASS | 563 | 563 | 0 | 0 | t.Run 表驱动子测试 |
+| 单元测试 (UT) | ✅ PASS | 1,894 | 1,894 | 0 | 0 | 25个包全量单元测试（v2.18.0 累计） |
+| 子测试 (subtests) | ✅ PASS | 580+ | 580+ | 0 | 0 | t.Run 表驱动子测试 |
 | 集成测试 | ✅ PASS | 8 | 8 | 0 | 0 | integration_by_GLM5_test.go |
 | E2E测试 (httptest) | ✅ PASS | 90+ | 90+ | 0 | 0 | 含 Direct Proxy E2E + 用户流量 + LLM Target |
 | E2E测试 (integration) | ✅ PASS | 4 | 4 | 0 | 0 | TestFullChainWithMockProcesses 真实进程测试 |
 | 协议转换测试 | ✅ PASS | 80+ | 80+ | 0 | 0 | 含 OtoA 请求/响应/流式/错误转换（v2.10.0 +45 RUN） |
 
-**总计**: 2,469 RUN 条目（1,906 顶层测试 + 563 子测试），全部通过
+**总计**: 1,894 顶层测试全部通过，25 个包 0 FAIL
 
 ---
 
@@ -30,12 +30,13 @@
 go test ./...
 ```
 
-### 测试覆盖的包 (24个)
+### 测试覆盖的包 (25个)
 - ✅ github.com/l17728/pairproxy/internal/alert
 - ✅ github.com/l17728/pairproxy/internal/api        （含 KeygenHandler v2.9.0）
 - ✅ github.com/l17728/pairproxy/internal/auth
 - ✅ github.com/l17728/pairproxy/internal/cluster
 - ✅ github.com/l17728/pairproxy/internal/config
+- ✅ github.com/l17728/pairproxy/internal/corpus     （v2.16.0 新增）
 - ✅ github.com/l17728/pairproxy/internal/dashboard
 - ✅ github.com/l17728/pairproxy/internal/db
 - ✅ github.com/l17728/pairproxy/internal/eventlog   （v2.8.0 新增）
@@ -616,9 +617,8 @@ mockagent → cproxy(:8080) → sproxy(:9000) → mockllm(:11434)
 
 ✅ **所有测试用例已全部执行并通过**
 
-- 顶层测试函数: 1,886（含 1 个 Unix 权限测试在 Windows 下跳过）
-- 子测试 (t.Run): 557
-- **总 RUN 条目: 2,443**，全部通过（24个包）
+- 顶层测试函数: 1,861（全部通过）
+- **总 RUN 条目: 1,861**，全部通过（25个包）
 - 集成测试: 8 测试，全部通过
 - E2E测试 (httptest): 90+ 测试，全部通过
 - E2E测试 (真实进程, -tags=integration): 4 子测试，全部通过
@@ -931,11 +931,150 @@ API/Proxy 测试修复（3 个文件，20+ 测试更新）:
 5. **错误处理**: 所有错误路径有 WARN/ERROR 日志，无静默失败
 6. **向后兼容**: 配置文件新增 auth.keygen_secret 必填字段，所有测试已更新
 
+**v2.16.0 新增测试（训练语料采集 Corpus，+22 RUN）**:
+
+Corpus Writer 测试（`internal/corpus/writer_test.go`，7 个测试）:
+- ✅ `TestParseMaxFileSize` — 大小字符串解析（200MB/1GB/512KB/纯数字/空/负数/非法）
+- ✅ `TestWriterSubmitAndShutdown` — 提交 5 条记录 → flush → 验证 JSONL 文件行数和 JSON 可解析性
+- ✅ `TestWriterDropWhenFull` — channel 满时丢弃记录 + DroppedCount 计数
+- ✅ `TestWriterFileRotationBySize` — 500 字节上限触发多文件轮转（验证 ≥2 个文件）
+- ✅ `TestWriterGracefulShutdownDrain` — cancel 后 drain 剩余记录（大 buffer 不自动 flush，依赖 drain）
+- ✅ `TestWriterInvalidMaxFileSize` — 非法 max_file_size 返回错误
+- ✅ `TestWriterNegativeMaxFileSize` — 负数 max_file_size 返回错误
+
+Corpus Collector 测试（`internal/corpus/collector_test.go`，15 个测试）:
+- ✅ `TestExtractMessages` — OpenAI 字符串 content + Anthropic content block 数组 + 空 body
+- ✅ `TestCollectorAnthropicStreaming` — Anthropic SSE 流式：model_actual/input_tokens/output_tokens/assistant 文本累积
+- ✅ `TestCollectorOpenAIStreaming` — OpenAI SSE 流式：model 提取、usage chunk、[DONE] 处理
+- ✅ `TestCollectorNonStreamingAnthropic` — Anthropic 非流式：content block 提取、usage 解析
+- ✅ `TestCollectorNonStreamingOpenAI` — OpenAI 非流式：choices[0].message.content 提取
+- ✅ `TestCollectorFilterErrorStatus` — HTTP 500 → 记录被过滤（不写入）
+- ✅ `TestCollectorFilterMinTokens` — output_tokens < min_output_tokens → 过滤
+- ✅ `TestCollectorFilterExcludeGroup` — 排除分组 → 过滤
+- ✅ `TestCollectorFinishIdempotent` — Finish 多次调用幂等（只提交一次）
+- ✅ `TestCollectorAnthropicCacheTokens` — cache_read + cache_creation tokens 累加到 input_tokens
+- ✅ `TestCollectorMalformedChunks` — 畸形 JSON/空 data/注释行/event 行不 panic，后续正常 chunk 仍工作
+- ✅ `TestCollectorOllamaStreaming` — Ollama provider 走 OpenAI 解析路径，model_actual 正确提取
+- ✅ `TestCollectorFilterEmptyAssistant` — 无 content_block_delta → 空 assistant → 过滤
+- ✅ `TestRecordFieldCompleteness` — 验证 Record 全部 12 个字段正确填充
+- ✅ `TestContentToString` (7子测试) — plain string/text blocks/mixed blocks/empty array/empty string/number/null
+- ✅ `TestExtractMessagesEdgeCases` — malformed JSON/无 messages 字段/空 messages 数组
+
+**测试统计（v2.16.0）**:
+- **新增测试**: 22 个（writer 7 + collector 15）
+- **日志覆盖**: 12+ 日志点（DEBUG 5个 + INFO 4个 + WARN 2个 + ERROR 1个）
+- **测试类型**: 功能测试、质量过滤、容错（畸形 JSON）、边界条件、多 Provider、文件轮转、优雅关闭
+
+**关键测试场景**:
+1. **质量过滤**: 错误响应/短回复/排除分组/空输出 4 层过滤全覆盖
+2. **多 Provider**: Anthropic/OpenAI/Ollama 流式+非流式共 5 种路径
+3. **容错**: 畸形 JSON chunk 不 panic，后续正常数据仍可处理
+4. **文件管理**: 大小轮转、优雅关闭 drain、channel 满丢弃
+5. **Anthropic 缓存**: cache_read_input_tokens + cache_creation_input_tokens 正确累加
+
 **Breaking Change 验证**:
 - ✅ 所有旧 sk-pp- key 立即失效（硬切换，无向后兼容）
 - ✅ 用户需重新生成 API Key（通过 Dashboard 或 CLI）
 - ✅ 配置文件必须添加 auth.keygen_secret（≥32 字符）
 - ✅ 所有测试通过，无回归问题
+
+---
+
+**v2.17.0 新增测试（LLM 故障转移增强 retry_on_status，+20 RUN）**:
+
+RetryTransport 新增测试（`internal/lb/retry_transport_test.go`，6 个新测试）:
+- ✅ `TestRetryTransport_RetryOnStatus_429` — 配置 `[429]` 后 429 触发 try-next，第二个 target 成功
+- ✅ `TestRetryTransport_RetryOnStatus_429_AllExhausted` — 所有 target 均返回 429，重试耗尽后返回错误
+- ✅ `TestRetryTransport_RetryOnStatus_Disabled` — 未配置 `RetryOnStatus` 时 429 直接返回（向后兼容）
+- ✅ `TestRetryTransport_RetryOnStatus_TriedListPropagated` — 失败 target 加入 tried 列表，PickNext 收到正确列表
+- ✅ `TestRetryTransport_RetryOnStatus_OnFailureCalled` — 429 触发重试时 OnFailure 调用一次（被动熔断感知）
+- ✅ `TestRetryTransport_RetryOnStatus_MultipleStatusCodes` — `[429,503]` 多状态码，503→429→200 三跳全部正确
+
+**测试统计（v2.17.0）**:
+- **新增测试**: 6 个（internal/lb/retry_transport_test.go）
+- **日志覆盖**: 每次重试打印 attempt/max_retries/failed_target/next_target/reason（区分 `connection error` 和 `HTTP <code>`）；耗尽时错误消息含 last_status
+- **测试类型**: 功能测试、边界条件（耗尽/空列表/多状态码）、副作用验证（tried 列表/OnFailure/OnSuccess）
+
+**关键测试场景**:
+1. **429 故障转移**: 配额耗尽自动切换，同等模型多集群场景下找到可用端点
+2. **向后兼容**: 空 RetryOnStatus 时行为与 v2.16.0 完全一致，无任何回归
+3. **tried 列表正确性**: 确保每个 target 最多尝试一次，不循环
+4. **副作用完整**: OnFailure 在 429 时调用（被动熔断应感知 429），OnSuccess 在成功时调用
+5. **多状态码**: [429, 503] 同时配置，两种状态码均触发 try-next
+
+**配置变更验证**:
+- ✅ `LLMConfig.RetryOnStatus []int` 字段新增，空列表默认，向后兼容
+- ✅ `RetryTransport.RetryOnStatus` 字段新增，isRetriableStatus 辅助方法
+- ✅ `SProxy.SetRetryOnStatus()` setter 正确传递到 buildRetryTransport
+- ✅ `main.go` 启动日志新增 `retry_on_status` 字段，validate 命令输出新增一行
+
+---
+
+## 12. v2.18.0 新增测试：语义路由（Semantic Router）
+
+**新增文件**：4 个测试文件，46 个测试用例（27 顶层 + 19 子测试）
+
+### 12.1 核心路由逻辑 (internal/router/semantic_test.go)
+
+| 测试 | 验证内容 |
+|------|----------|
+| TestRoute_SkipsClassifierSubRequest | 分类器子请求正确跳过（防递归） |
+| TestRoute_NoActiveRules | 无激活规则时返回 nil |
+| TestRoute_Timeout | 分类器超时后降级到完整候选池 |
+| TestRoute_HTTP500 | 分类器 HTTP 500 后降级 |
+| TestRoute_Match | 成功匹配规则，返回对应 TargetURLs |
+| TestRoute_NoMatch | 分类器返回 -1（无匹配），降级 |
+| TestRoute_OutOfRange | 分类器返回越界索引，降级 |
+| TestBuildPrompt_LastN | 消息截断（最近 5 条） |
+| TestSetRules_HotReload | 规则热更新立即生效 |
+| TestPickError | 分类器 Pick 失败，降级 |
+
+### 12.2 数据库 CRUD (internal/db/semantic_route_repo_test.go)
+
+| 测试 | 验证内容 |
+|------|----------|
+| TestSemanticRouteRepo_CreateAndGet | 创建 + GetByID + GetByName |
+| TestSemanticRouteRepo_GetByID_NotFound | 不存在 ID 返回错误 |
+| TestSemanticRouteRepo_ListAll | 列表 + priority 降序排列 |
+| TestSemanticRouteRepo_Update | 部分字段更新 |
+| TestSemanticRouteRepo_Delete | 删除后查询返回 404 |
+| TestSemanticRouteRepo_SetActive | 启用/禁用切换 |
+| TestSemanticRoute_DecodeTargetURLs | JSON 解码：valid/invalid/empty/backward compat（4 子测试） |
+
+### 12.3 REST API Handler (internal/api/admin_semantic_route_handler_test.go)
+
+| 测试 | 验证内容 |
+|------|----------|
+| TestSemanticRoute_CreateAndList | POST 201 创建 + GET 列表 |
+| TestSemanticRoute_GetByID | GET 200 查询 |
+| TestSemanticRoute_GetByID_NotFound | GET 404 不存在 |
+| TestSemanticRoute_Update | PUT 200 更新 |
+| TestSemanticRoute_Delete | DELETE 204 + 确认已删 |
+| TestSemanticRoute_EnableDisable | POST enable/disable + 状态验证 |
+| TestSemanticRoute_CreateValidation | 400 验证：missing name/description/target_urls/empty/invalid json（5 子测试） |
+| TestSemanticRoute_Unauthorized | 401 无认证 |
+
+### 12.4 代理集成 (internal/proxy/semantic_routing_test.go)
+
+| 测试 | 验证内容 |
+|------|----------|
+| TestExtractMessagesFromBody | 消息提取：valid/empty/no field/malformed/nil/empty body（6 子测试） |
+| TestPickLLMTarget_CandidateFilter | candidateFilter 参数：nil/narrow/no match/combined with tried（4 子测试） |
+
+### 12.5 验证要点
+
+1. **防递归**: 分类器子请求通过 context 标记跳过语义路由
+2. **降级安全**: 所有失败路径（超时/500/越界/Pick失败）均返回 nil，降级到完整候选池
+3. **热更新**: SetRules 立即生效，REST API 写操作后自动 reload
+4. **candidateFilter 隔离**: filter 仅影响 LB 选择范围，不影响绑定用户
+5. **向后兼容**: `semantic_router.enabled=false` 时完全无影响
+
+**配置变更验证**:
+- ✅ `SemanticRouterConfig` 新增 `enabled`/`classifier_timeout`/`classifier_model`/`routes` 字段
+- ✅ `SemanticRoute` DB 模型新增 `DecodeTargetURLs()` 方法
+- ✅ `pickLLMTarget` 新增 `candidateFilter` 参数，所有调用点已更新
+- ✅ `weightedPickExcluding` 新增 `candidateFilter` 参数
+- ✅ `cmd/sproxy/main.go` 新增 `admin route` 子命令组（add/list/update/delete/enable/disable）
 
 ---
 

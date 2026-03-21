@@ -271,7 +271,7 @@ func TestSProxy_PassiveCircuitBreaker(t *testing.T) {
 	}
 
 	// pickLLMTarget 应只返回 t2
-	info, err := sp.pickLLMTarget("/v1/messages", "u1", "", nil)
+	info, err := sp.pickLLMTarget("/v1/messages", "u1", "", nil, nil)
 	if err != nil {
 		t.Fatalf("pickLLMTarget: %v", err)
 	}

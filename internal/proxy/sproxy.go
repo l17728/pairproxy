@@ -28,10 +28,12 @@ import (
 	"github.com/l17728/pairproxy/internal/auth"
 	"github.com/l17728/pairproxy/internal/cluster"
 	"github.com/l17728/pairproxy/internal/config"
+	"github.com/l17728/pairproxy/internal/corpus"
 	"github.com/l17728/pairproxy/internal/db"
 	"github.com/l17728/pairproxy/internal/lb"
 	"github.com/l17728/pairproxy/internal/metrics"
 	"github.com/l17728/pairproxy/internal/quota"
+	"github.com/l17728/pairproxy/internal/router"
 	"github.com/l17728/pairproxy/internal/tap"
 	"github.com/l17728/pairproxy/internal/track"
 	"github.com/l17728/pairproxy/internal/version"
@@ -91,10 +93,13 @@ type SProxy struct {
 	llmHC           *lb.HealthChecker                                // 健康检查（被动熔断 + 自动恢复）
 	bindingResolver func(userID, groupID string) (string, bool)      // 用户/分组 → target URL
 	maxRetries      int                                               // RetryTransport 最大重试次数
+	retryOnStatus   []int                                             // 额外触发 try-next 的 HTTP 状态码（如 [429]）
 
 	debugLogger atomic.Pointer[zap.Logger] // 可选，非 nil 时将转发内容写入独立 debug 文件
 	notifier    *alert.Notifier             // 可选，非 nil 时发送 high_load/load_recovered 告警
-	convTracker atomic.Pointer[track.Tracker] // 可选，非 nil 时记录指定用户对话内容
+	convTracker  atomic.Pointer[track.Tracker]  // 可选，非 nil 时记录指定用户对话内容
+	corpusWriter   atomic.Pointer[corpus.Writer]  // 可选，非 nil 时采集训练语料
+	semanticRouter *router.SemanticRouter         // 可选，非 nil 时对无绑定请求做语义路由
 
 	// 配置和数据库（用于 config target sync）
 	cfg *config.SProxyFullConfig // 可选，用于同步配置文件中的 LLM targets
@@ -190,6 +195,12 @@ func (sp *SProxy) SetMaxRetries(n int) {
 	sp.maxRetries = n
 }
 
+// SetRetryOnStatus 设置触发 try-next 的额外 HTTP 状态码列表（如 []int{429}）。
+// 空列表（默认）表示仅对 5xx 和连接错误重试，行为与旧版本完全一致。
+func (sp *SProxy) SetRetryOnStatus(codes []int) {
+	sp.retryOnStatus = codes
+}
+
 // SetTransport 设置底层 HTTP transport（测试用；默认 http.DefaultTransport）。
 func (sp *SProxy) SetTransport(t http.RoundTripper) {
 	sp.transport = t
@@ -199,6 +210,12 @@ func (sp *SProxy) SetTransport(t http.RoundTripper) {
 // 非 nil 时，每个请求的转发内容（请求体、响应体、SSE chunks）均会写入该 logger。
 func (sp *SProxy) SetDebugLogger(l *zap.Logger) {
 	sp.debugLogger.Store(l)
+}
+
+// SetSemanticRouter 设置语义路由器（可选）。
+// 非 nil 时，对无显式 LLM 绑定的请求（LB 路径）进行语义分类，缩窄候选 target 池。
+func (sp *SProxy) SetSemanticRouter(r *router.SemanticRouter) {
+	sp.semanticRouter = r
 }
 
 // SyncAndSetDebugLogger 先 Sync 旧 logger（flush 缓冲区），再原子切换为新 logger。
@@ -214,6 +231,12 @@ func (sp *SProxy) SyncAndSetDebugLogger(l *zap.Logger) {
 // 非 nil 时，对已启用跟踪的用户，每次请求的输入消息和 LLM 回复均会写入文件。
 func (sp *SProxy) SetConvTracker(t *track.Tracker) {
 	sp.convTracker.Store(t)
+}
+
+// SetCorpusWriter 设置训练语料采集写入器。
+// 非 nil 时，每次代理请求的输入消息和 LLM 回复均会异步写入 JSONL 语料文件。
+func (sp *SProxy) SetCorpusWriter(w *corpus.Writer) {
+	sp.corpusWriter.Store(w)
 }
 
 // SetConfigAndDB 设置配置和数据库（用于 config target sync）。
@@ -773,7 +796,7 @@ func (sp *SProxy) HealthHandler() http.HandlerFunc {
 //  1. 用户/分组绑定（bindingResolver）→ 若绑定 target 健康且未尝试过
 //  2. 加权随机负载均衡（llmBalancer）→ 过滤已尝试 + 不健康 + provider 不匹配
 //  3. 回退简单轮询（无均衡器时）
-func (sp *SProxy) pickLLMTarget(path, userID, groupID string, tried []string) (*lb.LLMTargetInfo, error) {
+func (sp *SProxy) pickLLMTarget(path, userID, groupID string, tried []string, candidateFilter []string) (*lb.LLMTargetInfo, error) {
 	triedSet := make(map[string]bool, len(tried))
 	for _, u := range tried {
 		triedSet[u] = true
@@ -821,9 +844,20 @@ func (sp *SProxy) pickLLMTarget(path, userID, groupID string, tried []string) (*
 		return nil, ErrBoundTargetUnavailable
 	}
 
-	// 2. 加权随机均衡（支持 tried 过滤 + provider 过滤）
+	// 构建语义候选集（过滤 candidateFilter）
+	filterSet := make(map[string]bool, len(candidateFilter))
+	for _, u := range candidateFilter {
+		filterSet[u] = true
+	}
+	if len(filterSet) > 0 {
+		sp.logger.Debug("pickLLMTarget: semantic candidateFilter active",
+			zap.Int("filter_size", len(filterSet)),
+		)
+	}
+
+	// 2. 加权随机均衡（支持 tried 过滤 + provider 过滤 + candidateFilter）
 	if sp.llmBalancer != nil {
-		return sp.weightedPickExcluding(path, triedSet)
+		return sp.weightedPickExcluding(path, triedSet, filterSet)
 	}
 
 	// 3. 回退：简单轮询（未配置均衡器时）
@@ -831,12 +865,16 @@ func (sp *SProxy) pickLLMTarget(path, userID, groupID string, tried []string) (*
 	if len(candidates) == 0 {
 		candidates = sp.targets
 	}
-	// 过滤已尝试目标
+	// 过滤已尝试目标 + candidateFilter（若非空则只保留在 filter 内的）
 	var available []LLMTarget
 	for _, t := range candidates {
-		if !triedSet[t.URL] {
-			available = append(available, t)
+		if triedSet[t.URL] {
+			continue
 		}
+		if len(filterSet) > 0 && !filterSet[t.URL] {
+			continue
+		}
+		available = append(available, t)
 	}
 	if len(available) == 0 {
 		return nil, lb.ErrNoHealthyTarget
@@ -850,8 +888,8 @@ func (sp *SProxy) pickLLMTarget(path, userID, groupID string, tried []string) (*
 	return &lb.LLMTargetInfo{URL: t.URL, APIKey: t.APIKey}, nil
 }
 
-// weightedPickExcluding 从 llmBalancer 中选取健康 target，排除 tried，并应用 provider 过滤。
-func (sp *SProxy) weightedPickExcluding(path string, tried map[string]bool) (*lb.LLMTargetInfo, error) {
+// weightedPickExcluding 从 llmBalancer 中选取健康 target，排除 tried，并应用 provider 过滤和语义候选集过滤。
+func (sp *SProxy) weightedPickExcluding(path string, tried map[string]bool, candidateFilter map[string]bool) (*lb.LLMTargetInfo, error) {
 	all := sp.llmBalancer.Targets()
 	preferred := preferredProvidersByPath(path)
 
@@ -859,6 +897,10 @@ func (sp *SProxy) weightedPickExcluding(path string, tried map[string]bool) (*lb
 		var out []lb.Target
 		for _, t := range targets {
 			if !t.Healthy || tried[t.ID] {
+				continue
+			}
+			// 语义路由候选集过滤（非空时只保留在 candidateFilter 内的 target）
+			if len(candidateFilter) > 0 && !candidateFilter[t.ID] {
 				continue
 			}
 			if providerFilter != nil {
@@ -987,15 +1029,16 @@ func (sp *SProxy) buildRetryTransport(userID, groupID, effectivePath string) htt
 		maxRetries = 2
 	}
 	return &lb.RetryTransport{
-		Inner:      sp.transport,
-		MaxRetries: maxRetries,
+		Inner:         sp.transport,
+		MaxRetries:    maxRetries,
+		RetryOnStatus: sp.retryOnStatus,
 		PickNext: func(_ string, tried []string) (*lb.LLMTargetInfo, error) {
 			// The `path` parameter passed by RetryTransport is intentionally shadowed by the
 			// captured `effectivePath`. This is correct: for OtoA retries, effectivePath is
 			// "/v1/messages" (Anthropic targets); for all other cases it equals r.URL.Path
 			// (same as what RetryTransport would pass). RetryTransport's `path` arg is the
 			// original request path before Director rewrite — we don't want that here.
-			return sp.pickLLMTarget(effectivePath, userID, groupID, tried)
+			return sp.pickLLMTarget(effectivePath, userID, groupID, tried, nil)
 		},
 		OnSuccess: func(targetURL string) {
 			if sp.llmHC != nil {
@@ -1139,7 +1182,30 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 
-	firstInfo, pickErr := sp.pickLLMTarget(r.URL.Path, claims.UserID, claims.GroupID, nil)
+	// 语义路由：仅对无绑定用户（bindingResolver==nil）的 LB 路径生效
+	var semanticCandidates []string
+	if sp.semanticRouter != nil && sp.bindingResolver == nil && len(bodyBytes) > 0 {
+		if msgs := extractMessagesFromBody(bodyBytes); len(msgs) > 0 {
+			semanticCandidates = sp.semanticRouter.Route(r.Context(), msgs)
+			if len(semanticCandidates) > 0 {
+				sp.logger.Info("semantic router: candidate pool narrowed",
+					zap.String("request_id", reqID),
+					zap.Int("candidates", len(semanticCandidates)),
+				)
+			}
+		} else {
+			sp.logger.Debug("semantic router: skipped, no messages extracted from body",
+				zap.String("request_id", reqID),
+			)
+		}
+	} else if sp.semanticRouter != nil && sp.bindingResolver != nil {
+		sp.logger.Debug("semantic router: skipped, binding resolver active",
+			zap.String("request_id", reqID),
+			zap.String("user_id", claims.UserID),
+		)
+	}
+
+	firstInfo, pickErr := sp.pickLLMTarget(r.URL.Path, claims.UserID, claims.GroupID, nil, semanticCandidates)
 	if pickErr != nil {
 		switch {
 		case errors.Is(pickErr, ErrNoLLMBinding):
@@ -1203,7 +1269,7 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 		effectivePath = "/v1/messages"
 		// Re-pick using effectivePath so preferredProvidersByPath["/v1/messages"] matches
 		// Anthropic targets correctly (spec §"Target Routing Fix for OtoA").
-		if repicked, pickErr := sp.pickLLMTarget(effectivePath, claims.UserID, claims.GroupID, nil); pickErr == nil {
+		if repicked, pickErr := sp.pickLLMTarget(effectivePath, claims.UserID, claims.GroupID, nil, nil); pickErr == nil {
 			firstInfo = repicked
 			targetProvider = sp.providerForURL(firstInfo.URL)
 			// Update targetURL so the Director closure (captured at line ~1164) uses the right host.
@@ -1358,25 +1424,56 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 
+	// 训练语料采集：创建 CorpusCollector（如果 corpus writer 已启用）
+	var corpusCollector *corpus.Collector
+	if cw := sp.corpusWriter.Load(); cw != nil {
+		corpusCollector = corpus.NewCollector(
+			cw,
+			sp.sourceNode,
+			reqID,
+			claims.Username,
+			claims.GroupID,
+			requestedModel,
+			firstInfo.URL,
+			targetProvider,
+			bodyBytes,
+			startTime,
+		)
+		sp.logger.Debug("corpus collector active",
+			zap.String("request_id", reqID),
+			zap.String("username", claims.Username),
+		)
+	}
+
+	// 构建 onChunk 回调（debug 日志 + 对话跟踪 + 语料采集）
+	var chunkHandlers []func([]byte)
+	if dl != nil {
+		dlRef := dl // capture for closure
+		chunkHandlers = append(chunkHandlers, func(chunk []byte) {
+			dlRef.Debug("← LLM stream chunk",
+				zap.String("request_id", reqID),
+				zap.ByteString("data", truncate(chunk, debugBodyMaxBytes)),
+			)
+		})
+	}
+	if captureSession != nil {
+		chunkHandlers = append(chunkHandlers, captureSession.FeedChunk)
+	}
+	if corpusCollector != nil {
+		chunkHandlers = append(chunkHandlers, corpusCollector.FeedChunk)
+	}
 	var onChunk func([]byte)
-	if dl != nil && captureSession != nil {
-		// 同时启用 debug 日志 + 对话跟踪：合并为一个回调
-		onChunk = func(chunk []byte) {
-			dl.Debug("← LLM stream chunk",
-				zap.String("request_id", reqID),
-				zap.ByteString("data", truncate(chunk, debugBodyMaxBytes)),
-			)
-			captureSession.FeedChunk(chunk)
+	switch len(chunkHandlers) {
+	case 1:
+		onChunk = chunkHandlers[0]
+	default:
+		if len(chunkHandlers) > 1 {
+			onChunk = func(chunk []byte) {
+				for _, h := range chunkHandlers {
+					h(chunk)
+				}
+			}
 		}
-	} else if dl != nil {
-		onChunk = func(chunk []byte) {
-			dl.Debug("← LLM stream chunk",
-				zap.String("request_id", reqID),
-				zap.ByteString("data", truncate(chunk, debugBodyMaxBytes)),
-			)
-		}
-	} else if captureSession != nil {
-		onChunk = captureSession.FeedChunk
 	}
 
 	// 创建 TeeResponseWriter
@@ -1596,6 +1693,11 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 					captureSession.SetNonStreamingResponse(body)
 					captureSession.Flush()
 				}
+				// 训练语料采集：记录非流式响应
+				if corpusCollector != nil {
+					corpusCollector.SetNonStreamingResponse(body)
+					corpusCollector.Finish(resp.StatusCode, durationMs)
+				}
 			} else if convDir != conversionNone {
 				// 協議転換（streaming）：
 				// AtoO: 上游返回 OpenAI SSE → OpenAIToAnthropicStreamConverter 転為 Anthropic SSE 給客户端
@@ -1644,6 +1746,11 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	proxy.ServeHTTP(tw, r)
+
+	// 训练语料采集：流式响应完成后提交记录
+	if corpusCollector != nil {
+		corpusCollector.Finish(tw.StatusCode(), time.Since(startTime).Milliseconds())
+	}
 }
 
 // parseRoutingVersion 将字符串版本号解析为 int64，解析失败返回 0。
@@ -1677,6 +1784,17 @@ func extractModelFromBody(body []byte) string {
 		return req.Model
 	}
 	return ""
+}
+
+// extractMessagesFromBody 从请求 body 中提取 messages 字段，用于语义路由分类。
+func extractMessagesFromBody(body []byte) []corpus.Message {
+	var req struct {
+		Messages []corpus.Message `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &req); err == nil {
+		return req.Messages
+	}
+	return nil
 }
 
 // ServeDirect 处理直连模式（API Key 认证）的代理请求。

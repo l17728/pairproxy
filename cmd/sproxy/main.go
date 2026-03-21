@@ -31,6 +31,7 @@ import (
 	"github.com/l17728/pairproxy/internal/keygen"
 	"github.com/l17728/pairproxy/internal/cluster"
 	"github.com/l17728/pairproxy/internal/config"
+	"github.com/l17728/pairproxy/internal/corpus"
 	"github.com/l17728/pairproxy/internal/dashboard"
 	"github.com/l17728/pairproxy/internal/db"
 	"github.com/l17728/pairproxy/internal/eventlog"
@@ -40,6 +41,7 @@ import (
 	"github.com/l17728/pairproxy/internal/preflight"
 	"github.com/l17728/pairproxy/internal/proxy"
 	"github.com/l17728/pairproxy/internal/quota"
+	"github.com/l17728/pairproxy/internal/router"
 	"github.com/l17728/pairproxy/internal/track"
 	"github.com/l17728/pairproxy/internal/version"
 )
@@ -411,10 +413,12 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 		sp.SetLLMHealthChecker(llmBalancer, llmHC)
 		sp.SetMaxRetries(cfg.LLM.MaxRetries)
+		sp.SetRetryOnStatus(cfg.LLM.RetryOnStatus)
 
 		logger.Info("LLM balancer configured",
 			zap.Int("targets", len(lbLLMTargets)),
 			zap.Int("max_retries", cfg.LLM.MaxRetries),
+			zap.Ints("retry_on_status", cfg.LLM.RetryOnStatus),
 			zap.Duration("recovery_delay", cfg.LLM.RecoveryDelay),
 			zap.Int("health_check_paths", len(healthPaths)),
 		)
@@ -634,6 +638,32 @@ func runStart(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// 训练语料采集（corpus）：异步采集 LLM 请求/响应为 JSONL 训练数据
+	var corpusWriter *corpus.Writer
+	if cfg.Corpus.Enabled {
+		instanceID := cfg.Corpus.InstanceID
+		if instanceID == "" {
+			instanceID = strconv.Itoa(cfg.Listen.Port)
+			if instanceID == "0" {
+				instanceID = strconv.Itoa(os.Getpid())
+			}
+		}
+		cw, cwErr := corpus.New(logger, cfg.Corpus, instanceID)
+		if cwErr != nil {
+			logger.Warn("failed to init corpus writer, corpus collection disabled",
+				zap.Error(cwErr),
+			)
+		} else {
+			cw.Start(ctx)
+			sp.SetCorpusWriter(cw)
+			corpusWriter = cw
+			logger.Info("corpus writer started",
+				zap.String("path", cfg.Corpus.Path),
+				zap.String("instance_id", instanceID),
+			)
+		}
+	}
+
 	// ---------------------------------------------------------------------------
 	// 注册路由
 	// ---------------------------------------------------------------------------
@@ -659,6 +689,69 @@ func runStart(cmd *cobra.Command, args []string) error {
 	)
 	llmTargetHandler.RegisterRoutes(mux, adminHandler.RequireAdmin, adminHandler.RequireWritableNode)
 	logger.Info("LLM target API registered at /api/admin/llm/targets")
+
+	// 语义路由管理 REST API
+	semanticRouteRepo := db.NewSemanticRouteRepo(database, logger)
+	var semanticRtr *router.SemanticRouter
+	if cfg.SemanticRouter.Enabled {
+		// 从 DB 加载规则（DB 规则优先于 YAML）
+		dbRoutes, dbErr := semanticRouteRepo.ListAll()
+		if dbErr != nil {
+			logger.Warn("failed to load semantic routes from DB", zap.Error(dbErr))
+		}
+
+		// 合并 YAML 配置规则（DB 同名规则优先，跳过 YAML 同名条目）
+		dbNames := make(map[string]bool, len(dbRoutes))
+		for _, r := range dbRoutes {
+			dbNames[r.Name] = true
+		}
+		var rules []router.RouteRule
+		for _, r := range dbRoutes {
+			if !r.IsActive {
+				continue
+			}
+			rules = append(rules, router.RouteRule{
+				ID:          r.ID,
+				Name:        r.Name,
+				Description: r.Description,
+				TargetURLs:  r.TargetURLs(),
+				Priority:    r.Priority,
+				IsActive:    r.IsActive,
+			})
+		}
+		for _, cr := range cfg.SemanticRouter.Routes {
+			if dbNames[cr.Name] {
+				continue // DB 规则优先
+			}
+			rules = append(rules, router.RouteRule{
+				Name:        cr.Name,
+				Description: cr.Description,
+				TargetURLs:  cr.TargetURLs,
+				Priority:    cr.Priority,
+				IsActive:    true,
+			})
+		}
+
+		classifierTarget := proxy.NewSProxyClassifierTarget(sp, logger)
+		semanticRtr = router.NewSemanticRouter(
+			logger, rules, classifierTarget,
+			cfg.SemanticRouter.ClassifierTimeout,
+			cfg.SemanticRouter.ClassifierModel,
+		)
+		sp.SetSemanticRouter(semanticRtr)
+		logger.Info("semantic router enabled",
+			zap.Int("rules", len(rules)),
+			zap.Duration("classifier_timeout", cfg.SemanticRouter.ClassifierTimeout),
+			zap.String("classifier_model", cfg.SemanticRouter.ClassifierModel),
+		)
+	}
+
+	semanticRouteHandler := api.NewAdminSemanticRouteHandler(
+		logger, jwtMgr, semanticRouteRepo, auditRepo,
+		semanticRtr, cfg.Admin.PasswordHash, adminTokenTTL,
+	)
+	semanticRouteHandler.RegisterRoutes(mux, adminHandler.RequireAdmin, adminHandler.RequireWritableNode)
+	logger.Info("semantic route API registered at /api/admin/semantic-routes")
 
 	// 用户自助服务 API（F-10 WebUI 增强）
 	userHandler := api.NewUserHandler(logger, jwtMgr, userRepo, groupRepo, usageRepo)
@@ -926,6 +1019,11 @@ func runStart(cmd *cobra.Command, args []string) error {
 		// 等待用量写入器完成
 		writer.Wait()
 
+		// 等待语料写入器完成
+		if corpusWriter != nil {
+			corpusWriter.Wait()
+		}
+
 		// Peer 模式：注销本节点（主动将 is_active=false 写入 DB）
 		if pgPeerReg != nil {
 			_ = pgPeerReg.Unregister(context.Background())
@@ -999,7 +1097,7 @@ var adminConfigFlag string
 
 func init() {
 	adminCmd.PersistentFlags().StringVar(&adminConfigFlag, "config", "", "path to sproxy.yaml (default: sproxy.yaml)")
-	adminCmd.AddCommand(adminUserCmd, adminGroupCmd, adminStatsCmd, adminTokenCmd, adminBackupCmd, adminRestoreCmd, adminLogsCmd, adminExportCmd, adminApikeyCmd, adminLLMCmd, adminQuotaCmd, adminAuditCmd, adminDrainCmd, adminTrackCmd, adminImportCmd)
+	adminCmd.AddCommand(adminUserCmd, adminGroupCmd, adminStatsCmd, adminTokenCmd, adminBackupCmd, adminRestoreCmd, adminLogsCmd, adminExportCmd, adminApikeyCmd, adminLLMCmd, adminQuotaCmd, adminAuditCmd, adminDrainCmd, adminTrackCmd, adminImportCmd, adminRouteCmd)
 }
 
 // closeGormDB 优雅关闭 GORM 数据库连接，释放文件锁和文件描述符。
@@ -2405,6 +2503,7 @@ Examples:
 		fmt.Printf("  Database:        %s\n", cfg.Database.Path)
 		fmt.Printf("  LLM targets:     %d\n", len(cfg.LLM.Targets))
 		fmt.Printf("  Max retries:     %d\n", cfg.LLM.MaxRetries)
+		fmt.Printf("  Retry on status: %v\n", cfg.LLM.RetryOnStatus)
 		fmt.Printf("  Recovery delay:  %s\n", cfg.LLM.RecoveryDelay)
 		fmt.Printf("  Dashboard:       %v\n", cfg.Dashboard.Enabled)
 		fmt.Printf("  Telemetry:       %v\n", cfg.Telemetry.Enabled)
@@ -3743,4 +3842,240 @@ var adminImportCmd = &cobra.Command{
 
 func init() {
 	adminImportCmd.Flags().Bool("dry-run", false, "预览导入结果，不实际写入")
+}
+
+// ---------------------------------------------------------------------------
+// admin route — 语义路由规则管理子命令
+// ---------------------------------------------------------------------------
+
+var adminRouteCmd = &cobra.Command{
+	Use:   "route",
+	Short: "Manage semantic routing rules",
+	Long: `Semantic routing uses LLM classification to narrow the candidate target pool
+based on request intent. Rules consist of a natural language description
+and a set of target URLs. When the classifier matches a rule, only its
+target URLs remain in the candidate pool.`,
+}
+
+// --- route add ---
+
+var (
+	routeAddDesc     string
+	routeAddTargets  string
+	routeAddPriority int
+)
+
+var adminRouteAddCmd = &cobra.Command{
+	Use:   "add <name>",
+	Short: "Add a semantic routing rule",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name := args[0]
+		if routeAddDesc == "" {
+			return fmt.Errorf("--description is required")
+		}
+		if routeAddTargets == "" {
+			return fmt.Errorf("--targets is required")
+		}
+		targets := strings.Split(routeAddTargets, ",")
+		for i := range targets {
+			targets[i] = strings.TrimSpace(targets[i])
+		}
+
+		_, _, _, _, logger, database, err := openAdminDB()
+		if err != nil {
+			return err
+		}
+		defer closeGormDB(logger, database)
+
+		repo := db.NewSemanticRouteRepo(database, logger)
+		route, err := repo.Create(name, routeAddDesc, targets, routeAddPriority)
+		if err != nil {
+			return fmt.Errorf("create route: %w", err)
+		}
+		fmt.Printf("Route created: id=%s name=%s priority=%d targets=%v\n",
+			route.ID, route.Name, route.Priority, targets)
+		return nil
+	},
+}
+
+// --- route list ---
+
+var adminRouteListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List all semantic routing rules",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		_, _, _, _, logger, database, err := openAdminDB()
+		if err != nil {
+			return err
+		}
+		defer closeGormDB(logger, database)
+
+		repo := db.NewSemanticRouteRepo(database, logger)
+		routes, err := repo.ListAll()
+		if err != nil {
+			return fmt.Errorf("list routes: %w", err)
+		}
+		if len(routes) == 0 {
+			fmt.Println("No semantic routes configured.")
+			return nil
+		}
+		fmt.Printf("%-36s  %-20s  %-8s  %-8s  %s\n", "ID", "NAME", "PRIORITY", "ACTIVE", "TARGETS")
+		for _, r := range routes {
+			urls := r.TargetURLs()
+			active := "yes"
+			if !r.IsActive {
+				active = "no"
+			}
+			fmt.Printf("%-36s  %-20s  %-8d  %-8s  %s\n",
+				r.ID, r.Name, r.Priority, active, strings.Join(urls, ", "))
+		}
+		return nil
+	},
+}
+
+// --- route update ---
+
+var (
+	routeUpdateDesc     string
+	routeUpdateTargets  string
+	routeUpdatePriority int
+)
+
+var adminRouteUpdateCmd = &cobra.Command{
+	Use:   "update <name>",
+	Short: "Update a semantic routing rule",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name := args[0]
+		_, _, _, _, logger, database, err := openAdminDB()
+		if err != nil {
+			return err
+		}
+		defer closeGormDB(logger, database)
+
+		repo := db.NewSemanticRouteRepo(database, logger)
+		route, err := repo.GetByName(name)
+		if err != nil {
+			return fmt.Errorf("route %q not found: %w", name, err)
+		}
+
+		updates := map[string]interface{}{}
+		if cmd.Flags().Changed("description") {
+			updates["description"] = routeUpdateDesc
+		}
+		if cmd.Flags().Changed("targets") {
+			targets := strings.Split(routeUpdateTargets, ",")
+			for i := range targets {
+				targets[i] = strings.TrimSpace(targets[i])
+			}
+			encoded, _ := json.Marshal(targets)
+			updates["target_urls"] = string(encoded)
+		}
+		if cmd.Flags().Changed("priority") {
+			updates["priority"] = routeUpdatePriority
+		}
+		if len(updates) == 0 {
+			return fmt.Errorf("nothing to update; specify --description, --targets, or --priority")
+		}
+
+		if err := repo.Update(route.ID, updates); err != nil {
+			return fmt.Errorf("update route: %w", err)
+		}
+		fmt.Printf("Route %q updated.\n", name)
+		return nil
+	},
+}
+
+// --- route delete ---
+
+var adminRouteDeleteCmd = &cobra.Command{
+	Use:   "delete <name>",
+	Short: "Delete a semantic routing rule",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name := args[0]
+		_, _, _, _, logger, database, err := openAdminDB()
+		if err != nil {
+			return err
+		}
+		defer closeGormDB(logger, database)
+
+		repo := db.NewSemanticRouteRepo(database, logger)
+		route, err := repo.GetByName(name)
+		if err != nil {
+			return fmt.Errorf("route %q not found: %w", name, err)
+		}
+		if err := repo.Delete(route.ID); err != nil {
+			return fmt.Errorf("delete route: %w", err)
+		}
+		fmt.Printf("Route %q deleted.\n", name)
+		return nil
+	},
+}
+
+// --- route enable ---
+
+var adminRouteEnableCmd = &cobra.Command{
+	Use:   "enable <name>",
+	Short: "Enable a semantic routing rule",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name := args[0]
+		_, _, _, _, logger, database, err := openAdminDB()
+		if err != nil {
+			return err
+		}
+		defer closeGormDB(logger, database)
+
+		repo := db.NewSemanticRouteRepo(database, logger)
+		route, err := repo.GetByName(name)
+		if err != nil {
+			return fmt.Errorf("route %q not found: %w", name, err)
+		}
+		if err := repo.SetActive(route.ID, true); err != nil {
+			return fmt.Errorf("enable route: %w", err)
+		}
+		fmt.Printf("Route %q enabled.\n", name)
+		return nil
+	},
+}
+
+// --- route disable ---
+
+var adminRouteDisableCmd = &cobra.Command{
+	Use:   "disable <name>",
+	Short: "Disable a semantic routing rule",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name := args[0]
+		_, _, _, _, logger, database, err := openAdminDB()
+		if err != nil {
+			return err
+		}
+		defer closeGormDB(logger, database)
+
+		repo := db.NewSemanticRouteRepo(database, logger)
+		route, err := repo.GetByName(name)
+		if err != nil {
+			return fmt.Errorf("route %q not found: %w", name, err)
+		}
+		if err := repo.SetActive(route.ID, false); err != nil {
+			return fmt.Errorf("disable route: %w", err)
+		}
+		fmt.Printf("Route %q disabled.\n", name)
+		return nil
+	},
+}
+
+func init() {
+	adminRouteAddCmd.Flags().StringVar(&routeAddDesc, "description", "", "natural language description for classifier")
+	adminRouteAddCmd.Flags().StringVar(&routeAddTargets, "targets", "", "comma-separated target URLs")
+	adminRouteAddCmd.Flags().IntVar(&routeAddPriority, "priority", 0, "rule priority (higher = more preferred)")
+
+	adminRouteUpdateCmd.Flags().StringVar(&routeUpdateDesc, "description", "", "new description")
+	adminRouteUpdateCmd.Flags().StringVar(&routeUpdateTargets, "targets", "", "new comma-separated target URLs")
+	adminRouteUpdateCmd.Flags().IntVar(&routeUpdatePriority, "priority", 0, "new priority")
+
+	adminRouteCmd.AddCommand(adminRouteAddCmd, adminRouteListCmd, adminRouteUpdateCmd, adminRouteDeleteCmd, adminRouteEnableCmd, adminRouteDisableCmd)
 }

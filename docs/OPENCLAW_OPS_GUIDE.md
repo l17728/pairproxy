@@ -1,8 +1,8 @@
 # PairProxy OpenClaw 自动化运维手册
 
-**版本**: v2.3
-**适用系统**: PairProxy v2.15.0+
-**更新日期**: 2026-03-18
+**版本**: v2.4
+**适用系统**: PairProxy v2.18.0+
+**更新日期**: 2026-03-22
 
 ---
 
@@ -31,6 +31,8 @@
 | 告警流（v2.8.0+） | SSE 端点可达性、WARN/ERROR 日志积压 | 5 分钟 |
 | Direct Proxy（v2.9.0+） | `/keygen/` 端点可达性、Key 认证成功率 | 5 分钟 |
 | HMAC Keygen（v2.15.0+） | keygen_secret 配置存在性、API Key 验证失败率 | 5 分钟 |
+| LLM 故障转移（v2.17.0+） | retry_on_status 配置存在性、429 触发重试次数、try-next 成功率 | 5 分钟 |
+| 语义路由（v2.18.0+） | semantic_router.enabled 配置、分类器超时率、规则匹配命中率、降级次数 | 5 分钟 |
 
 ---
 
@@ -931,6 +933,35 @@ openclaw history --task health_check --limit 10
   journalctl -u sproxy-worker | grep "UNIQUE constraint"
   ```
 
+### 8.5 语义路由问题排查（v2.18.0+）
+
+**问题**: 语义路由未生效，所有请求走完整候选池
+
+**排查步骤**:
+```bash
+# 1. 确认 semantic_router.enabled: true
+grep -A5 'semantic_router' /etc/pairproxy/sproxy.yaml
+
+# 2. 查看启动日志确认规则加载
+journalctl -u sproxy | grep "semantic router enabled"
+
+# 3. 检查 DB 中的规则
+./sproxy admin route list
+
+# 4. 查看运行时日志
+journalctl -u sproxy | grep "semantic router"
+# 正常: "semantic router: rule matched"
+# 跳过: "semantic router: skipped, binding resolver active"
+# 降级: "semantic router: classifier failed, fallback to full pool"
+```
+
+**常见原因**:
+- `semantic_router.enabled` 未设为 `true`
+- 用户有 LLM 绑定（绑定优先，跳过语义路由）
+- 分类器超时（检查 `classifier_timeout` 和网络延迟）
+- 无激活规则（所有规则 `is_active=false`）
+- `target_urls` 中的 URL 与 `llm.targets` 不匹配
+
 ---
 
 ## 9. 附录
@@ -955,6 +986,6 @@ openclaw history --task health_check --limit 10
 
 ---
 
-**文档版本**: 2.3
-**最后更新**: 2026-03-18
+**文档版本**: 2.4
+**最后更新**: 2026-03-22
 **维护者**: PairProxy Team

@@ -22,6 +22,7 @@ type LLMTargetInfo struct {
 //
 // 在连接错误或上游返回 5xx 时，自动切换到下一个健康 target 并重试。
 // 不重试：4xx 响应（客户端错误无法通过换 target 解决）、context 取消/超时。
+// 若 RetryOnStatus 非空，其中列出的状态码也会触发 try-next（如 429 配额耗尽）。
 // body 缓冲：因 LLM 请求体通常为小型 JSON，重试前缓冲 body 以便重放。
 type RetryTransport struct {
 	// Inner 底层 transport（通常为 http.DefaultTransport 或带超时的 transport）
@@ -29,6 +30,11 @@ type RetryTransport struct {
 
 	// MaxRetries 最大额外重试次数（不含首次尝试）。0 = 不重试。
 	MaxRetries int
+
+	// RetryOnStatus 除 5xx/连接错误外，触发 try-next 的额外 HTTP 状态码列表。
+	// 典型用法：[]int{429}，使配额耗尽时自动切换到下一个 target。
+	// 空列表（默认）= 仅重试 5xx 和连接错误，行为与旧版本完全一致。
+	RetryOnStatus []int
 
 	// PickNext 根据请求路径和已尝试的 URL 列表，返回下一个 target。
 	// 无可用 target 时返回 error（通常是 ErrNoHealthyTarget）。
@@ -75,8 +81,8 @@ func (t *RetryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			return resp, err
 		}
 
-		// 成功（2xx / 3xx / 4xx 均视为"已收到响应"，不因 4xx 重试）
-		if err == nil && resp.StatusCode < 500 {
+		// 成功：2xx / 3xx，以及不在 RetryOnStatus 中的 4xx
+		if err == nil && resp.StatusCode < 500 && !t.isRetriableStatus(resp.StatusCode) {
 			if t.OnSuccess != nil {
 				t.OnSuccess(currentURL)
 			}
@@ -100,8 +106,12 @@ func (t *RetryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			if err != nil {
 				return nil, fmt.Errorf("llm request failed after %d retries (target=%s): %w", attempt+1, currentURL, err)
 			}
-			// 最后一次为 5xx：返回 error 让 ReverseProxy 触发 ErrorHandler
-			return nil, fmt.Errorf("all %d LLM targets exhausted with 5xx (last target=%s)", attempt+1, currentURL)
+			// 最后一次为失败状态码：返回 error 让 ReverseProxy 触发 ErrorHandler
+			var lastStatus int
+			if resp != nil {
+				lastStatus = resp.StatusCode
+			}
+			return nil, fmt.Errorf("all %d LLM targets exhausted (last target=%s, last status=%d)", attempt+1, currentURL, lastStatus)
 		}
 
 		// 选下一个 target
@@ -132,15 +142,29 @@ func (t *RetryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			cloned.Header.Set("Authorization", "Bearer "+next.APIKey)
 		}
 
+		reason := "connection error"
+		if err == nil && resp != nil {
+			reason = fmt.Sprintf("HTTP %d", resp.StatusCode)
+		}
 		t.Logger.Warn("llm request failed, retrying with next target",
 			zap.Int("attempt", attempt+1),
 			zap.Int("max_retries", t.MaxRetries),
 			zap.String("failed_target", currentURL),
 			zap.String("next_target", next.URL),
-			zap.NamedError("reason", err),
+			zap.String("reason", reason),
 		)
 
 		req = cloned
 		currentURL = next.URL
 	}
+}
+
+// isRetriableStatus 检查 HTTP 状态码是否在 RetryOnStatus 列表中。
+func (t *RetryTransport) isRetriableStatus(code int) bool {
+	for _, s := range t.RetryOnStatus {
+		if s == code {
+			return true
+		}
+	}
+	return false
 }

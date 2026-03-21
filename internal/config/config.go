@@ -34,7 +34,37 @@ type SProxyFullConfig struct {
 	Dashboard DashboardConfig `yaml:"dashboard"`
 	Pricing   PricingConfig   `yaml:"pricing"`
 	Telemetry TelemetryConfig `yaml:"telemetry"`
-	Log       LogConfig       `yaml:"log"`
+	Corpus         CorpusConfig         `yaml:"corpus"`
+	SemanticRouter SemanticRouterConfig `yaml:"semantic_router"`
+	Log            LogConfig            `yaml:"log"`
+}
+
+// CorpusConfig 训练语料采集配置（用于模型蒸馏）
+type CorpusConfig struct {
+	Enabled         bool          `yaml:"enabled"`           // 默认 false
+	Path            string        `yaml:"path"`              // 输出目录，默认 "./corpus/"
+	InstanceID      string        `yaml:"instance_id"`       // 空 = 从 server.addr 端口自动推导
+	MaxFileSize     string        `yaml:"max_file_size"`     // 单文件最大大小，默认 "200MB"
+	BufferSize      int           `yaml:"buffer_size"`       // channel 容量，默认 1000
+	FlushInterval   time.Duration `yaml:"flush_interval"`    // 强制 flush 间隔，默认 5s
+	MinOutputTokens int           `yaml:"min_output_tokens"` // 最小输出 token 数过滤，默认 50
+	ExcludeGroups   []string      `yaml:"exclude_groups"`    // 排除的分组列表
+}
+
+// SemanticRouterConfig 语义路由模块配置
+type SemanticRouterConfig struct {
+	Enabled           bool                  `yaml:"enabled"`            // 默认 false
+	ClassifierTimeout time.Duration         `yaml:"classifier_timeout"` // 分类器超时，默认 3s
+	ClassifierModel   string                `yaml:"classifier_model"`   // 分类器模型名，默认 "claude-haiku-3-5"
+	Routes            []SemanticRouteConfig `yaml:"routes"`             // YAML 默认规则（DB 规则优先）
+}
+
+// SemanticRouteConfig 单条语义路由规则（来自 YAML）
+type SemanticRouteConfig struct {
+	Name        string   `yaml:"name"`
+	Description string   `yaml:"description"`
+	TargetURLs  []string `yaml:"target_urls"`
+	Priority    int      `yaml:"priority"`
 }
 
 // PricingConfig 模型定价配置（用于估算费用）
@@ -108,10 +138,11 @@ type CProxyAuth struct {
 
 // LLMConfig s-proxy 上游 LLM 配置
 type LLMConfig struct {
-	LBStrategy     string        `yaml:"lb_strategy"`     // "round_robin"
-	RequestTimeout time.Duration `yaml:"request_timeout"` // 默认 300s
-	MaxRetries     int           `yaml:"max_retries"`     // 上游失败时最大重试次数（不含首次），默认 2；0=不重试
-	RecoveryDelay  time.Duration `yaml:"recovery_delay"`  // 熔断后自动恢复延迟，默认 60s；0=禁用自动恢复
+	LBStrategy     string        `yaml:"lb_strategy"`      // "round_robin"
+	RequestTimeout time.Duration `yaml:"request_timeout"`  // 默认 300s
+	MaxRetries     int           `yaml:"max_retries"`      // 上游失败时最大重试次数（不含首次），默认 2；0=不重试
+	RecoveryDelay  time.Duration `yaml:"recovery_delay"`   // 熔断后自动恢复延迟，默认 60s；0=禁用自动恢复
+	RetryOnStatus  []int         `yaml:"retry_on_status"` // 触发 try-next 的额外 HTTP 状态码（如 [429]），默认空=仅重试5xx/连接错误
 	Targets        []LLMTarget   `yaml:"targets"`
 }
 

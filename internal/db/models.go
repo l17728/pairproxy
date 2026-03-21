@@ -131,3 +131,19 @@ func (APIKey) TableName() string          { return "api_keys" }
 func (APIKeyAssignment) TableName() string { return "api_key_assignments" }
 func (LLMBinding) TableName() string      { return "llm_bindings" }
 func (LLMTarget) TableName() string       { return "llm_targets" }
+
+// SemanticRoute 语义路由规则（自然语言 description → target URL 集合）
+// DB 记录优先于同名 YAML 规则。
+type SemanticRoute struct {
+	ID             string    `gorm:"primarykey"`
+	Name           string    `gorm:"uniqueIndex;not null"` // 规则唯一名称
+	Description    string    `gorm:"not null"`             // 送给分类器 LLM 的自然语言描述
+	TargetURLsJSON string    `gorm:"column:target_urls;not null;default:'[]'"` // JSON array of target URLs
+	Priority       int       `gorm:"default:0"`            // 数值越大越优先
+	IsActive       bool      `gorm:"default:true"`
+	Source         string    `gorm:"default:'database'"` // "config" | "database"
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
+func (SemanticRoute) TableName() string { return "semantic_routes" }

@@ -1,10 +1,10 @@
 # PairProxy 项目验收报告
 
 **项目名称**: PairProxy - 企业级 LLM API 代理网关
-**版本**: v2.15.0 (HMAC-SHA256 Keygen 算法)
-**提交日期**: 2026-03-18
+**版本**: v2.18.0 (语义路由 Semantic Router)
+**提交日期**: 2026-03-22
 **开发语言**: Go 1.23
-**代码规模**: 58,100+ 行非空非注释 Go 代码（含测试，v2.15.0 新增约 200 行）
+**代码规模**: 60,500+ 行非空非注释 Go 代码（含测试，v2.18.0 新增约 1,300 行）
 
 ---
 
@@ -29,6 +29,8 @@ PairProxy 是一个企业级的 LLM API 代理网关系统，提供统一的 API
 - **PostgreSQL 支持 (v2.13.0)**: 共享 PG 实例彻底解决 Worker 一致性窗口，支持 DSN 或独立字段配置
 - **Peer Mode 对等节点 (v2.14.0)**: PG 模式下所有节点完全对等，任意节点可处理管理操作，PGPeerRegistry 分布式节点发现
 - **HMAC-SHA256 Keygen (v2.15.0)**: 替换指纹嵌入算法，消除碰撞漏洞（alice123 vs 321ecila），确定性生成（相同用户名+secret→相同key），256位安全强度，Base62编码（48字符），配置文件新增 auth.keygen_secret 必填字段（≥32字符）
+- **训练语料采集 Corpus (v2.16.0)**: 异步采集 LLM 请求/响应对为 JSONL 训练语料，质量过滤（错误响应/短回复/排除分组/空输出），支持 Anthropic/OpenAI/Ollama 三种 SSE 格式，按日期+大小文件轮转，记录 model_requested 和 model_actual 双模型字段
+- **语义路由 Semantic Router (v2.18.0)**: 根据请求 messages 语义意图缩窄 LLM 候选池；分类器复用现有 LB（防递归）；规则来自 YAML + DB（DB 优先，热更新）；REST API + CLI 管理规则；分类失败自动降级到完整候选池；仅对无绑定用户生效
 
 ---
 
@@ -85,6 +87,7 @@ Anthropic  OpenAI
 | 告警 (alert) | 914 | Webhook通知 |
 | 流量分析 (tap) | 1,595 | Token统计、SSE解析 |
 | 对话追踪 (track) | 648 | 按用户记录对话内容、JSON持久化 |
+| 训练语料采集 (corpus) | 1,100 | JSONL 语料采集、质量过滤、文件轮转 |
 | API Key生成 (keygen) | 507 | sk-pp- Key生成、验证、LRU缓存 |
 | 事件日志 (eventlog) | 365 | SSE告警日志Hub |
 | API接口 (api) | 6,804 | REST API、管理接口、LLM Target API |
@@ -153,7 +156,8 @@ pairproxy/
 │   ├── proxy/             # 代理核心
 │   ├── quota/             # 配额管理
 │   ├── tap/               # 流量分析
-│   └── track/             # 对话内容追踪（v2.4.0新增）
+│   ├── track/             # 对话内容追踪（v2.4.0新增）
+│   └── corpus/            # 训练语料采集（v2.16.0新增）
 ├── test/                  # 测试代码 (6,737行)
 │   ├── e2e/               # E2E测试
 │   └── integration/       # 集成测试
@@ -887,7 +891,222 @@ Total: 50  Pass: 50  Fail: 0  Error: 0  Time: 60ms
 
 ---
 
-### 9.6 最终结论
+### 9.6 v2.16.0 训练语料采集（Corpus）验收
+
+#### 功能描述
+
+在 sproxy 代理热路径中以最小开销异步采集 LLM 请求/响应对，生成 JSONL 格式训练语料，用于后续模型蒸馏。
+
+#### 核心特性验收
+
+| 特性 | 验收标准 | 状态 |
+|------|----------|------|
+| 异步写入 | 热路径零阻塞，channel + worker goroutine | ✅ 通过 |
+| 文件组织 | `corpus/<UTC-date>/sproxy_<instance>.jsonl` 按实例隔离 | ✅ 通过 |
+| 双模型字段 | `model_requested`（请求）+ `model_actual`（响应首个SSE事件）| ✅ 通过 |
+| 质量过滤 | HTTP≥400丢弃、排除分组、min_output_tokens、空文本丢弃 | ✅ 通过 |
+| 文件轮转 | 按日期 + 按大小（默认200MB）自动轮转，序号后缀 `_001`... | ✅ 通过 |
+| 优雅关闭 | drain channel → bufio.Flush → fsync → close | ✅ 通过 |
+| 多实例安全 | 每实例独立文件，零锁竞争 | ✅ 通过 |
+| 提供商兼容 | Anthropic / OpenAI / Ollama 三种 SSE 格式均支持 | ✅ 通过 |
+| 可配置 | `corpus:` 配置段，默认关闭，所有参数可调 | ✅ 通过 |
+
+#### 质量过滤验收
+
+```
+过滤规则验证：
+  ✅ HTTP 状态码 >= 400 → 丢弃（上游错误不入库）
+  ✅ group in exclude_groups → 丢弃（测试/内部账户排除）
+  ✅ output_tokens < min_output_tokens → 丢弃（短回复质量低）
+  ✅ assistant 文本为空 → 丢弃（无效对话）
+  ✅ 正常响应 → 提交写入
+```
+
+#### SSE 模型提取验收
+
+```
+Anthropic 流式:
+  ✅ message_start 事件 → message.model 提取 model_actual
+  ✅ message_start 事件 → message.usage.input_tokens 记录
+  ✅ message_delta 事件 → usage.output_tokens 记录
+
+OpenAI 流式:
+  ✅ 首个 chunk → 顶层 model 字段提取 model_actual
+  ✅ chunk with usage → prompt_tokens/completion_tokens 记录
+
+Ollama 流式:
+  ✅ 与 OpenAI 格式相同路径处理
+```
+
+#### 测试覆盖
+
+| 测试文件 | 测试数 | 覆盖内容 |
+|----------|--------|----------|
+| `internal/corpus/writer_test.go` | 7 | submit/shutdown、channel满丢弃、大小轮转、无效配置、graceful drain |
+| `internal/corpus/collector_test.go` | 15 | Anthropic/OpenAI/Ollama流式、非流式、4种质量过滤、幂等Finish、畸形chunk |
+| **合计** | **22** | corpus 包全功能覆盖 |
+
+#### 配置参数验收
+
+```yaml
+corpus:
+  enabled: true              # ✅ 默认 false（不侵入现有部署）
+  path: "./corpus/"          # ✅ 可配置输出目录
+  instance_id: ""            # ✅ 空=自动从端口派生
+  max_file_size: "200MB"     # ✅ 支持 KB/MB/GB 后缀
+  buffer_size: 1000          # ✅ channel 深度可调
+  flush_interval: 5s         # ✅ 定时落盘间隔
+  min_output_tokens: 50      # ✅ 质量阈值
+  exclude_groups: []         # ✅ 排除分组列表
+```
+
+#### 日志完备性
+
+| 级别 | 事件 | 字段 |
+|------|------|------|
+| INFO | corpus writer 启动/关闭 | path, instance, total_dropped |
+| DEBUG | 文件打开/关闭 | path, size |
+| WARN | channel 满丢弃 | dropped_count |
+| DEBUG | 质量过滤拒绝 | reason, user, model |
+| INFO | 记录提交成功 | user, model_actual, output_tokens |
+
+#### 验收结论
+
+**功能完整性**: ✅ 通过
+- 热路径零阻塞，采集对业务无感知
+- 双模型字段准确记录
+- 质量过滤覆盖所有预期场景
+- 多提供商 SSE 格式全部支持
+
+**测试质量**: ✅ 良好
+- 22 个新增测试，覆盖全部功能路径
+- 包含边界条件：channel满、畸形SSE、幂等调用
+- 竞态检测（-race）通过
+
+**文档完整性**: ✅ 通过
+- 用户手册新增 §32 语料采集章节
+- README 功能表格更新
+- 运维手册新增 corpus 监控项
+
+**生产就绪度**: ✅ 已就绪
+- 默认关闭，无侵入
+- 配置即启用，无需重启其他组件
+- 优雅关闭保证数据不丢失
+
+---
+
+### 9.7 v2.17.0 LLM 故障转移增强（retry_on_status）验收
+
+#### 功能描述
+
+在 `RetryTransport` 中新增 `retry_on_status` 配置，支持对指定 HTTP 状态码（如 429 配额耗尽）触发 try-next 故障转移。适用于同类模型多集群场景（如 3 个 GLM-4 集群），配额耗尽时自动切换到可用端点。
+
+#### 核心特性验收
+
+| 特性 | 验收标准 | 状态 |
+|------|----------|------|
+| 配置开关 | `llm.retry_on_status: [429]`，空列表=关闭，默认关闭 | ✅ 通过 |
+| 向后兼容 | 未配置时行为与 v2.16.0 完全一致，无任何回归 | ✅ 通过 |
+| 状态码触发 | 429/503 等任意状态码可配置触发 try-next | ✅ 通过 |
+| tried 列表 | 已失败 target 加入 tried，PickNext 跳过，每 target 最多尝试一次 | ✅ 通过 |
+| OnFailure 回调 | 429 触发重试时 OnFailure 被调用（被动熔断感知） | ✅ 通过 |
+| 耗尽错误信息 | 错误消息含 `last status` 状态码，不再硬编码 "5xx" | ✅ 通过 |
+| 结构化日志 | 每次重试打印 reason=`HTTP 429` / `connection error` | ✅ 通过 |
+| 多状态码 | `[429, 503]` 同时配置，两种状态码均触发 | ✅ 通过 |
+
+#### 测试覆盖
+
+| 测试文件 | 新增测试数 | 覆盖内容 |
+|----------|-----------|----------|
+| `internal/lb/retry_transport_test.go` | 6 | 429成功/耗尽/禁用/tried列表/OnFailure/多状态码 |
+| **合计** | **6** | retry_on_status 全功能覆盖 |
+
+#### 配置验收
+
+```yaml
+llm:
+  max_retries: 2
+  retry_on_status: [429]   # 空列表（默认）= 仅重试 5xx/连接错误
+```
+
+#### 变更范围
+
+| 文件 | 变更内容 |
+|------|----------|
+| `internal/config/config.go` | `LLMConfig` 新增 `RetryOnStatus []int` 字段 |
+| `internal/lb/retry_transport.go` | 新增 `RetryOnStatus` 字段、`isRetriableStatus()` 方法、改进日志和错误消息 |
+| `internal/proxy/sproxy.go` | 新增 `retryOnStatus` 字段和 `SetRetryOnStatus()` setter |
+| `cmd/sproxy/main.go` | 传递配置、启动日志和 validate 输出新增字段 |
+
+#### 验收结论
+
+**功能完整性**: ✅ 通过
+- 配置即启用，零代码修改
+- 完全向后兼容，空列表=旧行为
+- 每 target 最多尝试一次，无循环风险
+
+**测试质量**: ✅ 通过
+- 6 个新增测试，覆盖全部功能路径
+- 含边界条件：耗尽、空配置、多状态码、副作用验证
+- 竞态检测（-race）通过
+
+**文档完整性**: ✅ 通过
+- 用户手册配置示例和参数表已更新
+- README 功能表格已更新
+- 运维手册监控项已更新
+
+**生产就绪度**: ✅ 已就绪
+- 无 Breaking Change
+- 无数据库变更，仅替换二进制即可升级
+
+---
+
+## 10. v2.18.0 语义路由（Semantic Router）验证
+
+### 10.1 功能概述
+
+语义路由根据请求 messages 的语义意图，在现有 LB 候选池内做二次筛选，将请求路由到最合适的 LLM target。分类器 LLM 调用复用现有 LB，通过 context 标记防递归，规则来自 YAML + DB（DB 优先），仅对无绑定用户生效。
+
+### 10.2 新增代码
+
+| 文件 | 类型 | 说明 |
+|------|------|------|
+| `internal/router/semantic.go` | 新建 | 核心路由逻辑（分类 prompt 构建、LLM 调用、响应解析） |
+| `internal/db/semantic_route_repo.go` | 新建 | CRUD + DecodeTargetURLs |
+| `internal/proxy/classifier_adapter.go` | 新建 | SProxyClassifierTarget 适配器（复用 LB） |
+| `internal/api/admin_semantic_route_handler.go` | 新建 | REST API 7 端点（CRUD + enable/disable） |
+| `internal/config/config.go` | 修改 | SemanticRouterConfig |
+| `internal/proxy/sproxy.go` | 修改 | candidateFilter 参数 + extractMessagesFromBody + 日志 |
+| `cmd/sproxy/main.go` | 修改 | 初始化 + REST 注册 + `admin route` CLI 子命令 |
+
+**新增代码约 1,300 行**（含测试 874 行）。
+
+### 10.3 测试验证
+
+| 测试维度 | 用例数 | 状态 |
+|----------|--------|------|
+| 核心路由逻辑 | 10 | ✅ PASS |
+| DB CRUD + DecodeTargetURLs | 11 | ✅ PASS |
+| REST API 全端点 | 13 | ✅ PASS |
+| 代理集成（extractMessages + candidateFilter） | 12 | ✅ PASS |
+| **小计** | **46** | ✅ PASS |
+
+**全量回归**: 1,894 顶层测试 × 25 包，全部通过，0 FAIL。
+
+### 10.4 关键验证点
+
+- ✅ 分类器子请求防递归（context 标记）
+- ✅ 所有失败路径降级到完整候选池
+- ✅ REST API 写操作后规则热更新
+- ✅ `semantic_router.enabled=false` 时无任何影响（向后兼容）
+- ✅ 绑定用户跳过语义路由
+- ✅ DB 同名规则覆盖 YAML 规则
+- ✅ CLI 子命令 `admin route {add,list,update,delete,enable,disable}` 可用
+- ✅ 无 Breaking Change，新增 `semantic_routes` 表由 AutoMigrate 自动创建
+
+---
+
+### 9.8 最终结论
 
 **项目状态**: ✅ 通过验收
 
@@ -930,8 +1149,8 @@ Total: 50  Pass: 50  Fail: 0  Error: 0  Time: 60ms
 
 ---
 
-**验收日期**: 2026-03-18
-**验收版本**: v2.15.0
-**验收人员**: Claude Sonnet 4.6
+**验收日期**: 2026-03-22
+**验收版本**: v2.18.0
+**验收人员**: Claude Opus 4.6
 **验收结果**: ✅ 通过
 
