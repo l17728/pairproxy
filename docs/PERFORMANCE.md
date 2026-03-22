@@ -196,3 +196,124 @@ PairProxy 在代理链路上引入的额外延迟主要来自：
    sqlite3 pairproxy.db "DELETE FROM usage_logs WHERE created_at < datetime('now', '-90 days');"
    sqlite3 pairproxy.db "VACUUM;"
    ```
+
+---
+
+## PostgreSQL 模式性能（v2.13.0+）
+
+v2.13.0 起支持 PostgreSQL 替代 SQLite，对性能影响如下：
+
+### PostgreSQL vs SQLite 性能对比
+
+| 方面 | SQLite | PostgreSQL |
+|------|--------|------------|
+| 写入吞吐 | 单写者，批量 200条/批 | 多写者并发，默认连接池 25 |
+| 读取延迟 | 文件本地读取，< 1ms | 网络延迟，本机约 1-3ms |
+| 多节点一致性 | Worker 异步上报（窗口期） | 实时一致（共享 PG） |
+| 适用规模 | < 50 用户 | 50+ 用户，多节点 |
+
+### PostgreSQL 连接池调优
+
+```yaml
+database:
+  driver: postgres
+  dsn: "${PG_DSN}"
+  max_open_conns: 25       # 默认 25，高并发可增大
+  max_idle_conns: 5        # 建议为 max_open_conns 的 20%
+  conn_max_lifetime: 1h    # 超过 1 小时的连接自动关闭
+```
+
+### PgBouncer 建议（高并发 100+ 用户）
+
+在 PostgreSQL 前置 PgBouncer 连接池代理，可减少 PG 连接开销：
+
+```
+sproxy → PgBouncer (pool_mode=transaction) → PostgreSQL
+```
+
+- `pool_mode=transaction`：最节省连接数，适合短事务
+- `max_client_conn`: 设为 sproxy 节点数 × `max_open_conns`
+
+---
+
+## 语义路由性能（v2.18.0+）
+
+### 分类延迟
+
+语义路由在每个用户请求前增加一次 LLM 分类调用，额外延迟取决于：
+
+| 因素 | 典型值 |
+|------|--------|
+| 分类器 LLM 延迟（本机） | 200-500ms（小模型） |
+| 分类器超时 | 5s（可配置） |
+| 降级决策开销 | < 1ms |
+
+> ⚠️ **语义路由会增加请求总延迟**。若对延迟敏感，建议使用分类准确但速度快的轻量模型作为分类器（如 claude-haiku 系列）。
+
+### 优化建议
+
+1. **使用轻量分类器**：将 `semantic_router.classifier_url` 指向专用的轻量 LLM Target
+   ```yaml
+   semantic_router:
+     classifier_url: "http://localhost:9000"   # 使用本机，避免额外网络开销
+   ```
+
+2. **合理设置超时**：
+   ```yaml
+   semantic_router:
+     classifier_timeout: 3s   # 根据分类器速度调整，过长影响用户体验
+   ```
+
+3. **仅对需要的用户启用**：语义路由仅对无 LLM 绑定的用户生效；
+   给高频用户显式绑定 LLM（`sproxy admin llm bind`）可跳过分类开销。
+
+4. **规则数量控制**：规则越少，优先级排序越快；建议控制在 20 条以内。
+
+### 语义路由 Metrics
+
+```
+# HELP pairproxy_semantic_router_classifications_total 语义路由分类请求总数
+pairproxy_semantic_router_classifications_total{result="hit"} 1234
+pairproxy_semantic_router_classifications_total{result="fallback"} 56
+
+# HELP pairproxy_semantic_router_classification_duration_ms 语义路由分类耗时（毫秒）
+pairproxy_semantic_router_classification_duration_ms{quantile="0.5"} 320
+pairproxy_semantic_router_classification_duration_ms{quantile="0.99"} 1850
+```
+
+监控建议：`fallback` 占比 > 10% 时，检查分类器健康状态和超时配置。
+
+---
+
+## 训练语料采集性能（v2.16.0+）
+
+语料采集为**异步写入**，对主流程延迟影响 < 0.1ms。
+
+主要性能影响在于**磁盘 I/O**：
+
+| 请求量 | 语料文件写入速率 | 磁盘占用（估算）|
+|--------|---------------|---------------|
+| 100 req/min | ~100 次磁盘追加写 | 约 1-10 MB/min |
+| 1000 req/min | ~1000 次磁盘追加写 | 约 10-100 MB/min |
+
+优化建议：
+- 将 `corpus.output_dir` 配置在 SSD 挂载点
+- 对磁盘空间设置监控告警（≥ 80% 时告警）
+- 定期运行 `sproxy admin corpus` 清理旧文件
+
+---
+
+## 内存占用更新（v2.18.0）
+
+v2.18.0 新增模块的内存开销：
+
+| 组件 | 每条目内存 | 备注 |
+|------|-----------|------|
+| 语义路由规则 | ~500 bytes/条 | 含 description 字符串 |
+| 语义路由 LRU 缓存 | ~1 KB/条 | 相同 messages 前缀命中缓存（如有配置）|
+| 训练语料队列 | ~1 KB/条 | 异步写入队列，与 usage buffer 类似 |
+
+**典型 v2.18.0 部署额外内存**（基于 v2.9.0 基线）：
+- 20 条语义路由规则：~10 KB
+- 训练语料队列（1000 条）：~1 MB
+- 总计额外：< 5 MB（可忽略）

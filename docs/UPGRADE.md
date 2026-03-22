@@ -1,5 +1,7 @@
 # PairProxy 升级指南
 
+> 当前版本：**v2.18.0** | 更新日期：2026-03-22
+
 本文档描述各版本间的升级步骤、数据库 Schema 变更、回滚方法及不兼容变更。
 
 ---
@@ -49,6 +51,208 @@
 ---
 
 ## 版本变更记录
+
+### v2.18.0 — 语义路由 Semantic Router
+
+**无数据库 Schema 变更**（SQLite 和 PostgreSQL 均适用）。
+
+**新增数据库表（自动 AutoMigrate）**
+
+| 表名 | 说明 |
+|------|------|
+| `semantic_router_rules` | 语义路由规则（name, description, targets, priority, enabled, source） |
+
+**新增配置字段（可选，省略则禁用语义路由）**
+
+```yaml
+semantic_router:
+  enabled: true                         # 启用语义路由
+  classifier_url: "http://localhost:9000"  # 分类器端点（默认本机）
+  classifier_timeout: 5s                # 分类超时
+  rules:                                # YAML 内嵌规则（DB 规则优先，热更新）
+    - name: "code-tasks"
+      description: "编程、调试、代码审查类任务"
+      targets:
+        - "https://api.anthropic.com"
+      priority: 10
+```
+
+**行为说明**
+
+- 语义路由仅对**无 LLM 绑定**的用户生效，有绑定的用户不受影响
+- 分类失败（超时/错误）时自动降级为完整候选池，不中断请求
+- 规则来源：YAML 配置（静态）+ DB（动态热更新），DB 优先
+
+**升级验证**
+
+```bash
+# 验证基本功能
+curl http://localhost:9000/health
+
+# 检查语义路由状态
+sproxy admin semantic-router status
+
+# 列出规则
+sproxy admin semantic-router list
+```
+
+**回滚说明**
+
+降级到 v2.17.0 时，`semantic_router_rules` 表会被保留但不使用，配置中的 `semantic_router` 字段会被忽略。无数据兼容性问题。
+
+---
+
+### v2.17.0 — LLM 故障转移增强
+
+**无数据库 Schema 变更**，直接替换二进制即可。
+
+**新增配置字段（可选）**
+
+```yaml
+llm:
+  retry_on_status: [429, 500, 502, 503, 504]   # 触发换节点重试的状态码
+  try_next_on_429: true                          # 429 时立即切换到下一个 target
+```
+
+**升级验证**
+
+```bash
+# 检查 retry 配置
+grep retry_on_status sproxy.yaml
+```
+
+**回滚说明**
+
+降级到 v2.16.0 时，新增配置字段会被忽略，无兼容性问题。
+
+---
+
+### v2.16.0 — 训练语料采集 Corpus
+
+**无数据库 Schema 变更**，直接替换二进制。
+
+**新增文件系统目录（启动时自动创建）**
+
+```
+<corpus_output_dir>/
+├── corpus-2026-03-22.jsonl
+└── corpus-2026-03-23.jsonl
+```
+
+**新增配置字段（可选）**
+
+```yaml
+corpus:
+  enabled: false                        # 默认禁用
+  output_dir: "./corpus"                # JSONL 输出目录
+  max_file_size_mb: 100                 # 文件轮转大小（MB）
+  min_response_tokens: 10               # 过滤短回复
+  excluded_groups: []                   # 排除分组（隐私保护）
+```
+
+**新增 CLI 命令**
+
+```bash
+sproxy admin corpus status
+sproxy admin corpus enable
+sproxy admin corpus disable
+sproxy admin corpus list
+```
+
+**回滚说明**
+
+降级到 v2.15.0 时，`corpus_output_dir` 目录会被保留但不再使用，配置中的 `corpus` 字段会被忽略。无数据库兼容性问题。
+
+---
+
+### v2.15.0 — HMAC-SHA256 Keygen
+
+**无数据库 Schema 变更**，但 API Key 生成算法改变，**已有 sk-pp- Key 将失效**，需通知用户重新获取。
+
+**新增必填配置字段**
+
+```yaml
+auth:
+  keygen_secret: "${KEYGEN_SECRET}"   # ≥32字符，必填（v2.15.0+）
+```
+
+> ⚠️ 升级前必须在配置文件中添加 `auth.keygen_secret`，否则配置验证失败，服务无法启动。
+
+**升级步骤**
+
+1. 生成 keygen secret：
+   ```bash
+   openssl rand -hex 32
+   ```
+2. 将其设置为环境变量 `KEYGEN_SECRET`，并在 `sproxy.yaml` 中引用 `${KEYGEN_SECRET}`
+3. 替换二进制，重启服务
+4. **通知所有 Direct Proxy 用户**（sk-pp- Key 用户）重新生成 Key：
+   ```bash
+   sproxy admin keygen --user <username>   # 管理员生成
+   # 或用户从 Dashboard 自助获取
+   ```
+
+**回滚说明**
+
+降级到 v2.14.0 时，需移除 `auth.keygen_secret` 配置字段（旧版本不识别此字段会报错）。已失效的 sk-pp- Key 无法恢复，需重新下发旧算法生成的 Key。
+
+---
+
+### v2.14.0 — PostgreSQL Peer Mode
+
+**需要已完成 v2.13.0 PostgreSQL 迁移**。
+
+**配置变更**
+
+```yaml
+cluster:
+  mode: "peer"    # 代替 primary/worker 角色区分
+  # 所有节点使用相同配置
+```
+
+**新增数据库表（自动 AutoMigrate）**
+
+| 表名 | 说明 |
+|------|------|
+| `pg_peer_registry` | 分布式节点发现注册表 |
+
+**回滚说明**
+
+降级到 v2.13.0 时，`pg_peer_registry` 表会被保留但不使用，`cluster.mode` 字段会被忽略。无数据兼容性问题。
+
+---
+
+### v2.13.0 — PostgreSQL 数据库支持
+
+**重大升级**：可选从 SQLite 迁移到 PostgreSQL（彻底解决 Worker 一致性窗口问题）。
+
+SQLite 迁移步骤为可选项，现有 SQLite 部署可继续使用无需变更。
+
+**若选择迁移到 PostgreSQL**
+
+1. 创建 PG 数据库和用户：
+   ```sql
+   CREATE DATABASE pairproxy;
+   CREATE USER pairproxy WITH PASSWORD 'strong-password';
+   GRANT ALL PRIVILEGES ON DATABASE pairproxy TO pairproxy;
+   ```
+
+2. 更新 `sproxy.yaml`：
+   ```yaml
+   database:
+     driver: postgres
+     dsn: "${PG_DSN}"
+   ```
+
+3. 迁移数据（如需保留历史数据，使用 `sproxy admin migrate-to-pg` 命令）
+
+4. 重启 sproxy（AutoMigrate 自动在 PG 创建所有表）
+
+**回滚说明**
+
+若迁移后需回滚：将 `database.driver` 改回 `sqlite` 并指定原 `database.path`，PG 中写入的数据不会自动同步回 SQLite，建议回滚前先从备份恢复。
+
+---
 
 ### v2.5.0 — 可靠性增强（用量可靠性 + 健康检查 + 路由发现 + 请求重试）
 
@@ -359,6 +563,20 @@ systemctl start sproxy
 ---
 
 ## 不兼容变更清单
+
+### v2.15.0 引入的不兼容变更
+
+| 变更 | 影响 | 处理方式 |
+|------|------|---------|
+| `auth.keygen_secret` 新增必填字段 | 缺少此字段时启动报错 | 升级前必须配置 |
+| sk-pp- Key 算法从指纹嵌入改为 HMAC-SHA256 | 已有 Key 立即失效 | 通知用户重新获取 |
+
+### v2.13.0 引入的不兼容变更
+
+| 变更 | 影响 | 处理方式 |
+|------|------|---------|
+| PostgreSQL 支持（可选迁移） | SQLite 部署不受影响 | 按需迁移 |
+| `database.driver` 新配置字段 | 默认 `sqlite`，无需修改已有配置 | 无 |
 
 ### P2 引入的不兼容变更
 

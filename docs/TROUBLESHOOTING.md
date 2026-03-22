@@ -17,6 +17,10 @@
 9. [日志文件位置](#9-日志文件位置)
 10. [LLM Extended Thinking / 长流连接断开](#10-llm-extended-thinking--长流连接断开)
 11. [对话内容追踪问题](#11-对话内容追踪问题)
+12. [Direct Proxy (sk-pp- API Key) 问题](#12-direct-proxy-sk-pp--api-key-问题)
+13. [语义路由问题](#13-语义路由问题)
+14. [训练语料采集问题](#14-训练语料采集问题)
+15. [PostgreSQL 连接问题](#15-postgresql-连接问题)
 
 ---
 
@@ -687,4 +691,205 @@ done
 
 ```bash
 ./sproxy --version   # 确认版本
+```
+
+---
+
+## 12. Direct Proxy (sk-pp- API Key) 问题
+
+> v2.9.0+，涉及 `sk-pp-` 前缀 API Key 直连模式（无需 cproxy）。
+
+### 12.1 API Key 认证失败（401）
+
+**症状**：使用 `sk-pp-` Key 请求时返回 401，日志出现：
+```
+keygen verification failed  {"error": "invalid key format"}
+```
+
+**排查步骤**：
+
+1. 确认 Key 格式正确（`sk-pp-` 前缀 + 48 字符 Base62）：
+   ```bash
+   echo -n "sk-pp-YOUR_KEY" | wc -c   # 应输出 54
+   ```
+
+2. 确认 `auth.keygen_secret` 配置一致（v2.15.0+）：
+   ```bash
+   grep keygen_secret sproxy.yaml
+   echo $KEYGEN_SECRET   # 确认环境变量已导出
+   ```
+
+3. Key 是否由当前 sproxy 实例生成（keygen_secret 必须一致）：
+   ```bash
+   sproxy admin keygen --user alice   # 重新生成 Key
+   ```
+
+### 12.2 旧版 Key 失效
+
+**v2.15.0 升级后**，早期版本生成的 sk-pp- Key 将失效（算法从指纹嵌入改为 HMAC-SHA256）。
+
+用户需重新获取 Key：
+```bash
+# 管理员为用户生成新 Key
+sproxy admin keygen --user alice
+
+# 或用户通过 Dashboard 自助获取
+# 访问 /dashboard/my-usage → API Key 管理
+```
+
+---
+
+## 13. 语义路由问题
+
+> v2.18.0+，涉及 `semantic_router` 功能。
+
+### 13.1 语义路由未生效（请求仍走全量负载均衡）
+
+**可能原因 1**：用户已有 LLM 绑定，语义路由仅对无绑定用户生效。
+
+```bash
+# 检查用户是否有绑定
+sproxy admin llm list | grep alice
+```
+
+**可能原因 2**：分类失败触发降级。
+
+```bash
+# 检查分类器状态
+sproxy admin semantic-router status
+
+# 查看降级日志
+journalctl -u sproxy | jq 'select(.msg | contains("semantic router"))'
+```
+
+**可能原因 3**：规则未启用。
+
+```bash
+sproxy admin semantic-router list   # 检查 enabled 状态
+sproxy admin semantic-router enable <rule-id>
+```
+
+### 13.2 分类器超时
+
+**症状**：日志出现：
+```
+semantic router classification timeout  {"timeout_ms": 5000}
+```
+
+**排查步骤**：
+
+1. 检查分类器 URL 配置：
+   ```yaml
+   semantic_router:
+     classifier_url: "http://localhost:9000"   # 默认本机
+   ```
+
+2. 确认分类器 LLM Target 健康：
+   ```bash
+   sproxy admin llm targets   # 查看 classifier pool targets
+   ```
+
+3. 调整超时配置（若分类器较慢）：
+   ```yaml
+   semantic_router:
+     classifier_timeout: 10s   # 默认 5s
+   ```
+
+### 13.3 路由结果不符合预期
+
+**症状**：请求应命中规则 A，却命中了规则 B 或未命中任何规则。
+
+**排查步骤**：
+
+1. 开启 debug 日志，查看分类结果：
+   ```bash
+   kill -HUP $(pidof sproxy)   # 先在 sproxy.yaml 中将 log.level 改为 debug
+   journalctl -u sproxy | jq 'select(.msg | contains("classified"))'
+   ```
+
+2. 检查规则 priority（数字越小优先级越高）：
+   ```bash
+   sproxy admin semantic-router list   # 查看 priority 字段
+   ```
+
+3. 测试单条分类：
+   ```bash
+   curl -X POST http://sproxy:9000/api/admin/semantic-router/classify \
+     -H "Authorization: Bearer $ADMIN_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"messages":[{"role":"user","content":"帮我写一段 Python 代码"}]}'
+   ```
+
+---
+
+## 14. 训练语料采集问题
+
+> v2.16.0+，涉及 `corpus` 功能。
+
+### 14.1 语料文件未生成
+
+**检查步骤**：
+
+```bash
+# 确认采集已启用
+sproxy admin corpus status
+
+# 查看输出目录
+ls -la /var/lib/pairproxy/corpus/
+
+# 查看日志中的 corpus 相关条目
+journalctl -u sproxy | grep -i corpus
+```
+
+### 14.2 语料文件体积异常大
+
+```bash
+# 查看当前文件大小
+sproxy admin corpus list
+
+# 检查轮转配置
+grep corpus sproxy.yaml
+```
+
+---
+
+## 15. PostgreSQL 连接问题
+
+> v2.13.0+，适用于使用 PostgreSQL 数据库的部署。
+
+### 15.1 PostgreSQL 连接失败
+
+**症状**：sproxy 启动时报错：
+```
+open database: failed to connect to postgres: ...
+```
+
+**排查步骤**：
+
+```bash
+# 测试 PG 连接
+psql "$PG_DSN" -c "SELECT 1;"
+
+# 确认环境变量
+echo $PG_DSN   # 应输出完整 DSN
+
+# 查看 sproxy.yaml 配置
+grep -A5 database sproxy.yaml
+```
+
+### 15.2 Peer Mode 节点未互相发现
+
+> v2.14.0+ Peer Mode（PG 模式下所有节点对等）
+
+**症状**：多节点部署中，节点无法看到彼此。
+
+**排查步骤**：
+
+```bash
+# 检查所有节点是否共用同一 PG 实例
+grep dsn sproxy.yaml   # 各节点应指向同一 PG
+
+# 查看 peer 注册表
+curl -H "Authorization: Bearer $CLUSTER_SECRET" \
+     http://sproxy:9000/cluster/routing | jq .
 ```

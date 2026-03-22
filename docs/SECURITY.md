@@ -1,5 +1,7 @@
 # PairProxy Security Guide
 
+> **版本**：v2.18.0 | 最后更新：2026-03-22
+
 This document describes the security model of PairProxy, the threats it addresses, the mitigations in place, and operational hardening recommendations.
 
 ---
@@ -16,6 +18,9 @@ PairProxy sits between internal developer tooling (Claude Code) and commercial L
 | Unauthenticated cluster API | Worker injection, usage data manipulation |
 | Config misconfiguration at startup | Silent security degradation |
 | Resource exhaustion (quota bypass) | Runaway API spend |
+| keygen_secret leakage | All Direct Proxy API Keys forgeable |
+| Classifier data exfiltration | User message content leaked to external service |
+| Corpus data at rest | Training data exposed via filesystem access |
 
 ---
 
@@ -62,6 +67,42 @@ they expire naturally (≤ 24h by default). For immediate revocation, set
 - Use environment variable substitution (`${JWT_SECRET}`) — never commit secrets
   to version control.
 - Minimum recommended length: 32 random bytes (`openssl rand -hex 32`).
+
+---
+
+## Direct Proxy API Key 安全 (v2.9.0+)
+
+`sk-pp-` 前缀 API Key 是另一种接入方式，用户通过 API Key 直接访问 sproxy 而无需 cproxy 和 JWT Token。
+
+### HMAC-SHA256 Keygen (v2.15.0+)
+
+v2.15.0 起，API Key 使用 HMAC-SHA256 算法生成，替换了早期的指纹嵌入算法：
+
+- **确定性生成**：相同用户名 + keygen_secret → 相同 API Key，服务器无需存储 Key
+- **抗碰撞**：消除了早期算法中 `alice123` 和 `321ecila` 生成相同 Key 的碰撞漏洞
+- **256 位安全强度**：HMAC-SHA256 输出截断后取 Base62 编码（48 字符）
+
+### keygen_secret 配置要求
+
+`auth.keygen_secret` 是必填配置字段（v2.15.0+），违反以下要求时启动配置验证失败：
+- 长度 ≥ 32 字符
+- 建议使用 `openssl rand -hex 32` 生成
+
+### 安全注意事项
+
+| 风险 | 缓解措施 |
+|------|---------|
+| keygen_secret 泄漏导致所有 API Key 可伪造 | 使用环境变量注入，定期轮换 |
+| API Key 无过期时间 | 轮换 keygen_secret 可立即使所有 Key 失效 |
+| sk-pp- Key 明文传输 | 要求 HTTPS 接入，同 JWT Token |
+
+### keygen_secret 轮换流程
+
+1. 生成新 secret：`openssl rand -hex 32`
+2. 通知所有 Direct Proxy 用户获取新 API Key
+3. 更新所有节点的 `auth.keygen_secret`
+4. 重启所有 sproxy 节点
+5. 通知用户从 Dashboard/CLI 重新获取 sk-pp- Key
 
 ---
 
@@ -114,6 +155,7 @@ descriptive error if any required field is missing or out of range.
 | Field | Rule |
 |-------|------|
 | `auth.jwt_secret` | Must be non-empty |
+| `auth.keygen_secret` | Must be ≥ 32 characters (v2.15.0+) |
 | `database.path` | Must be non-empty |
 | `llm.targets` | Must have at least one entry |
 | `listen.port` | Must be in range 1–65535 |
@@ -145,6 +187,37 @@ sproxy admin  → each subcommand defers closeGormDB() individually
 ```
 
 This prevents SQLite WAL file corruption and leaked file descriptors.
+
+---
+
+## PostgreSQL 数据库安全 (v2.13.0+)
+
+v2.13.0 起支持 PostgreSQL 作为数据库后端（替代 SQLite）。
+
+### 连接安全
+
+- 使用 SSL/TLS 连接：在 DSN 中添加 `sslmode=require`
+- 使用专用数据库用户，最小权限（仅 CRUD 权限，无 DDL 权限用于生产环境）
+- 通过环境变量注入连接字符串：`${PG_DSN}`，避免明文写入配置文件
+
+### 连接串示例
+
+```yaml
+database:
+  driver: postgres
+  dsn: "${PG_DSN}"
+# PG_DSN = "host=pg.company.com user=pairproxy password=xxx dbname=pairproxy sslmode=require"
+```
+
+### 权限加固
+
+```sql
+-- 创建专用用户
+CREATE USER pairproxy WITH PASSWORD 'strong-password';
+GRANT CONNECT ON DATABASE pairproxy TO pairproxy;
+GRANT USAGE ON SCHEMA public TO pairproxy;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO pairproxy;
+```
 
 ---
 
@@ -246,6 +319,29 @@ Enabling conversation tracking without the user's knowledge may violate privacy 
 ### Disable Debug Logging in Production
 
 `log.debug_file` (if configured) logs raw HTTP bytes for **all** users. Ensure it is unset or pointed to a secured path in production. The `track` feature is more targeted but has the same confidentiality requirements.
+
+---
+
+## 训练语料采集数据隐私 (v2.16.0+)
+
+`corpus` 功能以 JSONL 格式采集 LLM 请求/响应对，用于训练语料收集。
+
+### 数据存储
+
+- JSONL 文件存储在配置的 `corpus.output_dir` 目录
+- 按日期 + 大小进行文件轮转（如 `corpus-2026-03-22.jsonl`）
+- 数据**不加密**，文件权限默认 0644
+
+### 质量过滤
+
+以下内容不会被采集（降低隐私风险）：
+- 错误响应（status != 200）
+- 极短回复（< N tokens）
+- 被 `excluded_groups` 配置排除的分组
+
+### 建议控制
+
+与 Conversation Tracking 相同的控制措施：文件权限 600、目录权限仅 sproxy 用户可读、定期清理（`sproxy admin corpus` 命令管理）、采集前获取合法依据。
 
 ---
 
@@ -461,3 +557,28 @@ The cluster shared secret protects worker → primary communication.
 - End users connect to c-proxy, which routes to healthy nodes.
 - c-proxy health checker detects nodes that go down during restart and re-routes.
 - Restart one node at a time, waiting for it to rejoin the cluster before the next.
+
+---
+
+## 语义路由安全 (v2.18.0+)
+
+语义路由分类器将用户消息内容发送给另一个 LLM 进行意图分类。
+
+### 数据流安全
+
+- **分类器请求**：用户 messages 的副本被发送给分类器端点（默认为本机 sproxy，使用独立 LLM Target Pool）
+- **递归防止**：分类器复用现有 LB 但跳过语义路由层，防止无限递归
+- **分类失败降级**：分类器超时或错误时，自动降级为完整候选池路由，不影响请求处理
+
+### 敏感数据泄漏风险
+
+若分类器端点配置为外部服务（非本机），用户消息内容将被发送至该外部服务。
+
+建议：
+- **优先使用本机 sproxy 作为分类器**（默认配置）
+- 若必须使用外部分类器，确保其满足与主 LLM 相同的隐私合规要求
+- 审计 `semantic_router.classifier_url` 配置
+
+### 规则管理访问控制
+
+语义路由规则的 REST API（`/api/admin/semantic-router/*`）和 CLI（`sproxy admin semantic-router`）均需要 admin 身份认证，遵循与其他 admin API 相同的鉴权策略。

@@ -307,6 +307,168 @@ sqlite3 test-chain.db "SELECT user_id, model, input_tokens, output_tokens, creat
 
 ---
 
+### 类别 10: Direct Proxy (sk-pp- API Key) 测试
+
+> v2.9.0+，测试无需 cproxy 的直接 API Key 接入方式。
+
+#### 10.1 生成 API Key
+```bash
+# 管理员为用户生成 sk-pp- API Key
+./sproxy.exe admin keygen --config test-sproxy.yaml --user testuser
+```
+**预期结果**: 输出 `sk-pp-` 开头的 48 字符 Key
+
+#### 10.2 使用 API Key 直接访问
+```bash
+SK_PP_KEY="sk-pp-..."   # 上一步生成的 Key
+
+curl -X POST http://localhost:9000/v1/messages \
+  -H "Authorization: Bearer $SK_PP_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "claude-3-5-sonnet-20241022",
+    "max_tokens": 100,
+    "messages": [{"role": "user", "content": "Hello"}]
+  }'
+```
+**预期结果**: ✅ HTTP 200，返回正常响应（无需 cproxy）
+
+#### 10.3 无效 API Key
+```bash
+curl -X POST http://localhost:9000/v1/messages \
+  -H "Authorization: Bearer sk-pp-invalid-key-000000000000000000000000" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"claude-3-5-sonnet-20241022","max_tokens":100,"messages":[{"role":"user","content":"test"}]}'
+```
+**预期结果**: ❌ HTTP 401，错误信息包含 "invalid" 或 "unauthorized"
+
+#### 10.4 配额对 Direct Proxy 生效
+```bash
+# 设置小配额
+./sproxy.exe admin group set-quota --config test-sproxy.yaml testgroup --daily 100
+
+# 使用 Direct Proxy 发送多条请求（超过配额）
+for i in $(seq 1 5); do
+  curl -s -X POST http://localhost:9000/v1/messages \
+    -H "Authorization: Bearer $SK_PP_KEY" \
+    -H "Content-Type: application/json" \
+    -d '{"model":"claude-3-5-sonnet-20241022","max_tokens":50,"messages":[{"role":"user","content":"hi"}]}' | jq .error
+done
+
+# 恢复配额
+./sproxy.exe admin group set-quota --config test-sproxy.yaml testgroup --daily 10000
+```
+**预期结果**: 达到配额后返回 HTTP 429
+
+---
+
+### 类别 11: 语义路由测试
+
+> v2.18.0+，测试按请求语义内容路由到不同 LLM Target 的功能。
+>
+> **前置条件**：需要在 test-sproxy.yaml 中启用语义路由，且至少有一条规则。
+
+#### 11.1 查看语义路由状态
+```bash
+./sproxy.exe admin semantic-router status --config test-sproxy.yaml
+```
+**预期结果**: 显示 `enabled: true`，规则数量 >= 1
+
+#### 11.2 列出语义路由规则
+```bash
+./sproxy.exe admin semantic-router list --config test-sproxy.yaml
+```
+**预期结果**: 显示规则列表，含 name, description, targets, priority, enabled 字段
+
+#### 11.3 创建语义路由规则
+```bash
+./sproxy.exe admin semantic-router add --config test-sproxy.yaml \
+  --name "test-code-rule" \
+  --description "编程调试代码相关任务" \
+  --targets "http://localhost:11434" \
+  --priority 5
+```
+**预期结果**: 规则创建成功，显示新规则 ID
+
+#### 11.4 语义路由命中测试（编程类请求）
+```bash
+# 发送明显的编程类请求
+curl -X POST http://localhost:8080/v1/messages \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "claude-3-5-sonnet-20241022",
+    "max_tokens": 100,
+    "messages": [{"role": "user", "content": "Write a Python function to calculate fibonacci numbers"}]
+  }'
+```
+**预期结果**: 请求成功，sproxy 日志中显示语义路由命中（`semantic router: matched rule`）
+
+#### 11.5 语义路由降级测试（分类器关闭）
+```bash
+# 停止 mockllm（分类器使用的 LLM 不可用）
+pkill -f mockllm
+
+# 发送请求（应自动降级到完整候选池）
+curl -X POST http://localhost:8080/v1/messages \
+  -H "Content-Type: application/json" \
+  -d '{"model":"claude-3-5-sonnet-20241022","max_tokens":50,"messages":[{"role":"user","content":"hello"}]}'
+
+# 重启 mockllm
+./mockllm.exe --addr :11434 &
+```
+**预期结果**: 请求仍然成功（降级到全量路由），日志显示 `semantic router: fallback`
+
+#### 11.6 删除语义路由规则
+```bash
+RULE_ID="..."   # 从11.3步骤获取的ID
+./sproxy.exe admin semantic-router delete --config test-sproxy.yaml $RULE_ID
+```
+**预期结果**: 规则删除成功
+
+---
+
+### 类别 12: 训练语料采集测试
+
+> v2.16.0+，测试 LLM 对话内容的 JSONL 语料采集功能。
+
+#### 12.1 查看语料采集状态
+```bash
+./sproxy.exe admin corpus status --config test-sproxy.yaml
+```
+**预期结果**: 显示采集状态（enabled/disabled）和输出目录
+
+#### 12.2 启用语料采集
+```bash
+./sproxy.exe admin corpus enable --config test-sproxy.yaml
+```
+**预期结果**: 采集状态变为 enabled
+
+#### 12.3 发送请求并验证语料记录
+```bash
+# 发送几条请求
+./mockagent.exe --url http://localhost:8080 --count 5 --v
+
+# 查看语料文件
+./sproxy.exe admin corpus list --config test-sproxy.yaml
+```
+**预期结果**: 语料文件存在，且包含请求内容
+
+#### 12.4 验证语料文件格式
+```bash
+# 读取最新的语料文件
+CORPUS_FILE=$(./sproxy.exe admin corpus list --config test-sproxy.yaml | tail -1)
+head -1 $CORPUS_FILE | jq .
+```
+**预期结果**: JSONL 格式，包含 `messages`、`response`、`model_requested`、`model_actual` 字段
+
+#### 12.5 禁用语料采集
+```bash
+./sproxy.exe admin corpus disable --config test-sproxy.yaml
+```
+**预期结果**: 采集状态变为 disabled，之后的请求不再产生语料记录
+
+---
+
 ## 测试清理
 
 ```bash
@@ -371,13 +533,34 @@ rm -f ~/.config/pairproxy/token.json
 - [ ] 9.1 查看用量记录
 - [ ] 9.2 验证用量统计
 
+### Direct Proxy API Key (4/4)
+- [ ] 10.1 生成 API Key
+- [ ] 10.2 使用 API Key 直接访问
+- [ ] 10.3 无效 API Key
+- [ ] 10.4 配额对 Direct Proxy 生效
+
+### 语义路由 (6/6)
+- [ ] 11.1 查看语义路由状态
+- [ ] 11.2 列出语义路由规则
+- [ ] 11.3 创建语义路由规则
+- [ ] 11.4 语义路由命中测试
+- [ ] 11.5 语义路由降级测试
+- [ ] 11.6 删除语义路由规则
+
+### 训练语料采集 (5/5)
+- [ ] 12.1 查看语料采集状态
+- [ ] 12.2 启用语料采集
+- [ ] 12.3 发送请求并验证语料记录
+- [ ] 12.4 验证语料文件格式
+- [ ] 12.5 禁用语料采集
+
 ---
 
 ## 总计
 
-**总测试用例**: 29
+**总测试用例**: 29（原有）+ 15（新增）= **44 个**
 **必须通过**: 所有用例
-**预计耗时**: 30-45 分钟
+**预计耗时**: 45-60 分钟
 
 ---
 

@@ -662,6 +662,105 @@ List all configured LLM targets with health status.
 
 ---
 
+#### `POST /api/admin/llm/targets`
+
+> **v2.7.0+** — 动态添加新 LLM Target，无需重启服务。
+
+**Request**
+```json
+{
+  "url": "https://api.example.com",
+  "api_key": "sk-...",
+  "provider": "anthropic",
+  "name": "新节点",
+  "weight": 1
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `url` | ✅ | Target 的唯一标识 URL |
+| `api_key` | ✅ | 调用该上游时使用的 API Key |
+| `provider` | ✅ | `"anthropic"` / `"openai"` / `"ollama"` |
+| `name` | ❌ | 可读名称（留空使用 URL） |
+| `weight` | ❌ | 负载权重，默认 `1` |
+
+**Response 201**
+```json
+{ "id": "uuid" }
+```
+
+**Error responses**
+
+| Status | `error` code | Reason |
+|--------|-------------|--------|
+| 400 | `invalid_request` | 缺少必填字段或 URL 格式非法 |
+| 409 | `conflict` | 相同 URL 的 Target 已存在 |
+
+---
+
+#### `PUT /api/admin/llm/targets/{url}/enable`
+
+> **v2.7.0+** — 启用指定 Target（URL 需 URLEncode）。已禁用的 Target 重新加入路由。
+
+**Path parameter**: `url` — Target URL，需进行 URL 编码（`%3A`、`%2F` 等）。
+
+**Response 204** — No Content
+
+---
+
+#### `PUT /api/admin/llm/targets/{url}/disable`
+
+> **v2.7.0+** — 禁用指定 Target，不删除配置，停止向其路由新请求。
+
+**Response 204** — No Content
+
+---
+
+#### `PUT /api/admin/llm/targets/{url}`
+
+> **v2.7.0+** — 更新 Target 配置（部分更新，仅传入需修改的字段）。
+
+**Request**（各字段均为可选）
+```json
+{
+  "api_key": "sk-new-key",
+  "weight": 2,
+  "name": "新名称"
+}
+```
+
+**Response 204** — No Content
+
+**Error responses**
+
+| Status | `error` code | Reason |
+|--------|-------------|--------|
+| 404 | `not_found` | Target URL 不存在 |
+
+---
+
+#### `DELETE /api/admin/llm/targets/{url}`
+
+> **v2.7.0+** — 删除指定 Target。默认拒绝删除仍有 binding 的 Target，可使用 `force=true` 强制解除所有绑定后删除。
+
+**Query parameters**
+
+| Name | Default | Description |
+|------|---------|-------------|
+| `force` | `false` | 设为 `true` 则先解除全部用户/分组绑定再删除 |
+
+**Response 204** — No Content
+
+**Error responses**
+
+| Status | `error` code | Reason |
+|--------|-------------|--------|
+| 404 | `not_found` | Target URL 不存在 |
+| 409 | `conflict` | Target 仍有活跃绑定且未设置 `force=true` |
+
+---
+
 #### `GET /api/admin/llm/bindings`
 
 List all user/group LLM bindings.
@@ -736,6 +835,133 @@ Automatically distribute all active users evenly across all healthy LLM targets.
 {
   "distributed": 42,
   "targets": 3
+}
+```
+
+---
+
+---
+
+## Bulk Import API (`/api/admin/import`) <small>v2.8.0+</small>
+
+#### `POST /api/admin/import`
+
+从模板文件（text/plain 格式）批量导入用户和分组。支持 `dry_run` 预览模式，不写入数据库。
+
+**Authentication**: Bearer token (admin JWT)
+
+**Headers**
+```
+Content-Type: text/plain
+```
+
+**Query parameters**
+
+| Name | Default | Description |
+|------|---------|-------------|
+| `dry_run` | `false` | 设为 `true` 时仅预览结果，不实际写入 |
+
+**Request body** — 模板文件内容（与 `sproxy admin import` CLI 使用的格式相同）
+
+```
+group:engineering
+  alice  password123
+  bob    password456
+
+group:trial
+  carol  password789
+```
+
+**Response 200**
+```json
+{
+  "groups_created": 2,
+  "users_created": 5,
+  "skipped": 1,
+  "dry_run": false
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `groups_created` | 新建的分组数量 |
+| `users_created` | 新建的用户数量 |
+| `skipped` | 跳过的条目数（用户名已存在等） |
+| `dry_run` | 是否为预览模式（与请求参数一致） |
+
+**Error responses**
+
+| Status | `error` code | Reason |
+|--------|-------------|--------|
+| 400 | `invalid_request` | 模板格式解析失败 |
+| 422 | `validation_error` | 模板内容存在业务约束冲突 |
+
+---
+
+## Direct Proxy / Keygen API (`/keygen/*`) <small>v2.9.0+</small>
+
+> **v2.9.0+** — 为普通用户签发 `sk-pp-` 格式的 API Key，用户无需运行 `cproxy` 守护进程，可直接以 API Key 访问 PairProxy，与 OpenAI / Anthropic SDK 兼容。
+>
+> **v2.15.0** — Keygen 算法升级为 HMAC-SHA256，替换旧版指纹算法，同一用户每次调用返回确定性相同的密钥。
+
+---
+
+#### `GET /keygen/{username}`
+
+为指定用户生成（或重新获取）`sk-pp-` 前缀的 API Key。
+
+**Authentication**: Bearer token (admin JWT)
+
+**Path parameter**: `username` — 目标用户名（须已存在于数据库中）
+
+**Response 200**
+```json
+{
+  "api_key": "sk-pp-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "username": "alice",
+  "expires_at": null
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `api_key` | 生成的 API Key，`sk-pp-` 前缀，HMAC-SHA256 派生（v2.15.0+） |
+| `username` | 对应的用户名 |
+| `expires_at` | 过期时间（`null` 表示永不过期） |
+
+**Error responses**
+
+| Status | `error` code | Reason |
+|--------|-------------|--------|
+| 404 | `not_found` | 用户名不存在 |
+| 403 | `account_disabled` | 用户账户已被禁用 |
+
+---
+
+#### `POST /keygen/verify`
+
+验证一个 `sk-pp-` API Key 是否有效，并返回对应的用户名。
+
+**Request**
+```json
+{
+  "api_key": "sk-pp-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+}
+```
+
+**Response 200**
+```json
+{
+  "valid": true,
+  "username": "alice"
+}
+```
+
+若 Key 无效或用户已被禁用：
+```json
+{
+  "valid": false,
+  "username": ""
 }
 ```
 
@@ -1087,6 +1313,43 @@ Returns the current peer routing table (useful for debugging).
 
 ---
 
+## Alert Stream API (`/api/admin/alerts/stream`) <small>v2.8.0+</small>
+
+#### `GET /api/admin/alerts/stream`
+
+以 SSE（Server-Sent Events）方式实时推送 `WARN` 及以上级别的日志事件。连接保持打开，服务端持续推送；客户端断开后自动清理订阅。
+
+**Authentication**: Bearer token (admin JWT)
+
+**Response headers**
+```
+Content-Type: text/event-stream
+Cache-Control: no-cache
+Connection: keep-alive
+```
+
+**Event format**（每条日志一个 SSE 事件）
+```
+data: {"level":"WARN","msg":"upstream latency spike","ts":"2026-03-22T00:00:00Z","fields":{"target":"https://api.anthropic.com","latency_ms":4200}}
+
+data: {"level":"ERROR","msg":"upstream returned 529","ts":"2026-03-22T00:01:05Z","fields":{"target":"https://api.openai.com","status":529}}
+```
+
+| Field | Description |
+|-------|-------------|
+| `level` | 日志级别：`"WARN"` 或 `"ERROR"` |
+| `msg` | 日志消息正文 |
+| `ts` | 事件时间戳（UTC，ISO 8601） |
+| `fields` | 结构化附加字段（随事件类型不同而变化） |
+
+**Error responses**
+
+| Status | `error` code | Reason |
+|--------|-------------|--------|
+| 401 | `unauthorized` | 缺少或无效的 admin JWT |
+
+---
+
 ## Observability
 
 #### `GET /metrics`
@@ -1131,10 +1394,30 @@ Metrics are cached for 30 seconds to avoid excessive DB queries.
 
 Liveness probe. No authentication required.
 
-**Response 200**
+**Response 200**（v2.7.0 起响应包含更多运行状态字段）
 ```json
-{ "status": "ok", "service": "sproxy" }
+{
+  "status": "ok",
+  "service": "sproxy",
+  "version": "2.18.0",
+  "uptime_seconds": 86400,
+  "active_requests": 3,
+  "usage_queue_depth": 12,
+  "db_type": "sqlite",
+  "draining": false
+}
 ```
+
+| Field | Description |
+|-------|-------------|
+| `status` | 始终为 `"ok"`（服务存活） |
+| `service` | 服务标识，固定为 `"sproxy"` |
+| `version` | 当前运行版本号 |
+| `uptime_seconds` | 服务启动至今的运行秒数 |
+| `active_requests` | 当前正在处理的请求数 |
+| `usage_queue_depth` | 内部用量上报队列深度 |
+| `db_type` | 数据库类型，`"sqlite"` 或 `"postgres"` |
+| `draining` | 是否处于 drain 模式 |
 
 ---
 
@@ -1174,3 +1457,257 @@ X-RateLimit-Remaining: 0
 X-RateLimit-Reset: 1748822400
 X-RateLimit-Kind: daily
 ```
+
+---
+
+## Semantic Router API (`/api/admin/semantic-router/*`) <small>v2.18.0</small>
+
+> **v2.18.0** — 语义路由功能通过外部分类器服务（默认监听 `:9000`）对请求内容进行意图分类，并将请求路由至匹配规则所指定的 LLM Target。规则持久化存储于数据库，优先级高的规则优先匹配。
+
+**Authentication**: Bearer token (admin JWT)
+
+---
+
+#### `GET /api/admin/semantic-router/rules`
+
+列出所有语义路由规则。
+
+**Response 200**
+```json
+{
+  "rules": [
+    {
+      "id": "uuid",
+      "name": "code-tasks",
+      "description": "编程、调试、代码审查类任务",
+      "targets": ["https://api.anthropic.com"],
+      "priority": 10,
+      "enabled": true,
+      "source": "db"
+    }
+  ]
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `id` | 规则唯一 ID（UUID） |
+| `name` | 规则名称（唯一） |
+| `description` | 规则描述，供分类器理解匹配意图 |
+| `targets` | 匹配后路由至的 LLM Target URL 列表（轮询） |
+| `priority` | 优先级，数值越大越先匹配 |
+| `enabled` | 是否启用 |
+| `source` | `"db"`（来自数据库）或 `"config"`（来自配置文件，只读） |
+
+---
+
+#### `POST /api/admin/semantic-router/rules`
+
+创建新的语义路由规则。
+
+**Request**
+```json
+{
+  "name": "code-tasks",
+  "description": "编程、调试、代码审查类任务",
+  "targets": ["https://api.anthropic.com"],
+  "priority": 10
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | ✅ | 规则名称，须唯一 |
+| `description` | ✅ | 分类器用于意图匹配的描述文本 |
+| `targets` | ✅ | 至少包含一个 Target URL |
+| `priority` | ❌ | 优先级，默认 `0` |
+
+**Response 201**
+```json
+{ "id": "uuid" }
+```
+
+**Error responses**
+
+| Status | `error` code | Reason |
+|--------|-------------|--------|
+| 400 | `invalid_request` | 缺少必填字段或 targets 为空 |
+| 409 | `conflict` | 同名规则已存在 |
+
+---
+
+#### `PUT /api/admin/semantic-router/rules/{id}`
+
+更新指定规则（部分更新，仅传入需修改的字段）。
+
+**Path parameter**: `id` — 规则 UUID
+
+**Request**（各字段均为可选）
+```json
+{
+  "description": "更新后的描述",
+  "targets": ["https://api.anthropic.com", "https://api.openai.com"],
+  "priority": 5,
+  "enabled": false
+}
+```
+
+**Response 204** — No Content
+
+**Error responses**
+
+| Status | `error` code | Reason |
+|--------|-------------|--------|
+| 404 | `not_found` | 规则 ID 不存在 |
+
+---
+
+#### `DELETE /api/admin/semantic-router/rules/{id}`
+
+删除指定规则。
+
+**Response 204** — No Content
+
+**Error responses**
+
+| Status | `error` code | Reason |
+|--------|-------------|--------|
+| 404 | `not_found` | 规则 ID 不存在 |
+
+---
+
+#### `POST /api/admin/semantic-router/rules/{id}/enable`
+
+启用指定规则（幂等）。
+
+**Response 204** — No Content
+
+---
+
+#### `POST /api/admin/semantic-router/rules/{id}/disable`
+
+禁用指定规则（幂等）。禁用后该规则不参与路由匹配，但不会被删除。
+
+**Response 204** — No Content
+
+---
+
+#### `GET /api/admin/semantic-router/status`
+
+查看语义路由系统当前运行状态。
+
+**Response 200**
+```json
+{
+  "enabled": true,
+  "classifier_url": "http://sproxy.internal:9000",
+  "rules_count": 5,
+  "fallback_count": 12,
+  "last_classification_ms": 45
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `enabled` | 语义路由功能是否全局启用 |
+| `classifier_url` | 分类器服务地址 |
+| `rules_count` | 当前已加载的启用规则数量 |
+| `fallback_count` | 自上次重启以来因无规则匹配而走 fallback 的请求数 |
+| `last_classification_ms` | 最近一次分类请求耗时（毫秒） |
+
+---
+
+## Semantic Router CLI (`sproxy admin semantic-router`) <small>v2.18.0</small>
+
+> **v2.18.0** — 通过 CLI 管理语义路由规则，与 REST API 功能一一对应。
+
+```bash
+# 列出所有语义路由规则
+sproxy admin semantic-router list
+
+# 创建新规则
+sproxy admin semantic-router add \
+  --name "code-tasks" \
+  --description "编程、调试、代码审查类任务" \
+  --targets "https://api.anthropic.com,https://api.openai.com" \
+  --priority 10
+
+# 更新规则（部分更新，仅修改传入的字段）
+sproxy admin semantic-router update <id> --priority 5 --enabled false
+
+# 删除规则
+sproxy admin semantic-router delete <id>
+
+# 启用 / 禁用规则
+sproxy admin semantic-router enable <id>
+sproxy admin semantic-router disable <id>
+
+# 查看运行状态
+sproxy admin semantic-router status
+```
+
+| 子命令 | 说明 |
+|--------|------|
+| `list` | 列出所有规则（含 ID、名称、优先级、启用状态） |
+| `add` | 创建新规则 |
+| `update <id>` | 部分更新指定规则 |
+| `delete <id>` | 删除规则 |
+| `enable <id>` | 启用规则 |
+| `disable <id>` | 禁用规则 |
+| `status` | 查看语义路由系统运行状态 |
+
+---
+
+## Corpus Collection CLI (`sproxy admin corpus`) <small>v2.16.0+</small>
+
+> **v2.16.0+** — 训练语料采集功能，将符合条件的请求/响应对持久化至磁盘，用于后续模型微调或分类器训练。可按分组粒度启用或全局启用。
+
+```bash
+# 查看当前采集状态（全局及各分组）
+sproxy admin corpus status
+
+# 全局启用语料采集
+sproxy admin corpus enable
+
+# 仅为指定分组启用采集
+sproxy admin corpus enable --group engineering
+
+# 全局禁用语料采集
+sproxy admin corpus disable
+
+# 仅为指定分组禁用采集
+sproxy admin corpus disable --group trial
+
+# 列出已采集的语料文件（含路径、大小、时间）
+sproxy admin corpus list
+```
+
+| 子命令 | 选项 | 说明 |
+|--------|------|------|
+| `status` | — | 查看全局及各分组的采集开关状态 |
+| `enable` | `--group <name>` | 启用采集；省略 `--group` 则全局启用 |
+| `disable` | `--group <name>` | 禁用采集；省略 `--group` 则全局禁用 |
+| `list` | — | 列出 corpus 目录下所有语料文件 |
+
+语料文件默认存储于数据库文件同级的 `corpus/` 目录下，JSON 格式，命名规则与 `track/` 目录保持一致：`<UTC时间戳>-<requestID>.json`。
+
+---
+
+## API 变更历史
+
+| 版本 | 新增 / 变更 |
+|------|------------|
+| v2.4.0 | `sproxy admin track` CLI — 按用户粒度记录对话内容至磁盘 |
+| v2.7.0 | LLM Target 动态管理：`POST /api/admin/llm/targets`、`PUT /api/admin/llm/targets/{url}`（部分更新）、`PUT /api/admin/llm/targets/{url}/enable`、`PUT /api/admin/llm/targets/{url}/disable`、`DELETE /api/admin/llm/targets/{url}` |
+| v2.7.0 | `/health` 响应新增 `version`、`uptime_seconds`、`active_requests`、`usage_queue_depth`、`db_type`、`draining` 字段 |
+| v2.8.0 | `GET /api/admin/alerts/stream` — SSE 实时告警流 |
+| v2.8.0 | `POST /api/admin/import` — 从模板文件批量导入用户/分组，支持 `dry_run` 预览 |
+| v2.9.0 | `GET /keygen/{username}` — 为用户签发 `sk-pp-` API Key，支持 Direct Proxy 模式 |
+| v2.9.0 | `POST /keygen/verify` — 验证 `sk-pp-` API Key 有效性 |
+| v2.15.0 | Keygen 算法升级为 HMAC-SHA256，`/keygen/` 端点产生确定性密钥，替换旧版指纹算法 |
+| v2.16.0 | `sproxy admin corpus` CLI — 训练语料采集管理（status / enable / disable / list） |
+| v2.18.0 | `GET/POST /api/admin/semantic-router/rules` — 语义路由规则 CRUD |
+| v2.18.0 | `PUT/DELETE /api/admin/semantic-router/rules/{id}` — 规则更新与删除 |
+| v2.18.0 | `POST /api/admin/semantic-router/rules/{id}/enable\|disable` — 规则启用/禁用 |
+| v2.18.0 | `GET /api/admin/semantic-router/status` — 语义路由系统状态查询 |
+| v2.18.0 | `sproxy admin semantic-router` CLI — 语义路由规则完整命令行管理 |

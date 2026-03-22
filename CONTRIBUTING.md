@@ -23,7 +23,7 @@
 
 | 工具 | 版本 | 说明 |
 |------|------|------|
-| Go | 1.25+ | 与 `go.mod` 声明保持一致 |
+| Go | 1.23+ | 与 `go.mod` 中 go 1.23 保持一致 |
 | make | 任意 | 运行 Makefile 目标 |
 | git | 2.x+ | 版本管理 |
 | golangci-lint | latest | 本地运行 lint（可选，CI 中会自动检查） |
@@ -120,6 +120,31 @@ make test-race         # race detector
 make test-cover        # 生成 coverage.html
 make test-pkg PKG=./internal/quota/...  # 单包
 ```
+
+### 新模块测试覆盖要求
+
+以下模块需要特别注意测试覆盖（v2.13.0+ 引入）：
+
+**PostgreSQL 相关测试**：
+- 需要通过 `build tag` 区分 SQLite / PG 测试
+- PG 集成测试需要真实 PG 实例（使用测试容器或 CI 中的 PG service）
+  ```bash
+  # 运行 PG 集成测试（需设置 TEST_PG_DSN）
+  TEST_PG_DSN="postgres://..." go test -tags=pg ./internal/db/...
+  ```
+
+**语义路由测试**（v2.18.0+）：
+- 单元测试：规则优先级、降级策略、递归防止
+- 集成测试：分类器超时处理、规则 DB vs YAML 优先级
+  ```bash
+  go test ./internal/semantic_router/...
+  ```
+
+**训练语料测试**（v2.16.0+）：
+- 单元测试：JSONL 格式、文件轮转、质量过滤（最小 token 数、排除分组）
+  ```bash
+  go test ./internal/corpus/...
+  ```
 
 ---
 
@@ -221,3 +246,35 @@ git push origin v1.2.3
 - **相关日志**：`journalctl -u sproxy` 或启动时的控制台输出（注意脱敏 API Key / JWT）
 
 **安全漏洞** 请勿在公开 Issue 中披露，发送邮件至 [l17728@126.com](mailto:l17728@126.com)。
+
+---
+
+## 架构演进速查（快速了解重要模块）
+
+面向新贡献者的模块导读，帮助快速找到代码位置：
+
+| 功能 | 版本 | 包路径 | 关键文件 |
+|------|------|--------|---------|
+| JWT 认证 | v1.0+ | `internal/auth/` | `manager.go`, `store.go` |
+| 配额限流 | v1.0+ | `internal/quota/` | `checker.go`, `rate_limiter.go` |
+| 负载均衡 | v2.0+ | `internal/lb/` | `balancer.go`, `health.go` |
+| 协议转换（双向） | v2.6.0+ | `internal/proxy/` | `converter.go`, `ota_converter.go` |
+| LLM Target 动态管理 | v2.7.0+ | `internal/db/`, `internal/api/` | `llm_target_repo.go` |
+| Direct Proxy (sk-pp-) | v2.9.0+ | `internal/keygen/` | `keygen.go`, `validator.go` |
+| PostgreSQL 支持 | v2.13.0+ | `internal/db/` | `db.go`（driver 分支） |
+| Peer Mode | v2.14.0+ | `internal/cluster/` | `pg_peer_registry.go` |
+| HMAC Keygen | v2.15.0+ | `internal/keygen/` | `hmac_keygen.go` |
+| 训练语料采集 | v2.16.0+ | `internal/corpus/` | `writer.go`, `filter.go` |
+| 语义路由 | v2.18.0+ | `internal/semantic_router/` | `router.go`, `classifier.go`, `rule_repo.go` |
+
+## 新功能开发清单
+
+开发新功能时，除代码外还需完成：
+
+- [ ] **单元测试**（覆盖率不低于现有水平）
+- [ ] **集成测试**（涉及数据库/HTTP 的功能）
+- [ ] **API 文档**（新 REST 端点更新 `docs/API.md`）
+- [ ] **用户手册**（面向用户的功能更新 `docs/manual.md`）
+- [ ] **升级指南**（有 DB Schema 变更或配置变更时更新 `docs/UPGRADE.md`）
+- [ ] **CLAUDE.md 命令速查**（新增 CLI 命令时更新 `CLAUDE.md`）
+- [ ] **config/README.md**（新增配置项时更新配置文档）

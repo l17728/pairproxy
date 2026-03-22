@@ -33,6 +33,10 @@
 - **sproxy 命令**: 已编译时用 `./sproxy`，未编译时用 `go run ./cmd/sproxy`
 - **多 Provider 支持**: sproxy 同时支持 Anthropic (`/v1/messages`) 和 OpenAI (`/v1/chat/completions`) 格式
 - **协议转换**: 自动支持 Anthropic → OpenAI 协议转换（用于 Claude CLI → Ollama 场景）
+- **语义路由 (v2.18.0)**: 根据请求 messages 语义意图缩窄 LLM 候选池；分类失败自动降级；规则支持 YAML + DB 双来源
+- **训练语料采集 (v2.16.0)**: 异步采集 LLM 请求/响应对为 JSONL 训练语料，质量过滤，文件自动轮转
+- **HMAC Keygen (v2.15.0)**: sk-pp- API Key 使用 HMAC-SHA256 生成，无碰撞漏洞，配置文件需添加 `auth.keygen_secret`（必填）
+- **PostgreSQL Peer Mode (v2.14.0)**: PG 模式下所有节点完全对等，消除 Primary 单点故障
 - **认证方式**: 两种头均可 — `X-PairProxy-Auth: <jwt>` 或 `Authorization: Bearer <jwt>`
 
 ## 命令速查
@@ -269,6 +273,47 @@ dave  NoGroup_Pass
 ./sproxy admin track clear <username>                      # 删除该用户的所有对话记录文件
 ```
 
+### 语义路由管理（v2.18.0）
+```bash
+./sproxy admin semantic-router list --config sproxy.yaml           # 列出所有规则
+./sproxy admin semantic-router status --config sproxy.yaml         # 查看运行状态
+./sproxy admin semantic-router add \
+  --name "code-tasks" \
+  --description "编程、调试、代码审查类任务" \
+  --targets "https://api.anthropic.com" \
+  --priority 10                                                      # 创建规则
+./sproxy admin semantic-router update <rule-id> --priority 5       # 更新规则优先级
+./sproxy admin semantic-router enable <rule-id>                    # 启用规则
+./sproxy admin semantic-router disable <rule-id>                   # 禁用规则
+./sproxy admin semantic-router delete <rule-id>                    # 删除规则
+```
+
+### 训练语料采集管理（v2.16.0）
+```bash
+./sproxy admin corpus status --config sproxy.yaml                  # 查看采集状态
+./sproxy admin corpus enable --config sproxy.yaml                  # 启用全局采集
+./sproxy admin corpus disable --config sproxy.yaml                 # 禁用全局采集
+./sproxy admin corpus list --config sproxy.yaml                    # 列出语料文件
+./sproxy admin corpus enable --group engineering                   # 启用指定分组的采集
+./sproxy admin corpus disable --group engineering                  # 禁用指定分组的采集
+```
+
+### sk-pp- API Key 管理（v2.15.0 HMAC 算法）
+```bash
+./sproxy admin keygen --user alice --config sproxy.yaml            # 为用户生成 sk-pp- Key
+./sproxy admin keygen --verify sk-pp-... --config sproxy.yaml      # 验证 Key 有效性
+```
+
+### PostgreSQL Peer Mode 运维（v2.14.0+）
+```bash
+# Peer Mode 下所有节点对等，任意节点可查询路由表
+curl -H "Authorization: Bearer $CLUSTER_SECRET" \
+     http://sp-1:9000/cluster/routing | jq .
+
+# 查看所有对等节点状态（PG 模式）
+./sproxy admin peer list --config sproxy.yaml
+```
+
 ## 常见场景处理
 
 ### 新用户入职
@@ -310,6 +355,27 @@ dave  NoGroup_Pass
 1. 查看健康状态: `./sproxy admin llm targets`
 2. 重新均分用户: `./sproxy admin llm distribute`
 3. 验证分布: `./sproxy admin llm list`
+
+### 语义路由配置（v2.18.0）
+1. 查看当前状态: `./sproxy admin semantic-router status`
+2. 查看现有规则: `./sproxy admin semantic-router list`
+3. 添加新规则（描述要精准，分类器会据此判断意图）:
+   ```
+   ./sproxy admin semantic-router add --name "写作任务" \
+     --description "文档撰写、邮件写作、内容创作类需求" \
+     --targets "https://api.anthropic.com" --priority 20
+   ```
+4. 验证规则生效（查看日志中的 `semantic router: matched rule` 条目）
+
+### 语料采集开关（v2.16.0）
+1. 临时启用特定分组的采集: `./sproxy admin corpus enable --group research`
+2. 查看已采集文件: `./sproxy admin corpus list`
+3. 完成后禁用: `./sproxy admin corpus disable --group research`
+
+### sk-pp- Key 轮换（v2.15.0）
+1. 更新 `auth.keygen_secret`（`openssl rand -hex 32`）
+2. 重启所有 sproxy 节点
+3. 通知受影响用户重新生成 Key: `./sproxy admin keygen --user alice`
 
 ### 新增 LLM Target
 1. 编辑 `sproxy.yaml`，在 `llm.targets` 添加新条目（需重启 sproxy）
@@ -398,6 +464,21 @@ llm:
 dashboard:
   enabled: true               # Web 管理界面
   admin_password: "..."
+
+# 训练语料采集（v2.16.0+）
+corpus:
+  enabled: false
+  output_dir: "./corpus"
+
+# 语义路由（v2.18.0+）
+semantic_router:
+  enabled: false
+  classifier_url: "http://localhost:9000"
+  classifier_timeout: 5s
+
+# sk-pp- Key 生成密钥（v2.15.0+ 必填）
+auth:
+  keygen_secret: "${KEYGEN_SECRET}"
 ```
 
 ## 注意事项
