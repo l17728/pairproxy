@@ -37,7 +37,7 @@ func TestExtractMessagesFromBody(t *testing.T) {
 	t.Run("no messages field", func(t *testing.T) {
 		body := []byte(`{"model":"claude-3"}`)
 		msgs := extractMessagesFromBody(body)
-		if msgs != nil && len(msgs) != 0 {
+		if len(msgs) != 0 {
 			t.Errorf("expected nil/empty, got %v", msgs)
 		}
 	})

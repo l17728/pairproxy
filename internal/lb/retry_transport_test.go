@@ -426,6 +426,7 @@ func TestRetryTransport_RetryOnStatus_Disabled(t *testing.T) {
 func TestRetryTransport_RetryOnStatus_TriedListPropagated(t *testing.T) {
 	r1 := makeResp(429, `{"error":"rate_limit"}`)
 	r2 := makeResp(200, `{"id":"msg_ok"}`)
+	t.Cleanup(func() { r1.Body.Close(); r2.Body.Close() })
 	inner := &mockRoundTripper{
 		responses: []*http.Response{r1, r2},
 	}
@@ -460,6 +461,7 @@ func TestRetryTransport_RetryOnStatus_TriedListPropagated(t *testing.T) {
 func TestRetryTransport_RetryOnStatus_OnFailureCalled(t *testing.T) {
 	r1 := makeResp(429, `{"error":"rate_limit"}`)
 	r2 := makeResp(200, `{"id":"msg_ok"}`)
+	t.Cleanup(func() { r1.Body.Close(); r2.Body.Close() })
 	inner := &mockRoundTripper{
 		responses: []*http.Response{r1, r2},
 	}
@@ -498,6 +500,7 @@ func TestRetryTransport_RetryOnStatus_MultipleStatusCodes(t *testing.T) {
 	r1 := makeResp(503, `{"error":"service_unavailable"}`)
 	r2 := makeResp(429, `{"error":"rate_limit"}`)
 	r3 := makeResp(200, `{"id":"msg_ok"}`)
+	t.Cleanup(func() { r1.Body.Close(); r2.Body.Close(); r3.Body.Close() })
 	inner := &mockRoundTripper{
 		responses: []*http.Response{r1, r2, r3},
 	}
