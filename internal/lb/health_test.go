@@ -100,7 +100,6 @@ func TestActiveHealthCheckOK(t *testing.T) {
 	)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
 	hc.Start(ctx)
 
 	// 等待至少一次检查完成
@@ -109,6 +108,9 @@ func TestActiveHealthCheckOK(t *testing.T) {
 	if _, err := b.Pick(); err != nil {
 		t.Errorf("target should be healthy after active check, got: %v", err)
 	}
+
+	cancel()
+	hc.Wait() // ensure all check goroutines finish before test exits
 }
 
 func TestActiveHealthCheckFail(t *testing.T) {

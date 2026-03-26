@@ -39,7 +39,13 @@ type HealthChecker struct {
 
 	mu       sync.Mutex
 	failures map[string]int // 连续失败计数
+
+	wg sync.WaitGroup // tracks in-flight check goroutines
 }
+
+// Wait blocks until all in-flight health check goroutines have finished.
+// Call after cancelling the context passed to Start.
+func (hc *HealthChecker) Wait() { hc.wg.Wait() }
 
 // HealthCheckerOption 用于配置 HealthChecker。
 type HealthCheckerOption func(*HealthChecker)
@@ -149,9 +155,17 @@ func (hc *HealthChecker) CheckTarget(id string) {
 			if !ok || path == "" {
 				return // 该 target 无主动检查路径
 			}
-			go hc.checkOneWithPath(t, path)
+			hc.wg.Add(1)
+			go func(tgt Target, p string) {
+				defer hc.wg.Done()
+				hc.checkOneWithPath(tgt, p)
+			}(t, path)
 		} else {
-			go hc.checkOne(t)
+			hc.wg.Add(1)
+			go func(tgt Target) {
+				defer hc.wg.Done()
+				hc.checkOne(tgt)
+			}(t)
 		}
 		return
 	}
@@ -192,9 +206,17 @@ func (hc *HealthChecker) checkAll() {
 			if !ok || path == "" {
 				continue // 无主动检查路径，依赖被动熔断
 			}
-			hc.checkOneWithPath(t, path)
+			hc.wg.Add(1)
+			go func(tgt Target, p string) {
+				defer hc.wg.Done()
+				hc.checkOneWithPath(tgt, p)
+			}(t, path)
 		} else {
-			hc.checkOne(t)
+			hc.wg.Add(1)
+			go func(tgt Target) {
+				defer hc.wg.Done()
+				hc.checkOne(tgt)
+			}(t)
 		}
 	}
 }
