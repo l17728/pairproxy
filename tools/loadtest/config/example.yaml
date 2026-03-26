@@ -1,0 +1,58 @@
+# Claude Load Tester 配置文件示例
+# 用法: ./claude-load-tester run --config ./config/example.yaml
+
+# Claude CLI 路径
+claude_path: "claude"
+
+# Prompts 文件路径
+prompts_path: "./prompts/prompts.yaml"
+
+# 输出报告路径
+output_path: "./results/test-report.json"
+
+# 测试模式: ramp-up | fixed | spike
+mode: "ramp-up"
+
+# Worker 配置
+workers:
+  # 初始 worker 数 (ramp-up 模式)
+  initial: 1
+  
+  # 最大 worker 数
+  max: 50
+  
+  # 固定 worker 数 (fixed 模式)
+  fixed: 10
+
+# 阶梯递增配置 (ramp-up 模式)
+ramp_up:
+  # 每步增加的 worker 数
+  step_size: 5
+  
+  # 每步持续时间
+  step_duration: "60s"
+  
+  # 递增间隔
+  interval: "30s"
+
+# 固定模式配置
+fixed:
+  # 测试总时长
+  duration: "10m"
+
+# 超时配置
+timeout: "120s"
+
+# 思考时间配置 (模拟真实程序员的间隔)
+think_time:
+  min: "10s"
+  max: "120s"
+
+# 实时报告间隔
+report_interval: "10s"
+
+# 熔断配置
+circuit_breaker:
+  enabled: true
+  # 错误率阈值 (0.05 = 5%)
+  threshold: 0.05

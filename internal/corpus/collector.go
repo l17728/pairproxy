@@ -130,6 +130,10 @@ func (c *Collector) feedAnthropicChunk(payload []byte) {
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(payload, &event); err != nil {
+		c.logger.Debug("corpus: failed to parse anthropic chunk, skipping",
+			zap.String("id", c.record.ID),
+			zap.Error(err),
+		)
 		return
 	}
 
@@ -171,9 +175,12 @@ func (c *Collector) feedOpenAIChunk(payload []byte) {
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(payload, &chunk); err != nil {
+		c.logger.Debug("corpus: failed to parse openai chunk, skipping",
+			zap.String("id", c.record.ID),
+			zap.Error(err),
+		)
 		return
 	}
-
 	if !c.modelFound && chunk.Model != "" {
 		c.record.ModelActual = chunk.Model
 		c.modelFound = true
@@ -192,6 +199,9 @@ func (c *Collector) feedOpenAIChunk(payload []byte) {
 // SetNonStreamingResponse 处理非流式完整响应 body。
 func (c *Collector) SetNonStreamingResponse(body []byte) {
 	if len(body) == 0 {
+		c.logger.Debug("corpus: SetNonStreamingResponse called with empty body",
+			zap.String("id", c.record.ID),
+		)
 		return
 	}
 	c.mu.Lock()

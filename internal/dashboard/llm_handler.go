@@ -389,6 +389,11 @@ func (h *Handler) handleLLMCreateTarget(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// 同步 balancer/HC（使新 target 立即参与健康检查）
+	if h.llmSyncFn != nil {
+		h.llmSyncFn()
+	}
+
 	h.logger.Info("llm target created via dashboard",
 		zap.String("url", url),
 		zap.String("provider", provider),
@@ -479,6 +484,11 @@ func (h *Handler) handleLLMUpdateTarget(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// 同步 balancer/HC（使变更立即生效）
+	if h.llmSyncFn != nil {
+		h.llmSyncFn()
+	}
+
 	h.logger.Info("llm target updated via dashboard",
 		zap.String("id", id),
 		zap.String("url", url),
@@ -517,6 +527,11 @@ func (h *Handler) handleLLMDeleteTarget(w http.ResponseWriter, r *http.Request) 
 		h.logger.Error("delete llm target", zap.String("id", id), zap.Error(err))
 		http.Redirect(w, r, "/dashboard/llm?error="+err.Error(), http.StatusSeeOther)
 		return
+	}
+
+	// 同步 balancer/HC（移除已删除的 target）
+	if h.llmSyncFn != nil {
+		h.llmSyncFn()
 	}
 
 	h.logger.Info("llm target deleted via dashboard", zap.String("id", id))

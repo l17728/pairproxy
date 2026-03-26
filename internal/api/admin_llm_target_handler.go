@@ -23,6 +23,7 @@ type AdminLLMTargetHandler struct {
 	adminPasswordHash string
 	tokenTTL          time.Duration
 	limiter           *LoginLimiter
+	syncFn            func() // 可选，目标变更后同步 balancer/HC
 }
 
 // NewAdminLLMTargetHandler 创建 AdminLLMTargetHandler
@@ -44,6 +45,11 @@ func NewAdminLLMTargetHandler(
 		limiter:           NewLoginLimiter(5, time.Minute, 5*time.Minute),
 	}
 }
+
+// SetSyncFn 设置目标变更后的同步回调（可选）。
+// 每次 Create/Update/Delete/Enable/Disable 成功后会调用此函数，
+// 使 llmBalancer 和 llmHC 立即感知变更，无需重启进程。
+func (h *AdminLLMTargetHandler) SetSyncFn(fn func()) { h.syncFn = fn }
 
 // RegisterRoutes 注册路由到 mux
 func (h *AdminLLMTargetHandler) RegisterRoutes(mux *http.ServeMux, requireAdmin func(http.Handler) http.Handler, requireWritableNode func(http.Handler) http.Handler) {
@@ -145,6 +151,11 @@ func (h *AdminLLMTargetHandler) handleCreateTarget(w http.ResponseWriter, r *htt
 	// 记录审计日志
 	_ = h.auditRepo.Create("admin", "llm_target.create", req.URL,
 		fmt.Sprintf("provider=%s name=%s", req.Provider, req.Name))
+
+	// 同步 balancer/HC（使新 target 立即参与健康检查）
+	if h.syncFn != nil {
+		h.syncFn()
+	}
 
 	h.logger.Info("llm target created",
 		zap.String("id", target.ID),
@@ -281,6 +292,11 @@ func (h *AdminLLMTargetHandler) handleUpdateTarget(w http.ResponseWriter, r *htt
 	}
 	_ = h.auditRepo.Create("admin", "llm_target.update", target.URL, changesSummary)
 
+	// 同步 balancer/HC（使变更立即生效）
+	if h.syncFn != nil {
+		h.syncFn()
+	}
+
 	h.logger.Info("llm target updated",
 		zap.String("id", target.ID),
 		zap.String("url", target.URL),
@@ -330,6 +346,11 @@ func (h *AdminLLMTargetHandler) handleDeleteTarget(w http.ResponseWriter, r *htt
 	// 记录审计日志
 	_ = h.auditRepo.Create("admin", "llm_target.delete", target.URL,
 		fmt.Sprintf("id=%s name=%s", target.ID, target.Name))
+
+	// 同步 balancer/HC（移除已删除的 target）
+	if h.syncFn != nil {
+		h.syncFn()
+	}
 
 	h.logger.Info("llm target deleted",
 		zap.String("id", target.ID),
@@ -386,6 +407,11 @@ func (h *AdminLLMTargetHandler) handleEnableTarget(w http.ResponseWriter, r *htt
 	_ = h.auditRepo.Create("admin", "llm_target.enable", target.URL,
 		fmt.Sprintf("id=%s name=%s", target.ID, target.Name))
 
+	// 同步 balancer/HC（将启用的 target 加回轮询）
+	if h.syncFn != nil {
+		h.syncFn()
+	}
+
 	h.logger.Info("llm target enabled",
 		zap.String("id", target.ID),
 		zap.String("url", target.URL))
@@ -440,6 +466,11 @@ func (h *AdminLLMTargetHandler) handleDisableTarget(w http.ResponseWriter, r *ht
 	// 记录审计日志
 	_ = h.auditRepo.Create("admin", "llm_target.disable", target.URL,
 		fmt.Sprintf("id=%s name=%s", target.ID, target.Name))
+
+	// 同步 balancer/HC（将禁用的 target 从轮询中移除）
+	if h.syncFn != nil {
+		h.syncFn()
+	}
 
 	h.logger.Info("llm target disabled",
 		zap.String("id", target.ID),

@@ -37,5 +37,15 @@ cluster:
 dashboard:
   enabled: false
 
+# 语料采集：worker 节点写入本地 ./corpus/ 目录
+# 集群中每个节点各自写入本地磁盘，文件名由 instance_id 区分
+# 若需统一收集，请将 path 配置为 NFS/共享存储路径
+corpus:
+  enabled: true
+  path: "./corpus/"
+  instance_id: "9001"        # 显式指定，避免与 primary(:9000) 文件名冲突
+  max_file_size: "200MB"
+  min_output_tokens: 50
+
 log:
   level: "debug"

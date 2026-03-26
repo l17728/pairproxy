@@ -662,6 +662,13 @@ func runStart(cmd *cobra.Command, args []string) error {
 				zap.String("instance_id", instanceID),
 			)
 		}
+	} else if isWorker {
+		// 集群部署中，worker 未启用语料采集时给出明确告警。
+		// 若只有部分节点开启采集，训练语料将不完整，影响蒸馏质量。
+		logger.Warn("corpus collection is DISABLED on this worker node",
+			zap.String("hint", "set corpus.enabled: true and corpus.instance_id in sproxy.yaml to enable corpus collection on this worker"),
+			zap.String("impact", "LLM conversations handled by this worker will NOT be recorded; cluster corpus data will be incomplete"),
+		)
 	}
 
 	// ---------------------------------------------------------------------------
@@ -687,6 +694,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 		logger, jwtMgr, llmTargetRepo, auditRepo,
 		cfg.Admin.PasswordHash, adminTokenTTL,
 	)
+	llmTargetHandler.SetSyncFn(sp.SyncLLMTargets)
 	llmTargetHandler.RegisterRoutes(mux, adminHandler.RequireAdmin, adminHandler.RequireWritableNode)
 	logger.Info("LLM target API registered at /api/admin/llm/targets")
 
@@ -829,6 +837,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 		)
 		dashHandler.SetLLMDeps(llmBindingRepo, sp.LLMTargetStatuses)
 		dashHandler.SetLLMTargetRepo(llmTargetRepo)
+		dashHandler.SetLLMSyncFn(sp.SyncLLMTargets)
 		dashHandler.SetAPIKeyRepo(apiKeyRepo)
 		dashHandler.SetTokenRepo(tokenRepo)
 		dashHandler.SetDrainFunctions(sp.Drain, sp.Undrain, sp.GetDrainStatus)
@@ -1097,7 +1106,7 @@ var adminConfigFlag string
 
 func init() {
 	adminCmd.PersistentFlags().StringVar(&adminConfigFlag, "config", "", "path to sproxy.yaml (default: sproxy.yaml)")
-	adminCmd.AddCommand(adminUserCmd, adminGroupCmd, adminStatsCmd, adminTokenCmd, adminBackupCmd, adminRestoreCmd, adminLogsCmd, adminExportCmd, adminApikeyCmd, adminLLMCmd, adminQuotaCmd, adminAuditCmd, adminDrainCmd, adminTrackCmd, adminImportCmd, adminRouteCmd)
+	adminCmd.AddCommand(adminUserCmd, adminGroupCmd, adminStatsCmd, adminTokenCmd, adminBackupCmd, adminRestoreCmd, adminLogsCmd, adminExportCmd, adminApikeyCmd, adminLLMCmd, adminQuotaCmd, adminAuditCmd, adminDrainCmd, adminTrackCmd, adminImportCmd, adminRouteCmd, adminCorpusCmd)
 }
 
 // closeGormDB 优雅关闭 GORM 数据库连接，释放文件锁和文件描述符。
@@ -4078,4 +4087,223 @@ func init() {
 	adminRouteUpdateCmd.Flags().IntVar(&routeUpdatePriority, "priority", 0, "new priority")
 
 	adminRouteCmd.AddCommand(adminRouteAddCmd, adminRouteListCmd, adminRouteUpdateCmd, adminRouteDeleteCmd, adminRouteEnableCmd, adminRouteDisableCmd)
+}
+
+// ---------------------------------------------------------------------------
+// sproxy admin corpus
+// ---------------------------------------------------------------------------
+//
+// 语料采集管理命令组。语料文件存储在每个节点本地的 corpus.path 目录下，
+// 集群部署时每个 worker 各自写入自己的本地磁盘，文件名以 instanceID 区分。
+//
+// 子命令：
+//   status  — 显示当前采集配置（是否启用、输出目录、instanceID 等）
+//   list    — 列出所有已采集的 JSONL 文件（按日期/文件名排序）
+//   enable  — （提示）如何在 YAML 中启用采集（运行时热切换不支持，需重启）
+//   disable — （提示）如何在 YAML 中禁用采集
+
+var adminCorpusCmd = &cobra.Command{
+	Use:   "corpus",
+	Short: "Manage training corpus collection",
+	Long: `Manage training corpus collection (LLM conversation JSONL files).
+
+In cluster deployments, each node writes corpus files to its own local disk.
+You must collect files from each worker node separately or configure a shared
+network path via corpus.path in sproxy.yaml.`,
+}
+
+// --- corpus status ---
+
+var adminCorpusStatusCmd = &cobra.Command{
+	Use:   "status",
+	Short: "Show corpus collection configuration and status",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfgPath := adminConfigFlag
+		if cfgPath == "" {
+			cfgPath = "sproxy.yaml"
+		}
+		cfg, _, err := config.LoadSProxyConfig(cfgPath)
+		if err != nil {
+			return fmt.Errorf("load config from %q: %w", cfgPath, err)
+		}
+
+		c := cfg.Corpus
+		fmt.Printf("Corpus collection status\n")
+		fmt.Printf("========================\n")
+		fmt.Printf("Enabled:           %v\n", c.Enabled)
+		fmt.Printf("Output path:       %s\n", c.Path)
+
+		// 推导 instanceID（与 main 启动逻辑保持一致）
+		instanceID := c.InstanceID
+		if instanceID == "" {
+			instanceID = strconv.Itoa(cfg.Listen.Port)
+			if instanceID == "0" {
+				instanceID = "<pid-at-runtime>"
+			}
+			instanceID += " (auto-derived from listen.port)"
+		}
+		fmt.Printf("Instance ID:       %s\n", instanceID)
+		fmt.Printf("Max file size:     %s\n", c.MaxFileSize)
+		fmt.Printf("Buffer size:       %d\n", c.BufferSize)
+		fmt.Printf("Flush interval:    %s\n", c.FlushInterval)
+		fmt.Printf("Min output tokens: %d\n", c.MinOutputTokens)
+		if len(c.ExcludeGroups) > 0 {
+			fmt.Printf("Exclude groups:    %s\n", strings.Join(c.ExcludeGroups, ", "))
+		} else {
+			fmt.Printf("Exclude groups:    (none)\n")
+		}
+
+		fmt.Println()
+		if c.Enabled {
+			// 显示已有文件摘要
+			files, err := listCorpusFiles(c.Path)
+			if err != nil {
+				fmt.Printf("Files:             (cannot read corpus dir: %v)\n", err)
+			} else {
+				fmt.Printf("Files on disk:     %d JSONL file(s) in %s\n", len(files), c.Path)
+			}
+		} else {
+			fmt.Println("Note: corpus collection is DISABLED. Set corpus.enabled: true in sproxy.yaml and restart.")
+		}
+		return nil
+	},
+}
+
+// --- corpus list ---
+
+var adminCorpusListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List all corpus JSONL files on this node",
+	Long: `List all corpus JSONL files stored in the configured corpus.path directory.
+
+In cluster deployments, this command only shows files on the current node.
+Run it on each worker node to collect the full dataset.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfgPath := adminConfigFlag
+		if cfgPath == "" {
+			cfgPath = "sproxy.yaml"
+		}
+		cfg, _, err := config.LoadSProxyConfig(cfgPath)
+		if err != nil {
+			return fmt.Errorf("load config from %q: %w", cfgPath, err)
+		}
+
+		files, err := listCorpusFiles(cfg.Corpus.Path)
+		if err != nil {
+			return fmt.Errorf("list corpus files in %q: %w", cfg.Corpus.Path, err)
+		}
+		if len(files) == 0 {
+			fmt.Printf("No corpus files found in %s\n", cfg.Corpus.Path)
+			return nil
+		}
+		for _, f := range files {
+			fmt.Println(f)
+		}
+		return nil
+	},
+}
+
+// --- corpus enable ---
+
+var adminCorpusEnableCmd = &cobra.Command{
+	Use:   "enable",
+	Short: "Show instructions to enable corpus collection",
+	Long: `Corpus collection is configured statically in sproxy.yaml and requires a restart.
+
+Runtime hot-toggle is not supported — the corpus writer is initialized at startup.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfgPath := adminConfigFlag
+		if cfgPath == "" {
+			cfgPath = "sproxy.yaml"
+		}
+		cfg, _, err := config.LoadSProxyConfig(cfgPath)
+		if err != nil {
+			return fmt.Errorf("load config from %q: %w", cfgPath, err)
+		}
+
+		if cfg.Corpus.Enabled {
+			fmt.Println("Corpus collection is already ENABLED in", cfgPath)
+			fmt.Printf("Output path: %s\n", cfg.Corpus.Path)
+			return nil
+		}
+
+		fmt.Printf("To enable corpus collection, add the following to %s and restart sproxy:\n\n", cfgPath)
+		fmt.Println("corpus:")
+		fmt.Println("  enabled: true")
+		fmt.Printf("  path: %s\n", cfg.Corpus.Path)
+		fmt.Printf("  max_file_size: %s\n", cfg.Corpus.MaxFileSize)
+		fmt.Printf("  min_output_tokens: %d\n", cfg.Corpus.MinOutputTokens)
+		fmt.Println()
+		fmt.Println("In cluster deployments, configure corpus on EACH worker node separately.")
+		fmt.Println("Each node writes to its own local corpus.path using its instanceID in the filename.")
+		return nil
+	},
+}
+
+// --- corpus disable ---
+
+var adminCorpusDisableCmd = &cobra.Command{
+	Use:   "disable",
+	Short: "Show instructions to disable corpus collection",
+	Long: `Corpus collection is configured statically in sproxy.yaml and requires a restart.
+
+Runtime hot-toggle is not supported — the corpus writer is initialized at startup.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfgPath := adminConfigFlag
+		if cfgPath == "" {
+			cfgPath = "sproxy.yaml"
+		}
+		cfg, _, err := config.LoadSProxyConfig(cfgPath)
+		if err != nil {
+			return fmt.Errorf("load config from %q: %w", cfgPath, err)
+		}
+
+		if !cfg.Corpus.Enabled {
+			fmt.Println("Corpus collection is already DISABLED in", cfgPath)
+			return nil
+		}
+
+		fmt.Printf("To disable corpus collection, set the following in %s and restart sproxy:\n\n", cfgPath)
+		fmt.Println("corpus:")
+		fmt.Println("  enabled: false")
+		return nil
+	},
+}
+
+// listCorpusFiles 遍历 basePath 目录，返回所有 .jsonl 文件的完整路径（按路径排序）。
+// 目录结构：basePath/<date>/sproxy_<instanceID>[_NNN].jsonl
+func listCorpusFiles(basePath string) ([]string, error) {
+	var files []string
+	// 遍历日期子目录
+	dateDirs, err := os.ReadDir(basePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil // 目录不存在视为空
+		}
+		return nil, err
+	}
+	for _, dateEntry := range dateDirs {
+		if !dateEntry.IsDir() {
+			continue
+		}
+		dayPath := filepath.Join(basePath, dateEntry.Name())
+		entries, err := os.ReadDir(dayPath)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			if strings.HasSuffix(e.Name(), ".jsonl") {
+				files = append(files, filepath.Join(dayPath, e.Name()))
+			}
+		}
+	}
+	sort.Strings(files)
+	return files, nil
+}
+
+func init() {
+	adminCorpusCmd.AddCommand(adminCorpusStatusCmd, adminCorpusListCmd, adminCorpusEnableCmd, adminCorpusDisableCmd)
 }

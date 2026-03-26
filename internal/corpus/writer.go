@@ -27,6 +27,7 @@ type Writer struct {
 	interval   time.Duration
 	done       chan struct{}
 	dropped    atomic.Int64
+	written    atomic.Int64 // 累计已写入记录数
 
 	// 文件管理
 	basePath    string
@@ -51,9 +52,23 @@ func New(logger *zap.Logger, cfg config.CorpusConfig, instanceID string) (*Write
 		return nil, fmt.Errorf("corpus: invalid max_file_size %q: %w", cfg.MaxFileSize, err)
 	}
 
+	// 将相对路径转换为绝对路径，防止集群各节点因工作目录（CWD）不同
+	// 而将语料文件写到意外的位置。
+	absPath, err := filepath.Abs(cfg.Path)
+	if err != nil {
+		return nil, fmt.Errorf("corpus: failed to resolve absolute path for %q: %w", cfg.Path, err)
+	}
+	if absPath != cfg.Path {
+		logger.Warn("corpus path resolved to absolute path",
+			zap.String("configured", cfg.Path),
+			zap.String("resolved", absPath),
+			zap.String("hint", "set corpus.path to an absolute path in sproxy.yaml to avoid CWD-dependent behavior in cluster deployments"),
+		)
+	}
+
 	// 确保基础目录存在
-	if err := os.MkdirAll(cfg.Path, 0o755); err != nil {
-		return nil, fmt.Errorf("corpus: failed to create base dir %q: %w", cfg.Path, err)
+	if err := os.MkdirAll(absPath, 0o755); err != nil {
+		return nil, fmt.Errorf("corpus: failed to create base dir %q: %w", absPath, err)
 	}
 
 	w := &Writer{
@@ -62,7 +77,7 @@ func New(logger *zap.Logger, cfg config.CorpusConfig, instanceID string) (*Write
 		bufferSize:      cfg.BufferSize,
 		interval:        cfg.FlushInterval,
 		done:            make(chan struct{}),
-		basePath:        cfg.Path,
+		basePath:        absPath,
 		instanceID:      instanceID,
 		maxFileSize:     maxBytes,
 		MinOutputTokens: cfg.MinOutputTokens,
@@ -106,6 +121,11 @@ func (w *Writer) DroppedCount() int64 {
 	return w.dropped.Load()
 }
 
+// WrittenCount 返回累计已写入记录数。
+func (w *Writer) WrittenCount() int64 {
+	return w.written.Load()
+}
+
 func (w *Writer) runLoop(ctx context.Context) {
 	defer close(w.done)
 	defer w.closeFile()
@@ -113,6 +133,8 @@ func (w *Writer) runLoop(ctx context.Context) {
 	w.logger.Info("corpus writer started",
 		zap.String("path", w.basePath),
 		zap.String("instance", w.instanceID),
+		zap.Int("buffer_size", w.bufferSize),
+		zap.Duration("flush_interval", w.interval),
 	)
 
 	ticker := time.NewTicker(w.interval)
@@ -149,6 +171,7 @@ func (w *Writer) runLoop(ctx context.Context) {
 			}
 			w.logger.Info("corpus writer stopped",
 				zap.String("instance", w.instanceID),
+				zap.Int64("total_written", w.written.Load()),
 				zap.Int64("total_dropped", w.dropped.Load()),
 			)
 			return
@@ -162,7 +185,11 @@ func (w *Writer) writeBatch(batch []Record) {
 
 	for i := range batch {
 		if err := w.ensureFile(); err != nil {
-			w.logger.Error("corpus: failed to open file", zap.Error(err))
+			w.logger.Error("corpus: failed to open file, dropping entire batch",
+				zap.Error(err),
+				zap.Int("batch_size", len(batch)),
+				zap.String("first_id", batch[i].ID),
+			)
 			return
 		}
 		data, err := json.Marshal(&batch[i])
@@ -176,10 +203,15 @@ func (w *Writer) writeBatch(batch []Record) {
 		data = append(data, '\n')
 		n, writeErr := w.bufWriter.Write(data)
 		if writeErr != nil {
-			w.logger.Error("corpus: write failed", zap.Error(writeErr))
+			w.logger.Error("corpus: write failed, dropping remaining records in batch",
+				zap.Error(writeErr),
+				zap.String("id", batch[i].ID),
+				zap.Int("records_skipped", len(batch)-i-1),
+			)
 			return
 		}
 		w.currentSize += int64(n)
+		w.written.Add(1)
 	}
 	// 每批次结束后 flush bufio
 	if w.bufWriter != nil {
@@ -196,6 +228,12 @@ func (w *Writer) ensureFile() error {
 
 	// 日期变更：关闭旧文件，重置序号
 	if w.currentDate != today {
+		if w.currentDate != "" {
+			w.logger.Info("corpus file rotated: new day",
+				zap.String("old_date", w.currentDate),
+				zap.String("new_date", today),
+			)
+		}
 		w.doCloseFile()
 		w.currentDate = today
 		w.seqNum = 0
@@ -204,6 +242,11 @@ func (w *Writer) ensureFile() error {
 
 	// 大小轮转
 	if w.currentFile != nil && w.maxFileSize > 0 && w.currentSize >= w.maxFileSize {
+		w.logger.Info("corpus file rotated: size limit reached",
+			zap.Int64("current_size", w.currentSize),
+			zap.Int64("max_file_size", w.maxFileSize),
+			zap.Int("next_seq", w.seqNum+1),
+		)
 		w.doCloseFile()
 		w.seqNum++
 		w.currentSize = 0
@@ -232,9 +275,14 @@ func (w *Writer) ensureFile() error {
 		return fmt.Errorf("open %s: %w", path, err)
 	}
 
-	// 获取已有文件大小（append 模式）
-	info, _ := f.Stat()
-	if info != nil {
+	// 获取已有文件大小（append 模式），用于大小轮转判断
+	info, statErr := f.Stat()
+	if statErr != nil {
+		w.logger.Warn("corpus: failed to stat file, size tracking reset to 0 (rotation may be delayed)",
+			zap.String("path", path),
+			zap.Error(statErr),
+		)
+	} else if info != nil {
 		w.currentSize = info.Size()
 	}
 
@@ -256,7 +304,12 @@ func (w *Writer) closeFile() {
 // doCloseFile 关闭当前文件（调用方必须持有 w.mu）。
 func (w *Writer) doCloseFile() {
 	if w.bufWriter != nil {
-		_ = w.bufWriter.Flush()
+		if err := w.bufWriter.Flush(); err != nil {
+			w.logger.Error("corpus: flush on close failed, data may be lost",
+				zap.String("path", w.currentFile.Name()),
+				zap.Error(err),
+			)
+		}
 		w.bufWriter = nil
 	}
 	if w.currentFile != nil {
@@ -264,8 +317,18 @@ func (w *Writer) doCloseFile() {
 			zap.String("path", w.currentFile.Name()),
 			zap.Int64("size", w.currentSize),
 		)
-		_ = w.currentFile.Sync()
-		_ = w.currentFile.Close()
+		if err := w.currentFile.Sync(); err != nil {
+			w.logger.Error("corpus: sync failed on close, data may not be persisted",
+				zap.String("path", w.currentFile.Name()),
+				zap.Error(err),
+			)
+		}
+		if err := w.currentFile.Close(); err != nil {
+			w.logger.Error("corpus: close failed, file descriptor may be leaked",
+				zap.String("path", w.currentFile.Name()),
+				zap.Error(err),
+			)
+		}
 		w.currentFile = nil
 	}
 }

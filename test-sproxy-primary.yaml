@@ -36,5 +36,14 @@ cluster:
 dashboard:
   enabled: false
 
+# 语料采集：primary 节点写入本地 ./corpus/ 目录
+# 集群中每个节点各自写入本地磁盘，文件名由 instance_id 区分
+corpus:
+  enabled: true
+  path: "./corpus/"
+  instance_id: "9000"        # 显式指定，与 worker 节点区分
+  max_file_size: "200MB"
+  min_output_tokens: 50
+
 log:
   level: "debug"

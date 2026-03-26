@@ -489,6 +489,94 @@ func (sp *SProxy) LoadAllTargets() ([]config.LLMTarget, error) {
 	return sp.loadAllTargets(repo)
 }
 
+// SyncLLMTargets 从数据库重新加载所有活跃的 LLM targets，原子更新 llmBalancer 和 llmHC。
+// 在通过 WebUI / API 增删改启停 target 后调用，使变更立即生效，无需重启。
+//
+// 新 target 入场策略：
+//   - 有 HealthCheckPath：以 Healthy=false 加入，立即触发一次主动检查，检查通过后变 healthy，
+//     不会用真实用户请求试错坏节点，也不需要等待 30s ticker
+//   - 无 HealthCheckPath（无主动检查）：以 Healthy=true 加入，依赖被动熔断
+//
+// 存量 target 策略：保留其当前健康/排水状态，不干扰运行中的熔断逻辑。
+func (sp *SProxy) SyncLLMTargets() {
+	if sp.llmBalancer == nil || sp.llmHC == nil || sp.db == nil {
+		return
+	}
+
+	loadedTargets, err := sp.LoadAllTargets()
+	if err != nil {
+		sp.logger.Error("SyncLLMTargets: failed to load targets from db", zap.Error(err))
+		return
+	}
+
+	// 快照现有 balancer 状态，用于保留存量 target 的健康/排水标志
+	existingTargets := sp.llmBalancer.Targets()
+	existingHealth := make(map[string]bool, len(existingTargets))
+	existingDrain := make(map[string]bool, len(existingTargets))
+	for _, t := range existingTargets {
+		existingHealth[t.ID] = t.Healthy
+		existingDrain[t.ID] = t.Draining
+	}
+
+	lbTargets := make([]lb.Target, 0, len(loadedTargets))
+	healthPaths := make(map[string]string, len(loadedTargets))
+	var newTargetsWithPath []string // 新加入且有 health path 的 target，需立即检查
+
+	for _, t := range loadedTargets {
+		w := t.Weight
+		if w <= 0 {
+			w = 1
+		}
+
+		isNew := false
+		healthy := true
+		draining := false
+		if h, exists := existingHealth[t.URL]; exists {
+			// 存量 target：保留当前健康/排水状态
+			healthy = h
+			draining = existingDrain[t.URL]
+		} else {
+			// 新 target
+			isNew = true
+			if t.HealthCheckPath != "" {
+				// 有主动检查路径：先标 false，等检查通过再变 healthy
+				// 避免用真实用户请求试错可能根本不通的节点
+				healthy = false
+			}
+			// 无主动检查路径：healthy=true（只能依赖被动熔断，行为与启动时一致）
+		}
+
+		lbTargets = append(lbTargets, lb.Target{
+			ID:       t.URL,
+			Addr:     t.URL,
+			Weight:   w,
+			Healthy:  healthy,
+			Draining: draining,
+		})
+		if t.HealthCheckPath != "" {
+			healthPaths[t.URL] = t.HealthCheckPath
+			if isNew {
+				newTargetsWithPath = append(newTargetsWithPath, t.URL)
+			}
+		}
+	}
+
+	sp.llmBalancer.UpdateTargets(lbTargets)
+	sp.llmHC.UpdateHealthPaths(healthPaths)
+
+	// 对新加入且有 health path 的 target 立即发起一次主动检查（异步）
+	// 检查通过后 MarkHealthy，不需要等下一个 30s ticker
+	for _, id := range newTargetsWithPath {
+		sp.llmHC.CheckTarget(id)
+	}
+
+	sp.logger.Info("SyncLLMTargets: balancer and health checker updated",
+		zap.Int("targets", len(lbTargets)),
+		zap.Int("health_check_paths", len(healthPaths)),
+		zap.Int("new_targets_checking", len(newTargetsWithPath)),
+	)
+}
+
 // Drain 进入排水模式。
 // 排水模式下，节点仍可处理现有请求，但不再接受新流量（通过集群路由表通知其他节点）。
 func (sp *SProxy) Drain() error {

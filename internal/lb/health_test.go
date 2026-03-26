@@ -442,3 +442,250 @@ func TestPick_AllDrainingAndUnhealthyMixed(t *testing.T) {
 		t.Errorf("Pick() with all draining/unhealthy targets should return ErrNoHealthyTarget, got: %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// UpdateHealthPaths — 运行时动态替换检查路径
+// ---------------------------------------------------------------------------
+
+// TestUpdateHealthPaths_OnlyNewTargetChecked 验证 UpdateHealthPaths 后，
+// 只有更新后 paths 中的 target 被主动检查，旧 paths 中的 target 不再被检查。
+func TestUpdateHealthPaths_OnlyNewTargetChecked(t *testing.T) {
+	checkedTargets := make(chan string, 20)
+
+	srvA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		checkedTargets <- "a"
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srvA.Close()
+
+	srvB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		checkedTargets <- "b"
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srvB.Close()
+
+	b := NewWeightedRandom([]Target{
+		{ID: "a", Addr: srvA.URL, Weight: 1, Healthy: true},
+		{ID: "b", Addr: srvB.URL, Weight: 1, Healthy: true},
+	})
+	logger := zaptest.NewLogger(t)
+	hc := NewHealthChecker(b, logger,
+		WithInterval(30*time.Millisecond),
+		WithTimeout(2*time.Second),
+		WithHealthPaths(map[string]string{
+			"a": "/health", // 初始只检查 a
+		}),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	hc.Start(ctx)
+
+	// 等待初始检查完成
+	time.Sleep(60 * time.Millisecond)
+
+	// 确认初始阶段只有 a 被检查
+	seenBefore := map[string]int{}
+	drained := false
+	for !drained {
+		select {
+		case id := <-checkedTargets:
+			seenBefore[id]++
+		default:
+			drained = true
+		}
+	}
+	if seenBefore["b"] > 0 {
+		t.Errorf("before UpdateHealthPaths, 'b' should not be checked, but was checked %d times", seenBefore["b"])
+	}
+	if seenBefore["a"] == 0 {
+		t.Error("before UpdateHealthPaths, 'a' should have been checked at least once")
+	}
+
+	// 运行时切换：只检查 b
+	hc.UpdateHealthPaths(map[string]string{
+		"b": "/health",
+	})
+
+	// 等待"切换后稳定期"：3 个完整 interval，让飞行中的旧检查排干
+	time.Sleep(120 * time.Millisecond)
+	// 排空切换过渡期产生的检查结果（可能有 1 次 a 的尾巴）
+	for len(checkedTargets) > 0 {
+		<-checkedTargets
+	}
+
+	// 再等 2 个 interval，观察切换后的稳定状态
+	time.Sleep(80 * time.Millisecond)
+
+	// 统计切换后稳定期被检查的 target
+	seenAfter := map[string]int{}
+	drained = false
+	for !drained {
+		select {
+		case id := <-checkedTargets:
+			seenAfter[id]++
+		default:
+			drained = true
+		}
+	}
+
+	if seenAfter["b"] == 0 {
+		t.Error("after UpdateHealthPaths, 'b' should have been checked at least once")
+	}
+	if seenAfter["a"] > 0 {
+		t.Errorf("after UpdateHealthPaths (stable), 'a' should no longer be checked, but was checked %d times", seenAfter["a"])
+	}
+}
+
+// TestUpdateHealthPaths_EmptyPathsFallbackToDefault 验证 UpdateHealthPaths 传空 map 后，
+// checkAll 对所有 target 使用默认路径（defaultHealthPath）。
+func TestUpdateHealthPaths_EmptyPathsFallbackToDefault(t *testing.T) {
+	checked := make(chan string, 10)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		checked <- r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	b := NewWeightedRandom([]Target{
+		{ID: "t", Addr: srv.URL, Weight: 1, Healthy: false},
+	})
+	logger := zaptest.NewLogger(t)
+	hc := NewHealthChecker(b, logger,
+		WithInterval(30*time.Millisecond),
+		WithTimeout(2*time.Second),
+		WithHealthPaths(map[string]string{
+			"t": "/custom", // 初始使用自定义路径
+		}),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+	hc.Start(ctx)
+	time.Sleep(60 * time.Millisecond)
+
+	// 清空 channel
+	for len(checked) > 0 {
+		<-checked
+	}
+
+	// 清除 paths → 退化为默认路径
+	hc.UpdateHealthPaths(map[string]string{})
+	time.Sleep(60 * time.Millisecond)
+
+	// 检查接下来访问的路径是否为默认 /health
+	gotDefaultPath := false
+	for len(checked) > 0 {
+		path := <-checked
+		if path == defaultHealthPath {
+			gotDefaultPath = true
+		}
+	}
+	if !gotDefaultPath {
+		t.Errorf("after UpdateHealthPaths(empty), expected default path %q to be used", defaultHealthPath)
+	}
+}
+
+// TestUpdateHealthPaths_ConcurrentSafe 验证并发调用 UpdateHealthPaths 不 panic、不 data race。
+func TestUpdateHealthPaths_ConcurrentSafe(t *testing.T) {
+	b := NewWeightedRandom([]Target{
+		{ID: "x", Addr: "http://127.0.0.1:19998", Weight: 1, Healthy: true},
+	})
+	logger := zaptest.NewLogger(t)
+	hc := NewHealthChecker(b, logger,
+		WithInterval(10*time.Millisecond),
+		WithTimeout(5*time.Millisecond),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	hc.Start(ctx)
+
+	// 并发：10 个 goroutine 同时调用 UpdateHealthPaths
+	done := make(chan struct{})
+	for i := 0; i < 10; i++ {
+		go func(idx int) {
+			defer func() { done <- struct{}{} }()
+			for j := 0; j < 20; j++ {
+				hc.UpdateHealthPaths(map[string]string{
+					"x": "/health",
+				})
+				time.Sleep(time.Millisecond)
+			}
+		}(i)
+	}
+	for i := 0; i < 10; i++ {
+		<-done
+	}
+	// 不 panic、不 data race 即通过
+}
+
+// ---------------------------------------------------------------------------
+// CheckTarget — 对单个 target 立即发起主动检查
+// ---------------------------------------------------------------------------
+
+// TestCheckTarget_HealthyServerBecomesPickable 验证 CheckTarget 后，
+// 初始 Healthy=false 的 target 在检查通过后变为 healthy，无需等 ticker。
+func TestCheckTarget_HealthyServerBecomesPickable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	b := NewWeightedRandom([]Target{
+		{ID: "t", Addr: srv.URL, Weight: 1, Healthy: false}, // 初始不健康
+	})
+	logger := zaptest.NewLogger(t)
+	hc := NewHealthChecker(b, logger,
+		WithInterval(60*time.Second), // 超长 interval，排除 ticker 干扰
+		WithTimeout(2*time.Second),
+		WithHealthPaths(map[string]string{"t": "/health"}),
+	)
+
+	// 未调用 Start，仅通过 CheckTarget 触发单次检查
+	hc.CheckTarget("t")
+
+	// 等待异步检查完成
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if _, err := b.Pick(); err == nil {
+			return // 通过
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Error("target should become healthy after CheckTarget passes within 500ms")
+}
+
+// TestCheckTarget_UnhealthyServerStaysUnpickable 验证 CheckTarget 发现 target 不可达时，
+// Healthy=false 状态维持（失败计数增加但不超阈值也不影响），不会误标为健康。
+func TestCheckTarget_UnhealthyServerStaysUnpickable(t *testing.T) {
+	b := NewWeightedRandom([]Target{
+		{ID: "dead", Addr: "http://127.0.0.1:19997", Weight: 1, Healthy: false},
+	})
+	logger := zaptest.NewLogger(t)
+	hc := NewHealthChecker(b, logger,
+		WithInterval(60*time.Second),
+		WithTimeout(50*time.Millisecond),
+		WithHealthPaths(map[string]string{"dead": "/health"}),
+	)
+
+	hc.CheckTarget("dead")
+	time.Sleep(200 * time.Millisecond) // 等待检查超时完成
+
+	if _, err := b.Pick(); err == nil {
+		t.Error("unreachable target should remain unhealthy after CheckTarget")
+	}
+}
+
+// TestCheckTarget_NoOpForUnknownID 验证对不存在的 target ID 调用 CheckTarget 不 panic。
+func TestCheckTarget_NoOpForUnknownID(t *testing.T) {
+	b := NewWeightedRandom([]Target{
+		{ID: "real", Addr: "http://127.0.0.1:19996", Weight: 1, Healthy: true},
+	})
+	logger := zaptest.NewLogger(t)
+	hc := NewHealthChecker(b, logger)
+
+	// 不应 panic
+	hc.CheckTarget("nonexistent")
+}

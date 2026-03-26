@@ -45,6 +45,7 @@ type Handler struct {
 	drainStatusFn     func() proxy.DrainStatus       // 可选，查询排水状态
 	eventLog          *eventlog.Log                  // 可选，内存告警事件缓冲区
 	isWorkerNode      bool                           // true = Worker 节点，只读模式
+	llmSyncFn         func()                         // 可选，目标变更后同步 balancer/HC
 
 	// 用户统计缓存（5 分钟 TTL，PRD NFR-缓存要求）
 	userStatsCacheMu  sync.Mutex
@@ -66,6 +67,11 @@ func (h *Handler) SetEventLog(log *eventlog.Log) { h.eventLog = log }
 
 // SetWorkerMode 设置 Worker 节点只读模式（Worker 节点调用此方法后，所有写操作返回 403）
 func (h *Handler) SetWorkerMode(isWorker bool) { h.isWorkerNode = isWorker }
+
+// SetLLMSyncFn 设置目标变更后的同步回调（可选）。
+// 每次通过 Dashboard 增删改 LLM target 成功后会调用此函数，
+// 使 llmBalancer 和 llmHC 立即感知变更，无需重启进程。
+func (h *Handler) SetLLMSyncFn(fn func()) { h.llmSyncFn = fn }
 
 // NewHandler 创建 Dashboard Handler
 func NewHandler(

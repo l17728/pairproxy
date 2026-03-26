@@ -129,6 +129,12 @@ echo -e "testuser\ntestpass123" | ./cproxy.exe login --server http://localhost:9
 - Run `make test-race` before merging concurrent changes
 - No external assert frameworks (use standard `testing` package)
 
+### Test Design Rules (防回归 checklist)
+- **Once-set semantics**: 测试"写入后不被覆盖"的逻辑时，后续输入必须携带**不同的值**，相同值无法区分"写一次"和"写多次"
+- **Provider symmetry**: 每个 provider 路径（anthropic / openai / ollama）需独立覆盖：正常流、malformed 容错、非流式场景
+- **Exported API**: 新增 exported 方法时，同 PR 内必须包含对应单元测试
+- **If-err-return 插入**: 在已有条件块前插入 `if err != nil { return }` 后，必须确认原有条件块结构完整，立即 `go build` 验证
+
 ## Configuration
 
 ### YAML Format

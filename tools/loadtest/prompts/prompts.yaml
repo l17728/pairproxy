@@ -1,0 +1,75 @@
+# Claude Load Tester Configuration
+
+# 预定义的 prompt 库
+categories:
+  code_understanding:
+    - "解释这段代码的作用：func main() { fmt.Println(\"Hello, World!\") }"
+    - "这段 Python 代码是什么意思：def foo(): return [x for x in range(10)]"
+    - "分析这个正则表达式：^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$"
+    - "解释 SQL 查询：SELECT * FROM users WHERE age > 18 ORDER BY name"
+    - "这段 JavaScript 代码的时间复杂度是多少？function loop(n) { for(let i=0; i<n; i++) console.log(i); }"
+    - "解释 Docker 命令：docker run -d -p 8080:80 --name web nginx"
+    - "这段 Rust 代码中的 unwrap() 是什么意思？"
+    - "解释 Kubernetes 中的 Pod 和 Deployment 的区别"
+    
+  code_refactoring:
+    - "重构这段代码，使其更易读：if (x == 1) { return true; } else { return false; }"
+    - "将这段代码改为使用泛型：func max(a, b int) int { if a > b { return a } return b }"
+    - "优化这段 SQL 查询，添加适当的索引建议"
+    - "将这个回调函数改为 async/await 风格"
+    - "重构这个类，使用依赖注入模式"
+    - "优化这段循环，减少时间复杂度"
+    - "将这个函数改为支持流式处理"
+    - "重构这段代码，使用设计模式"
+    
+  debugging:
+    - "这段代码报错 'nil pointer dereference'，如何修复？"
+    - "为什么会出现 'concurrent map writes' 错误？"
+    - "这个 SQL 查询返回了重复的数据，如何解决？"
+    - "程序死锁了，如何排查？"
+    - "内存泄漏问题，如何定位？"
+    - "这段代码的 race condition 在哪里？"
+    - "如何处理这个 panic: runtime error: index out of range？"
+    - "这个服务的 CPU 占用 100%，如何排查？"
+    
+  code_generation:
+    - "写一个函数，判断字符串是否是回文"
+    - "生成一个 REST API 的 CRUD 代码模板"
+    - "写一个快速排序算法"
+    - "生成一个 Docker Compose 配置文件，包含 PostgreSQL 和 Redis"
+    - "写一个单元测试，测试这个函数的各种边界条件"
+    - "生成一个 Makefile，包含 build、test、clean 目标"
+    - "写一个中间件，实现 JWT 认证"
+    - "生成一个 GitHub Actions 工作流配置"
+    
+  explanation:
+    - "什么是死锁？如何避免？"
+    - "解释 CAP 定理"
+    - "什么是 RESTful API？"
+    - "解释 OAuth 2.0 的工作流程"
+    - "什么是微服务架构的优缺点？"
+    - "解释数据库索引的工作原理"
+    - "什么是分布式事务？"
+    - "解释 Kubernetes 的 Service Mesh 概念"
+    - "什么是事件溯源（Event Sourcing）？"
+    - "解释 WebSocket 和 HTTP 长轮询的区别"
+    
+  system_design:
+    - "设计一个高并发的短链接服务"
+    - "如何设计一个分布式消息队列？"
+    - "设计一个支持百万用户的实时聊天系统"
+    - "如何实现一个分布式锁？"
+    - "设计一个图片上传和存储系统"
+    - "如何实现一个简单的推荐算法？"
+    - "设计一个支持水平扩展的计数器服务"
+    - "如何实现一个分布式配置中心？"
+    
+  algorithm:
+    - "实现一个 LRU 缓存"
+    - "如何判断一个图是否有环？"
+    - "实现一个支持 O(1) 插入、删除、获取随机元素的集合"
+    - "如何实现一个 Trie 树？"
+    - "解释红黑树的旋转操作"
+    - "如何实现一个一致性哈希算法？"
+    - "布隆过滤器的原理和应用场景"
+    - "如何实现一个 Top K 问题的高效算法？"

@@ -111,9 +111,50 @@ func (hc *HealthChecker) SetNotifier(n *alert.Notifier) {
 	hc.notifier = n
 }
 
+// UpdateHealthPaths 在运行时原子替换 healthPaths 映射（targetID → health check path）。
+// 供目标列表变更（增删启停）时调用，无需重启进程。
+func (hc *HealthChecker) UpdateHealthPaths(paths map[string]string) {
+	hc.mu.Lock()
+	defer hc.mu.Unlock()
+	hc.healthPaths = make(map[string]string, len(paths))
+	for k, v := range paths {
+		hc.healthPaths[k] = v
+	}
+}
+
 // Start 启动后台主动健康检查 goroutine，ctx 取消时退出。
 func (hc *HealthChecker) Start(ctx context.Context) {
 	go hc.loop(ctx)
+}
+
+// CheckTarget 立即对指定 target 发起一次主动健康检查（异步，不阻塞调用方）。
+// 供新 target 加入时立即验证，无需等待下一个 ticker 周期（最长 30s）。
+// 若 target 不在 balancer 中或无对应 health path，则不做任何事。
+func (hc *HealthChecker) CheckTarget(id string) {
+	targets := hc.balancer.Targets()
+
+	hc.mu.Lock()
+	paths := make(map[string]string, len(hc.healthPaths))
+	for k, v := range hc.healthPaths {
+		paths[k] = v
+	}
+	hc.mu.Unlock()
+
+	for _, t := range targets {
+		if t.ID != id {
+			continue
+		}
+		if len(paths) > 0 {
+			path, ok := paths[id]
+			if !ok || path == "" {
+				return // 该 target 无主动检查路径
+			}
+			go hc.checkOneWithPath(t, path)
+		} else {
+			go hc.checkOne(t)
+		}
+		return
+	}
 }
 
 func (hc *HealthChecker) loop(ctx context.Context) {
@@ -135,10 +176,19 @@ func (hc *HealthChecker) loop(ctx context.Context) {
 
 func (hc *HealthChecker) checkAll() {
 	targets := hc.balancer.Targets()
+
+	// 持有锁期间拷贝 healthPaths，避免在 checkOneWithPath 期间持锁
+	hc.mu.Lock()
+	paths := make(map[string]string, len(hc.healthPaths))
+	for k, v := range hc.healthPaths {
+		paths[k] = v
+	}
+	hc.mu.Unlock()
+
 	for _, t := range targets {
 		// 若 healthPaths 非空，仅检查其中有路径的 target
-		if len(hc.healthPaths) > 0 {
-			path, ok := hc.healthPaths[t.ID]
+		if len(paths) > 0 {
+			path, ok := paths[t.ID]
 			if !ok || path == "" {
 				continue // 无主动检查路径，依赖被动熔断
 			}
