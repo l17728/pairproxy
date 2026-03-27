@@ -27,11 +27,12 @@ func TestGroupTargetSelector_SelectTarget_WeightedRandom(t *testing.T) {
 	repo := db.NewGroupTargetSetRepo(testDB, zap.NewNop())
 	selector := NewGroupTargetSelector(repo, zap.NewNop())
 
-	// 创建 target set
+	// 创建 target set（设置 IsDefault=true 以便按空 groupID 查询）
 	set := &db.GroupTargetSet{
-		ID:       uuid.New().String(),
-		Name:     "test-set",
-		Strategy: "weighted_random",
+		ID:        uuid.New().String(),
+		Name:      "test-set",
+		Strategy:  "weighted_random",
+		IsDefault: true,
 	}
 	require.NoError(t, repo.Create(set))
 
@@ -46,10 +47,11 @@ func TestGroupTargetSelector_SelectTarget_WeightedRandom(t *testing.T) {
 
 	for _, tc := range targetConfigs {
 		member := &db.GroupTargetSetMember{
-			ID:        uuid.New().String(),
-			TargetURL: tc.url,
-			Weight:    tc.weight,
-			IsActive:  true,
+			ID:           uuid.New().String(),
+			TargetURL:    tc.url,
+			Weight:       tc.weight,
+			IsActive:     true,
+			HealthStatus: "healthy",
 		}
 		require.NoError(t, repo.AddMember(set.ID, member))
 	}

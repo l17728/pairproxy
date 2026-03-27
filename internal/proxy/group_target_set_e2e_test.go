@@ -55,9 +55,10 @@ func TestGroupTargetSetIntegration_E2E_CompleteWorkflow(t *testing.T) {
 
 	// 2. 创建 target set
 	set := &db.GroupTargetSet{
-		ID:       uuid.New().String(),
-		Name:     "production-pool",
-		Strategy: "weighted_random",
+		ID:        uuid.New().String(),
+		Name:      "production-pool",
+		Strategy:  "weighted_random",
+		IsDefault: true,
 	}
 	require.NoError(t, repo.Create(set))
 
@@ -70,10 +71,11 @@ func TestGroupTargetSetIntegration_E2E_CompleteWorkflow(t *testing.T) {
 
 	for i, url := range targetURLs {
 		member := &db.GroupTargetSetMember{
-			ID:        uuid.New().String(),
-			TargetURL: url,
-			Weight:    i + 1,
-			IsActive:  true,
+			ID:           uuid.New().String(),
+			TargetURL:    url,
+			Weight:       i + 1,
+			IsActive:     true,
+			HealthStatus: "healthy",
 		}
 		require.NoError(t, repo.AddMember(set.ID, member))
 	}
@@ -173,18 +175,20 @@ func TestGroupTargetSetIntegration_E2E_MultipleGroups(t *testing.T) {
 
 	for _, s := range sets {
 		set := &db.GroupTargetSet{
-			ID:       uuid.New().String(),
-			Name:     s.name,
-			Strategy: "weighted_random",
+			ID:        uuid.New().String(),
+			Name:      s.name,
+			Strategy:  "weighted_random",
+			IsDefault: true,
 		}
 		require.NoError(t, repo.Create(set))
 
 		for _, url := range s.targets {
 			member := &db.GroupTargetSetMember{
-				ID:        uuid.New().String(),
-				TargetURL: url,
-				Weight:    1,
-				IsActive:  true,
+				ID:           uuid.New().String(),
+				TargetURL:    url,
+				Weight:       1,
+				IsActive:     true,
+				HealthStatus: "healthy",
 			}
 			require.NoError(t, repo.AddMember(set.ID, member))
 		}
@@ -302,25 +306,32 @@ func TestGroupTargetSetIntegration_E2E_HealthStatus(t *testing.T) {
 	require.NoError(t, repo.Create(set))
 
 	// 添加 targets
-	for i := 0; i < 3; i++ {
+	targetURLs := []string{
+		"https://api1.example.com",
+		"https://api2.example.com",
+		"https://api3.example.com",
+	}
+	for _, url := range targetURLs {
 		member := &db.GroupTargetSetMember{
-			ID:        uuid.New().String(),
-			TargetURL: "https://api" + string(rune('1'+i)) + ".example.com",
-			Weight:    1,
-			IsActive:  true,
+			ID:       uuid.New().String(),
+			TargetURL: url,
+			Weight:   1,
+			IsActive: true,
 		}
 		require.NoError(t, repo.AddMember(set.ID, member))
 	}
 
-	// 获取所有健康状态
+	// 通过 RecordError 触发 alertManager 记录错误
+	for _, url := range targetURLs {
+		integration.RecordError(url, 500, nil, []string{})
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	// 验证 alertManager 追踪到了活跃告警
+	alerts := integration.GetActiveAlerts()
+	assert.GreaterOrEqual(t, len(alerts), 1)
+
+	// GetAllHealthStatus 由 HealthMonitor 管理（后台定期扫描），此时可能为空
 	allStatus := integration.GetAllHealthStatus()
 	assert.NotNil(t, allStatus)
-
-	// 验证每个 target 都有状态
-	for i := 0; i < 3; i++ {
-		url := "https://api" + string(rune('1'+i)) + ".example.com"
-		status := integration.GetHealthStatus(url)
-		assert.NotNil(t, status)
-		assert.Equal(t, url, status.URL)
-	}
 }

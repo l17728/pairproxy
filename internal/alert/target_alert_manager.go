@@ -107,6 +107,7 @@ func NewTargetAlertManager(
 func (m *TargetAlertManager) Start(ctx context.Context) {
 	if !m.config.Enabled {
 		m.logger.Info("alert manager disabled")
+		close(m.done) // 确保 Stop() 不会阻塞
 		return
 	}
 
