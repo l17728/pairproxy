@@ -773,6 +773,34 @@ func runStart(cmd *cobra.Command, args []string) error {
 	adminTargetSetHandler := api.NewAdminTargetSetHandler(groupTargetSetRepo, logger)
 	adminAlertHandler := api.NewAdminAlertHandler(targetAlertRepo, logger)
 
+	// 初始化 TargetAlertManager
+	alertConfig := alert.TargetAlertConfig{
+		Enabled: true,
+		Triggers: map[string]alert.TriggerConfig{
+			"http_error": {
+				Type:           "http_error",
+				StatusCodes:    []int{429, 500, 502, 503, 504},
+				Severity:       "error",
+				MinOccurrences: 3,
+				Window:         5 * time.Minute,
+			},
+		},
+		Recovery: alert.RecoveryConfig{
+			ConsecutiveSuccesses: 2,
+			Window:               5 * time.Minute,
+		},
+		Dashboard: alert.DashboardConfig{
+			MaxActiveAlerts: 100,
+			Retention:       7 * 24 * time.Hour,
+			AutoRefresh:     true,
+		},
+	}
+	alertManager := alert.NewTargetAlertManager(targetAlertRepo, alertConfig, logger)
+	alertManager.Start(context.Background())
+
+	// 创建 SSE Alert Handler
+	sseAlertHandler := api.NewSSEAlertHandler(alertManager, logger)
+
 	// 注册 Group-Target Set 和 Alert 管理端点
 	mux.Handle("GET /api/admin/targetsets", adminHandler.RequireAdmin(http.HandlerFunc(adminTargetSetHandler.ListTargetSets)))
 	mux.Handle("POST /api/admin/targetsets", adminHandler.RequireAdmin(http.HandlerFunc(adminTargetSetHandler.CreateTargetSet)))
@@ -780,6 +808,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	mux.Handle("GET /api/admin/alerts/history", adminHandler.RequireAdmin(http.HandlerFunc(adminAlertHandler.ListAlertHistory)))
 	mux.Handle("POST /api/admin/alerts/resolve", adminHandler.RequireAdmin(http.HandlerFunc(adminAlertHandler.ResolveAlert)))
 	mux.Handle("GET /api/admin/alerts/stats", adminHandler.RequireAdmin(http.HandlerFunc(adminAlertHandler.GetAlertStats)))
+	mux.Handle("GET /api/admin/alerts/stream", adminHandler.RequireAdmin(http.HandlerFunc(sseAlertHandler.StreamAlerts)))
 	logger.Info("Group-Target Set and Alert management API registered at /api/admin/")
 
 	// 集群内部 API（仅 primary）

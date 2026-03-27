@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 
+	"github.com/l17728/pairproxy/internal/alert"
 	"github.com/l17728/pairproxy/internal/db"
 )
 
@@ -362,14 +363,14 @@ func (h *AdminAlertHandler) GetAlertStats(w http.ResponseWriter, r *http.Request
 // SSEAlertHandler SSE 告警流处理器
 type SSEAlertHandler struct {
 	alertManager interface {
-		SubscribeEvents() <-chan interface{}
+		SubscribeEvents() <-chan alert.AlertEvent
 	}
 	logger *zap.Logger
 }
 
 // NewSSEAlertHandler 创建 SSE 处理器
 func NewSSEAlertHandler(alertManager interface {
-	SubscribeEvents() <-chan interface{}
+	SubscribeEvents() <-chan alert.AlertEvent
 }, logger *zap.Logger) *SSEAlertHandler {
 	return &SSEAlertHandler{
 		alertManager: alertManager,
