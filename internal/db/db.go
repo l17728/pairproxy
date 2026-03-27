@@ -226,6 +226,9 @@ func Migrate(logger *zap.Logger, db *gorm.DB) error {
 		&LLMBinding{},       // LLM 绑定管理
 		&LLMTarget{},        // LLM 目标动态管理
 		&SemanticRoute{},    // 语义路由规则
+		&GroupTargetSet{},   // Group-Target Set 绑定
+		&GroupTargetSetMember{}, // Target Set 成员
+		&TargetAlert{},      // Target 告警事件
 	}
 
 	for _, model := range models {

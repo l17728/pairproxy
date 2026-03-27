@@ -147,3 +147,56 @@ type SemanticRoute struct {
 }
 
 func (SemanticRoute) TableName() string { return "semantic_routes" }
+
+// GroupTargetSet Group 与 Target Set 的绑定关系
+// 支持两类群组：
+//   1. 普通组: group_id 指向具体的 groups.id
+//   2. 默认组: group_id = NULL 且 is_default = 1
+type GroupTargetSet struct {
+	ID          string    `gorm:"primarykey"`
+	GroupID     *string   `gorm:"index"`                    // NULL = 默认组
+	Name        string    `gorm:"uniqueIndex;not null"`    // 显示名称
+	Strategy    string    `gorm:"default:'weighted_random'"` // "weighted_random" | "round_robin" | "priority"
+	RetryPolicy string    `gorm:"default:'try_next'"`      // "try_next" | "fail_fast"
+	IsDefault   bool      `gorm:"default:false;index"`     // 是否默认组
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+// GroupTargetSetMember Target Set 的成员（多对多关系）
+type GroupTargetSetMember struct {
+	ID            string    `gorm:"primarykey"`
+	TargetSetID   string    `gorm:"not null;index"`
+	TargetURL     string    `gorm:"not null;index"`
+	Weight        int       `gorm:"default:1"`
+	Priority      int       `gorm:"default:0"`
+	IsActive      bool      `gorm:"default:true"`
+	HealthStatus  string    `gorm:"default:'unknown'"` // "healthy" | "degraded" | "unhealthy" | "unknown"
+	LastHealthCheck *time.Time
+	ConsecutiveFailures int `gorm:"default:0"`
+	CreatedAt     time.Time
+
+	// 唯一约束：同一 target_set 内 URL 唯一
+	// UNIQUE(target_set_id, target_url) 由 GORM 的 uniqueIndex 处理
+}
+
+// TargetAlert Target 告警事件（持久化存储）
+type TargetAlert struct {
+	ID              string    `gorm:"primarykey"`
+	TargetURL       string    `gorm:"not null;index"`
+	AlertType       string    `gorm:"not null"`           // "error" | "degraded" | "recovered"
+	Severity        string    `gorm:"not null"`           // "warning" | "error" | "critical"
+	StatusCode      *int
+	ErrorMessage    string
+	AffectedGroups  string    // JSON 数组
+	AlertKey        string    `gorm:"index"`              // 用于去重
+	OccurrenceCount int       `gorm:"default:1"`          // 聚合计数
+	LastOccurrence  *time.Time
+	ResolvedAt      *time.Time `gorm:"index"`
+	CreatedAt       time.Time `gorm:"index"`
+}
+
+// TableName 方法
+func (GroupTargetSet) TableName() string { return "group_target_sets" }
+func (GroupTargetSetMember) TableName() string { return "group_target_set_members" }
+func (TargetAlert) TableName() string { return "target_alerts" }

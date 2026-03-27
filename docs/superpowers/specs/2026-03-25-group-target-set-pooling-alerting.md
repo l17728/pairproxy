@@ -2,8 +2,11 @@
 
 **日期**: 2026-03-25
 **项目**: PairProxy Gateway
-**状态**: 待实现
+**状态**: 设计已审查，准备实施
 **作者**: Claude Sonnet 4.6
+**审查者**: Claude Haiku 4.5
+**审查日期**: 2026-03-25
+**审查报告**: 见 DESIGN_REVIEW.md
 
 ---
 
@@ -3432,6 +3435,1194 @@ jobs:
         cd test/e2e
         docker-compose down -v
 ```
+
+---
+
+## 22. Group 级 Key 池隔离与共享（v2.20.0 新增）
+
+### 22.1 背景与需求
+
+#### 22.1.1 业务场景
+
+在实际生产环境中，多团队共享 LLM 资源时存在以下需求：
+
+```
+场景示例：
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                                                                             │
+│  团队 A（engineering，3 人）：购买了 2 个 Anthropic Key + 2 个 OpenAI Key    │
+│  团队 B（research，2 人）：购买了 1 个 Anthropic Key                         │
+│                                                                             │
+│  需求：                                                                      │
+│  1. 团队内共享 Key，团队间隔离（成本归属清晰）                                │
+│  2. Key 被 LLM 提供商限流（429）时，自动切换到其他可用 Key                    │
+│  3. 支持"集中式"策略：先用完一个 Key 再切换下一个                            │
+│  4. 支持"分散式"策略：负载均衡到所有 Key                                     │
+│  5. 所有 Key 都不可用时，按顺序重试并给出详细错误信息                         │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### 22.1.2 与现有设计的关系
+
+| 现有设计 | 本次新增 |
+|----------|----------|
+| Group 绑定多个 Target（Target 池化） | ✅ 复用 |
+| Target 级别的健康检查和故障转移 | ✅ 复用 |
+| **单 Target 多 Key 支持** | ❌ 新增 |
+| **Key 级状态追踪（429 限流）** | ❌ 新增 |
+| **Key 选择策略（priority/weighted）** | ❌ 新增 |
+| **Key 成本追踪** | ❌ 新增 |
+
+---
+
+### 22.2 架构设计
+
+#### 22.2.1 整体架构
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              架构层级                                        │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   Group (团队)                                                              │
+│     │                                                                       │
+│     │ 1:N                                                                   │
+│     ▼                                                                       │
+│   User (用户) ───────────▶ UsageLog (用量日志)                              │
+│     │                           │                                           │
+│     │                           │ 记录: user_id, group_id, key_id, tokens   │
+│     ▼                           ▼                                           │
+│   GroupKeyPool (团队 Key 池)                                                │
+│     │                                                                       │
+│     │ 包含                                                                   │
+│     ▼                                                                       │
+│   TargetEntry (LLM 端点)                                                    │
+│     │                                                                       │
+│     │ 1:N                                                                   │
+│     ▼                                                                       │
+│   KeyEntry (具体 Key)                                                       │
+│     │                                                                       │
+│     ├─ api_key: 实际密钥                                                    │
+│     ├─ priority: 优先级（决定顺序）                                         │
+│     ├─ state: available | rate_limited | error                             │
+│     └─ rate_limited_until: 限流恢复时间                                     │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### 22.2.2 Key 状态机
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           Key 状态机                                         │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│                              ┌──────────────┐                              │
+│                              │              │                              │
+│         ┌───────────────────▶│  available   │◀──────────────────┐          │
+│         │                    │   (可用)     │                    │          │
+│         │                    └──────┬───────┘                    │          │
+│         │                           │                            │          │
+│         │                    请求成功 (200)               恢复时间到        │
+│         │                           │                            │          │
+│         │                           ▼                            │          │
+│         │                    ┌──────────────┐                    │          │
+│         │                    │              │                    │          │
+│         │    自动恢复 ────────│ rate_limited │────────────────────┘          │
+│         │    (默认 60s)       │  (429 限流)  │                               │
+│         │                    └──────┬───────┘                               │
+│         │                           │                                       │
+│         │                    收到 429                                       │
+│         │                           │                                       │
+│         │                           │                                       │
+│         │                    ┌──────▼───────┐                               │
+│         │                    │              │                               │
+│         └────────────────────│   cooldown   │                               │
+│                              │  (冷却中)    │                               │
+│                              └──────────────┘                               │
+│                                                                             │
+│   状态说明：                                                                 │
+│   ─────────────────────────────────────────────────────────────────────    │
+│   available:   正常可用，参与选择                                            │
+│   rate_limited: 收到 429，等待冷却（默认 60s）                               │
+│   cooldown:    冷却中，不参与优先选择，但兜底重试时可用                       │
+│   error:       连续错误（非 429），等待恢复                                  │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### 22.3 数据模型
+
+#### 22.3.1 新增表: `group_key_pools`
+
+```sql
+-- GroupKeyPool 团队级 Key 池配置
+CREATE TABLE group_key_pools (
+    id                TEXT PRIMARY KEY,
+    group_id          TEXT NOT NULL UNIQUE,       -- 关联 groups.id（一对一）
+    group_name        TEXT NOT NULL,              -- 冗余，方便查询
+    selection_strategy TEXT NOT NULL DEFAULT 'priority', -- "priority" | "weighted"
+    rate_limit_cooldown_seconds INTEGER NOT NULL DEFAULT 60, -- 429 后冷却时间
+    created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
+    
+    FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_group_key_pools_group_id ON group_key_pools(group_id);
+CREATE INDEX idx_group_key_pools_group_name ON group_key_pools(group_name);
+```
+
+#### 22.3.2 新增表: `group_target_entries`
+
+```sql
+-- GroupTargetEntry 团队可用的 LLM 端点
+CREATE TABLE group_target_entries (
+    id          TEXT PRIMARY KEY,
+    pool_id     TEXT NOT NULL,
+    url         TEXT NOT NULL,           -- LLM 端点 URL
+    provider    TEXT NOT NULL DEFAULT 'anthropic', -- "anthropic" | "openai" | "ollama"
+    is_active   INTEGER NOT NULL DEFAULT 1,
+    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    
+    FOREIGN KEY (pool_id) REFERENCES group_key_pools(id) ON DELETE CASCADE,
+    UNIQUE(pool_id, url)
+);
+
+CREATE INDEX idx_group_target_entries_pool_id ON group_target_entries(pool_id);
+CREATE INDEX idx_group_target_entries_url ON group_target_entries(url);
+```
+
+#### 22.3.3 新增表: `group_key_entries`
+
+```sql
+-- GroupKeyEntry 具体的 API Key
+CREATE TABLE group_key_entries (
+    id                    TEXT PRIMARY KEY,
+    target_id             TEXT NOT NULL,
+    
+    -- Key 信息
+    key_id                TEXT NOT NULL,          -- 标识符，如 "eng-anth-1"
+    encrypted_api_key     TEXT NOT NULL,          -- 加密存储
+    
+    -- 选择策略参数
+    priority              INTEGER NOT NULL DEFAULT 1,  -- 优先级（priority 模式）
+    weight                INTEGER NOT NULL DEFAULT 1,  -- 权重（weighted 模式）
+    
+    -- 运行时状态
+    state                 TEXT NOT NULL DEFAULT 'available', -- "available" | "rate_limited" | "error"
+    rate_limited_until    DATETIME,               -- 429 后的恢复时间
+    last_error            TEXT,                   -- 最后一次错误信息
+    last_status_code      INTEGER,                -- 最后一次 HTTP 状态码
+    consecutive_failures  INTEGER NOT NULL DEFAULT 0, -- 连续失败次数
+    
+    created_at            DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at            DATETIME DEFAULT CURRENT_TIMESTAMP,
+    
+    FOREIGN KEY (target_id) REFERENCES group_target_entries(id) ON DELETE CASCADE,
+    UNIQUE(target_id, key_id)
+);
+
+CREATE INDEX idx_group_key_entries_target_id ON group_key_entries(target_id);
+CREATE INDEX idx_group_key_entries_key_id ON group_key_entries(key_id);
+CREATE INDEX idx_group_key_entries_state ON group_key_entries(state);
+```
+
+#### 22.3.4 扩展 `usage_logs` 表
+
+```sql
+-- 扩展 usage_logs 表，增加 key_id 和 group_id 用于成本追踪
+ALTER TABLE usage_logs ADD COLUMN group_id TEXT;
+ALTER TABLE usage_logs ADD COLUMN key_id TEXT;
+ALTER TABLE usage_logs ADD COLUMN target_url TEXT;
+
+CREATE INDEX idx_usage_logs_group_id ON usage_logs(group_id);
+CREATE INDEX idx_usage_logs_key_id ON usage_logs(key_id);
+```
+
+---
+
+### 22.4 配置格式
+
+#### 22.4.1 YAML 配置
+
+```yaml
+# -----------------------------------------------------------------------------
+# group_key_pools — 团队级 Key 池配置
+# -----------------------------------------------------------------------------
+group_key_pools:
+  # ── 工程团队 ─────────────────────────────────────────────────────────────
+  - group_name: engineering
+    # Key 选择策略: "priority" (集中式) | "weighted" (分散式)
+    selection_strategy: "priority"
+    # 429 后冷却时间（秒）
+    rate_limit_cooldown_seconds: 60
+    
+    targets:
+      # Anthropic 端点
+      - url: "https://api.anthropic.com"
+        provider: "anthropic"
+        keys:
+          - key_id: "eng-anth-1"
+            api_key: "${ENG_ANTHROPIC_KEY_1}"
+            priority: 1          # 优先使用
+            weight: 1            # weighted 模式下的权重
+          - key_id: "eng-anth-2"
+            api_key: "${ENG_ANTHROPIC_KEY_2}"
+            priority: 2          # 第一个 429 后使用
+            weight: 1
+      
+      # OpenAI 端点
+      - url: "https://api.openai.com"
+        provider: "openai"
+        keys:
+          - key_id: "eng-openai-1"
+            api_key: "${ENG_OPENAI_KEY_1}"
+            priority: 1
+            weight: 2
+          - key_id: "eng-openai-2"
+            api_key: "${ENG_OPENAI_KEY_2}"
+            priority: 2
+            weight: 1
+
+  # ── 研究团队 ─────────────────────────────────────────────────────────────
+  - group_name: research
+    selection_strategy: "weighted"  # 分散负载
+    
+    targets:
+      - url: "https://api.anthropic.com"
+        provider: "anthropic"
+        keys:
+          - key_id: "research-anth-1"
+            api_key: "${RESEARCH_ANTHROPIC_KEY_1}"
+            priority: 1
+            weight: 1
+
+  # ── 默认组（未分组用户）─────────────────────────────────────────────────
+  - group_name: "default"
+    is_default: true
+    selection_strategy: "priority"
+    
+    targets:
+      - url: "https://api.anthropic.com"
+        provider: "anthropic"
+        keys:
+          - key_id: "default-anth-1"
+            api_key: "${DEFAULT_ANTHROPIC_KEY}"
+            priority: 1
+            weight: 1
+```
+
+---
+
+### 22.5 核心逻辑
+
+#### 22.5.1 Key 选择策略
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        Key 选择流程                                          │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  请求进入                                                                   │
+│     │                                                                       │
+│     ▼                                                                       │
+│  获取 User → Group → KeyPool                                                │
+│     │                                                                       │
+│     ▼                                                                       │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ KeySelector.SelectKey()                                              │   │
+│  │                                                                      │   │
+│  │  1. 过滤 available 状态的 Key                                        │   │
+│  │     │                                                                │   │
+│  │     ├─ 有可用 Key → 按策略选择（priority/weighted）→ 返回            │   │
+│  │     │                                                                │   │
+│  │     └─ 无可用 Key → 进入兜底模式                                      │   │
+│  │            │                                                         │   │
+│  │            ├─ 按 priority 排序所有 Key                               │   │
+│  │            ├─ 选择最早恢复的 Key                                     │   │
+│  │            ├─ 标记 IsFallback=true                                   │   │
+│  │            └─ 返回（让调用方决定是否使用）                            │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│     │                                                                       │
+│     ▼                                                                       │
+│  发送请求到 LLM Provider                                                    │
+│     │                                                                       │
+│     ├─ 成功 (200)                                                           │
+│     │    └─ RecordKeyUsage(keyID, success=true)                            │
+│     │    └─ 重置状态为 available                                            │
+│     │                                                                       │
+│     ├─ 失败 (429 Rate Limited)                                              │
+│     │    └─ RecordKeyUsage(keyID, success=false, 429)                      │
+│     │    └─ 标记为 rate_limited，设置恢复时间                               │
+│     │    │                                                                  │
+│     │    ├─ 如果是兜底模式且所有 Key 都试过了                               │
+│     │    │    └─ 返回 AllKeysUnavailableError                               │
+│     │    │                                                                  │
+│     │    └─ 否则，重新 SelectKey() 尝试下一个 Key                           │
+│     │                                                                       │
+│     └─ 失败 (其他错误)                                                      │
+│          └─ RecordKeyUsage(keyID, success=false, statusCode)               │
+│          └─ 记录错误信息                                                     │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### 22.5.2 选择策略详解
+
+**Priority 策略（集中式）**：
+```
+场景：3 个 Key，priority 分别为 1, 2, 3
+
+时间线：
+T0: Key-1 (priority=1) 被选中，使用中
+T1: Key-1 返回 429 → 标记为 rate_limited
+T2: Key-2 (priority=2) 被选中，使用中
+T3: Key-2 返回 200 → 继续使用 Key-2
+T4: Key-2 返回 429 → 标记为 rate_limited
+T5: Key-3 (priority=3) 被选中，使用中
+T6: Key-1 冷却结束，恢复 available
+T7: Key-1 再次被优先选择（priority=1）
+```
+
+**Weighted 策略（分散式）**：
+```
+场景：3 个 Key，weight 分别为 2, 1, 1
+
+请求分布：
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  总请求: 100                                                                │
+│                                                                             │
+│  Key-1 (weight=2): 约 50 请求  ████████████████████████████████████████████│
+│  Key-2 (weight=1): 约 25 请求  █████████████████████████                    │
+│  Key-3 (weight=1): 约 25 请求  █████████████████████████                    │
+│                                                                             │
+│  注：实际分布为加权随机，允许有一定偏差                                       │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### 22.6 错误处理
+
+#### 22.6.1 错误返回格式
+
+当所有 Key 都不可用时，返回详细的错误信息：
+
+```json
+// HTTP 503 Service Unavailable
+{
+  "error": "all_keys_unavailable",
+  "message": "All API keys for your team are currently unavailable. Please try again later.",
+  "detail": {
+    "total_keys": 4,
+    "keys": [
+      {
+        "key_id": "eng-anth-1",
+        "status": "unavailable",
+        "reason": "Rate limited, recovers in 45s"
+      },
+      {
+        "key_id": "eng-anth-2",
+        "status": "unavailable", 
+        "reason": "Rate limited, recovers in 2m30s"
+      },
+      {
+        "key_id": "eng-openai-1",
+        "status": "unavailable",
+        "reason": "Error: insufficient_quota (consecutive fails: 3)"
+      },
+      {
+        "key_id": "eng-openai-2",
+        "status": "unavailable",
+        "reason": "Rate limited, recovers in 1m15s"
+      }
+    ],
+    "suggestion": "Wait a few minutes for rate limits to reset, or contact your team admin.",
+    "earliest_recovery": "2024-03-26T14:32:00Z"
+  }
+}
+```
+
+#### 22.6.2 兜底重试逻辑
+
+```go
+// fallbackRetry 兜底重试：按顺序尝试所有 Key
+func (s *KeySelector) fallbackRetry(pool *GroupKeyPool, keys []GroupKeyEntry) (*KeySelectionResult, error) {
+    now := time.Now()
+    
+    // 按 priority 排序
+    sortedKeys := make([]GroupKeyEntry, len(keys))
+    copy(sortedKeys, keys)
+    sort.Slice(sortedKeys, func(i, j int) bool {
+        return sortedKeys[i].Priority < sortedKeys[j].Priority
+    })
+    
+    // 记录所有 Key 的状态
+    var allKeysTried []KeyAttemptResult
+    var bestCandidate *GroupKeyEntry
+    var bestRecoverTime time.Time
+    
+    for i := range sortedKeys {
+        key := &sortedKeys[i]
+        state := s.getKeyState(key.KeyID)
+        
+        allKeysTried = append(allKeysTried, KeyAttemptResult{
+            KeyID:      key.KeyID,
+            StatusCode: state.LastStatusCode,
+            Error:      s.getStateDescription(state),
+            TriedAt:    state.LastErrorAt,
+        })
+        
+        // 找到最早恢复的 Key
+        if state.RateLimitedUntil.After(now) {
+            if bestCandidate == nil || state.RateLimitedUntil.Before(bestRecoverTime) {
+                bestCandidate = key
+                bestRecoverTime = state.RateLimitedUntil
+            }
+        }
+    }
+    
+    if bestCandidate != nil {
+        s.logger.Warn("all keys unavailable, using fallback key",
+            zap.String("key_id", bestCandidate.KeyID),
+            zap.Time("recover_at", bestRecoverTime),
+        )
+        
+        return &KeySelectionResult{
+            KeyID:        bestCandidate.KeyID,
+            APIKey:       decrypt(bestCandidate.EncryptedAPIKey),
+            TargetURL:    bestCandidate.TargetURL,
+            IsFallback:   true,
+            AllKeysTried: allKeysTried,
+        }, nil
+    }
+    
+    // 真的没有任何 Key 了
+    return nil, &AllKeysUnavailableError{
+        KeysTried: allKeysTried,
+    }
+}
+```
+
+---
+
+### 22.7 Admin CLI 命令
+
+```bash
+# =============================================================================
+# Group Key Pool 管理
+# =============================================================================
+
+# 创建团队的 Key Pool
+./sproxy admin keypool create engineering --strategy priority
+
+# 添加 LLM 端点
+./sproxy admin keypool add-target engineering \
+  --url "https://api.anthropic.com" \
+  --provider anthropic
+
+# 添加 Key
+./sproxy admin keypool add-key engineering \
+  --url "https://api.anthropic.com" \
+  --key-id "eng-anth-1" \
+  --api-key "${ENG_ANTHROPIC_KEY_1}" \
+  --priority 1
+
+# 查看 Key Pool 状态
+./sproxy admin keypool status engineering
+# 输出:
+# Group: engineering
+# Strategy: priority
+# 
+# Target: https://api.anthropic.com
+#   eng-anth-1: 🟢 available      (523K tokens today)
+#   eng-anth-2: 🟡 rate_limited   (recovers in 45s, 429: rate_limit_exceeded)
+#
+# Target: https://api.openai.com
+#   eng-openai-1: 🔴 error         (consecutive fails: 3, last: insufficient_quota)
+#   eng-openai-2: 🟢 available     (89K tokens today)
+
+# 查看用量统计
+./sproxy admin keypool stats engineering --days 7
+# 输出:
+# Group: engineering (Last 7 days)
+# 
+# By Key:
+#   eng-anth-1:  523,421 tokens  $15.70
+#   eng-anth-2:  234,567 tokens  $7.04
+#   eng-openai-1: 89,234 tokens  $2.68
+#
+# Total: 847,222 tokens  $25.42
+
+# 手动重置 Key 状态
+./sproxy admin keypool reset-key engineering eng-openai-1
+
+# 批量重置所有 rate_limited 状态的 Key
+./sproxy admin keypool reset-all-limited engineering
+
+# 修改选择策略
+./sproxy admin keypool set-strategy engineering --strategy weighted
+
+# 修改 Key 优先级
+./sproxy admin keypool set-priority engineering eng-anth-1 --priority 2
+```
+
+---
+
+### 22.8 Dashboard 展示
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  👥 Teams & Key Pools                                                       │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  Engineering (priority strategy)                    [View] [Edit]          │
+│  ┌───────────────────────────────────────────────────────────────────────┐ │
+│  │ Target: https://api.anthropic.com                                     │ │
+│  │   🔑 eng-anth-1    Priority: 1  🟢 Available    523K tokens  $15.70   │ │
+│  │   🔑 eng-anth-2    Priority: 2  🟡 Rate Limited  234K tokens  $7.04   │ │
+│  │                                                                       │ │
+│  │ Target: https://api.openai.com                                        │ │
+│  │   🔑 eng-openai-1  Priority: 1  🟢 Available    89K tokens   $2.68   │ │
+│  └───────────────────────────────────────────────────────────────────────┘ │
+│                                                                             │
+│  Research (weighted strategy)                       [View] [Edit]          │
+│  ┌───────────────────────────────────────────────────────────────────────┐ │
+│  │ Target: https://api.anthropic.com                                     │ │
+│  │   🔑 research-anth-1  Weight: 1  🟢 Available  156K tokens  $4.68    │ │
+│  └───────────────────────────────────────────────────────────────────────┘ │
+│                                                                             │
+│  [Create Team Pool]                                                         │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  📊 Cost Report - Engineering (Last 30 days)                                │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  By Key:                                                                    │
+│  ┌───────────────────────────────────────────────────────────────────────┐ │
+│  │ Key ID          Tokens      Requests    Cost      % of Total         │ │
+│  │ ─────────────── ────────── ─────────── ────────── ────────────────── │ │
+│  │ eng-anth-1      523,421     1,523       $15.70    52.3%              │ │
+│  │ eng-anth-2      234,567       892       $7.04     23.4%              │ │
+│  │ eng-openai-1     89,234       234       $2.68      8.9%              │ │
+│  │ eng-openai-2    153,456       456       $4.60     15.3%              │ │
+│  └───────────────────────────────────────────────────────────────────────┘ │
+│                                                                             │
+│  Total: 1,000,678 tokens, 3,105 requests, $30.02                           │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### 22.9 测试用例
+
+#### 22.9.1 单元测试
+
+```go
+// internal/proxy/key_selector_test.go
+
+// =============================================================================
+// Key 选择策略测试
+// =============================================================================
+
+func TestKeySelector_SelectKey_PriorityStrategy(t *testing.T) {
+    // 测试 priority 策略：按优先级顺序选择
+    tests := []struct {
+        name           string
+        keys           []GroupKeyEntry
+        expectedKeyID  string
+    }{
+        {
+            name: "all available, select lowest priority",
+            keys: []GroupKeyEntry{
+                {KeyID: "key-1", Priority: 1, State: "available"},
+                {KeyID: "key-2", Priority: 2, State: "available"},
+                {KeyID: "key-3", Priority: 3, State: "available"},
+            },
+            expectedKeyID: "key-1",
+        },
+        {
+            name: "first key rate limited, select second",
+            keys: []GroupKeyEntry{
+                {KeyID: "key-1", Priority: 1, State: "rate_limited", RateLimitedUntil: time.Now().Add(time.Minute)},
+                {KeyID: "key-2", Priority: 2, State: "available"},
+                {KeyID: "key-3", Priority: 3, State: "available"},
+            },
+            expectedKeyID: "key-2",
+        },
+        {
+            name: "first two rate limited, select third",
+            keys: []GroupKeyEntry{
+                {KeyID: "key-1", Priority: 1, State: "rate_limited", RateLimitedUntil: time.Now().Add(time.Minute)},
+                {KeyID: "key-2", Priority: 2, State: "rate_limited", RateLimitedUntil: time.Now().Add(30 * time.Second)},
+                {KeyID: "key-3", Priority: 3, State: "available"},
+            },
+            expectedKeyID: "key-3",
+        },
+    }
+    
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            selector := NewTestKeySelector("priority", tt.keys)
+            result, err := selector.SelectKey("test-group", "https://api.anthropic.com")
+            
+            if err != nil {
+                t.Fatalf("unexpected error: %v", err)
+            }
+            if result.KeyID != tt.expectedKeyID {
+                t.Errorf("expected key %s, got %s", tt.expectedKeyID, result.KeyID)
+            }
+        })
+    }
+}
+
+func TestKeySelector_SelectKey_WeightedStrategy(t *testing.T) {
+    // 测试 weighted 策略：按权重随机分布
+    keys := []GroupKeyEntry{
+        {KeyID: "key-1", Weight: 2, State: "available"},
+        {KeyID: "key-2", Weight: 1, State: "available"},
+        {KeyID: "key-3", Weight: 1, State: "available"},
+    }
+    
+    selector := NewTestKeySelector("weighted", keys)
+    
+    // 运行 1000 次选择
+    counts := make(map[string]int)
+    for i := 0; i < 1000; i++ {
+        result, err := selector.SelectKey("test-group", "https://api.anthropic.com")
+        if err != nil {
+            t.Fatalf("unexpected error: %v", err)
+        }
+        counts[result.KeyID]++
+    }
+    
+    // key-1 权重 2，应该占约 50%
+    ratio := float64(counts["key-1"]) / 1000.0
+    if ratio < 0.4 || ratio > 0.6 {
+        t.Errorf("key-1 ratio %v not in expected range [0.4, 0.6]", ratio)
+    }
+}
+
+// =============================================================================
+// Key 状态管理测试
+// =============================================================================
+
+func TestKeySelector_RecordKeyUsage_Success(t *testing.T) {
+    // 测试成功请求后状态重置
+    selector := NewTestKeySelector("priority", []GroupKeyEntry{
+        {KeyID: "key-1", State: "rate_limited"},
+    })
+    
+    selector.RecordKeyUsage("key-1", true, 200)
+    
+    state := selector.GetKeyState("key-1")
+    if state.State != "available" {
+        t.Errorf("expected state available, got %s", state.State)
+    }
+    if state.ConsecutiveFailures != 0 {
+        t.Errorf("expected consecutive failures 0, got %d", state.ConsecutiveFailures)
+    }
+}
+
+func TestKeySelector_RecordKeyUsage_RateLimited(t *testing.T) {
+    // 测试 429 后状态变化
+    selector := NewTestKeySelector("priority", []GroupKeyEntry{
+        {KeyID: "key-1", State: "available"},
+    })
+    
+    selector.RecordKeyUsage("key-1", false, 429)
+    
+    state := selector.GetKeyState("key-1")
+    if state.State != "rate_limited" {
+        t.Errorf("expected state rate_limited, got %s", state.State)
+    }
+    if state.RateLimitedUntil.Before(time.Now().Add(50 * time.Second)) {
+        t.Errorf("rate limited until should be at least 50s in the future")
+    }
+}
+
+func TestKeySelector_RecordKeyUsage_ConsecutiveFailures(t *testing.T) {
+    // 测试连续失败导致熔断
+    selector := NewTestKeySelector("priority", []GroupKeyEntry{
+        {KeyID: "key-1", State: "available"},
+    })
+    
+    // 连续 3 次非 429 失败
+    for i := 0; i < 3; i++ {
+        selector.RecordKeyUsage("key-1", false, 500)
+    }
+    
+    state := selector.GetKeyState("key-1")
+    if state.State != "error" {
+        t.Errorf("expected state error after 3 failures, got %s", state.State)
+    }
+}
+
+// =============================================================================
+// 兜底重试测试
+// =============================================================================
+
+func TestKeySelector_FallbackRetry(t *testing.T) {
+    // 测试所有 Key 不可用时的兜底行为
+    keys := []GroupKeyEntry{
+        {KeyID: "key-1", Priority: 1, State: "rate_limited", 
+         RateLimitedUntil: time.Now().Add(30 * time.Second)},
+        {KeyID: "key-2", Priority: 2, State: "rate_limited", 
+         RateLimitedUntil: time.Now().Add(10 * time.Second)},
+        {KeyID: "key-3", Priority: 3, State: "error"},
+    }
+    
+    selector := NewTestKeySelector("priority", keys)
+    result, err := selector.SelectKey("test-group", "https://api.anthropic.com")
+    
+    if err != nil {
+        t.Fatalf("unexpected error: %v", err)
+    }
+    
+    // 应该选择最早恢复的 key-2
+    if result.KeyID != "key-2" {
+        t.Errorf("expected key-2 (earliest recovery), got %s", result.KeyID)
+    }
+    if !result.IsFallback {
+        t.Error("expected IsFallback to be true")
+    }
+    if len(result.AllKeysTried) != 3 {
+        t.Errorf("expected 3 keys in AllKeysTried, got %d", len(result.AllKeysTried))
+    }
+}
+
+func TestKeySelector_AllKeysUnavailable(t *testing.T) {
+    // 测试所有 Key 真正不可用
+    keys := []GroupKeyEntry{
+        {KeyID: "key-1", Priority: 1, State: "error"},
+        {KeyID: "key-2", Priority: 2, State: "error"},
+    }
+    
+    selector := NewTestKeySelector("priority", keys)
+    _, err := selector.SelectKey("test-group", "https://api.anthropic.com")
+    
+    if err == nil {
+        t.Fatal("expected error, got nil")
+    }
+    
+    var allKeysErr *AllKeysUnavailableError
+    if !errors.As(err, &allKeysErr) {
+        t.Fatalf("expected AllKeysUnavailableError, got %T", err)
+    }
+    
+    if len(allKeysErr.KeysTried) != 2 {
+        t.Errorf("expected 2 keys in error, got %d", len(allKeysErr.KeysTried))
+    }
+}
+
+// =============================================================================
+// 并发安全测试
+// =============================================================================
+
+func TestKeySelector_ConcurrentAccess(t *testing.T) {
+    keys := []GroupKeyEntry{
+        {KeyID: "key-1", Priority: 1, State: "available"},
+        {KeyID: "key-2", Priority: 2, State: "available"},
+    }
+    
+    selector := NewTestKeySelector("priority", keys)
+    
+    var wg sync.WaitGroup
+    errors := make(chan error, 100)
+    
+    // 100 个并发 goroutine 同时选择和记录
+    for i := 0; i < 100; i++ {
+        wg.Add(1)
+        go func() {
+            defer wg.Done()
+            
+            result, err := selector.SelectKey("test-group", "https://api.anthropic.com")
+            if err != nil {
+                errors <- err
+                return
+            }
+            
+            // 模拟请求
+            time.Sleep(time.Millisecond * time.Duration(rand.Intn(10)))
+            
+            // 随机成功或失败
+            if rand.Intn(10) < 8 {
+                selector.RecordKeyUsage(result.KeyID, true, 200)
+            } else {
+                selector.RecordKeyUsage(result.KeyID, false, 429)
+            }
+        }()
+    }
+    
+    wg.Wait()
+    close(errors)
+    
+    for err := range errors {
+        t.Errorf("concurrent access error: %v", err)
+    }
+}
+```
+
+#### 22.9.2 集成测试
+
+```go
+// internal/api/keypool_handler_test.go
+
+// =============================================================================
+// API 集成测试
+// =============================================================================
+
+func TestKeyPoolAPI_CreateAndSelect(t *testing.T) {
+    // 测试完整的 Key Pool 创建和使用流程
+    ctx := context.Background()
+    
+    // 1. 创建测试数据库
+    db := setupTestDB(t)
+    defer db.Close()
+    
+    // 2. 创建 Group
+    group := &Group{ID: "eng", Name: "engineering"}
+    db.Create(group)
+    
+    // 3. 创建 Key Pool
+    pool := &GroupKeyPool{
+        ID:                "pool-1",
+        GroupID:           "eng",
+        GroupName:         "engineering",
+        SelectionStrategy: "priority",
+    }
+    db.Create(pool)
+    
+    // 4. 添加 Target 和 Keys
+    target := &GroupTargetEntry{
+        ID:       "target-1",
+        PoolID:   "pool-1",
+        URL:      "https://api.anthropic.com",
+        Provider: "anthropic",
+    }
+    db.Create(target)
+    
+    keys := []GroupKeyEntry{
+        {ID: "k1", TargetID: "target-1", KeyID: "key-1", Priority: 1, State: "available"},
+        {ID: "k2", TargetID: "target-1", KeyID: "key-2", Priority: 2, State: "available"},
+    }
+    for _, k := range keys {
+        db.Create(&k)
+    }
+    
+    // 5. 测试选择
+    selector := NewKeySelector(db, zaptest.NewLogger(t))
+    
+    result, err := selector.SelectKey("engineering", "https://api.anthropic.com")
+    if err != nil {
+        t.Fatalf("SelectKey failed: %v", err)
+    }
+    
+    if result.KeyID != "key-1" {
+        t.Errorf("expected key-1, got %s", result.KeyID)
+    }
+}
+
+func TestKeyPoolAPI_CostTracking(t *testing.T) {
+    // 测试成本追踪
+    db := setupTestDB(t)
+    defer db.Close()
+    
+    // 创建测试数据...
+    
+    // 模拟多个请求
+    for i := 0; i < 10; i++ {
+        log := &UsageLog{
+            UserID:       "user-1",
+            GroupID:      "eng",
+            KeyID:        "key-1",
+            TargetURL:    "https://api.anthropic.com",
+            InputTokens:  1000,
+            OutputTokens: 500,
+            TotalTokens:  1500,
+            CostUSD:      0.015,
+            CreatedAt:    time.Now(),
+        }
+        db.Create(log)
+    }
+    
+    // 查询统计
+    var stats struct {
+        TotalTokens int64
+        TotalCost   float64
+    }
+    
+    db.Table("usage_logs").
+        Where("group_id = ?", "eng").
+        Where("key_id = ?", "key-1").
+        Select("SUM(total_tokens) as total_tokens, SUM(cost_usd) as total_cost").
+        Scan(&stats)
+    
+    if stats.TotalTokens != 15000 {
+        t.Errorf("expected 15000 total tokens, got %d", stats.TotalTokens)
+    }
+    if stats.TotalCost != 0.15 {
+        t.Errorf("expected 0.15 total cost, got %f", stats.TotalCost)
+    }
+}
+```
+
+#### 22.9.3 E2E 测试
+
+```bash
+#!/bin/bash
+# test/e2e/keypool_e2e_test.sh
+
+set -e
+
+echo "=== E2E Test: Group Key Pool ==="
+
+# =============================================================================
+# 前置条件
+# =============================================================================
+
+# 创建测试 Group
+./sproxy admin group add test-engineering --daily-limit 1000000
+
+# 创建 Key Pool
+./sproxy admin keypool create test-engineering --strategy priority
+
+# 添加 Anthropic Target
+./sproxy admin keypool add-target test-engineering \
+  --url "https://api.anthropic.com" \
+  --provider anthropic
+
+# 添加 Keys
+./sproxy admin keypool add-key test-engineering \
+  --url "https://api.anthropic.com" \
+  --key-id "test-key-1" \
+  --api-key "${TEST_ANTHROPIC_KEY_1}" \
+  --priority 1
+
+./sproxy admin keypool add-key test-engineering \
+  --url "https://api.anthropic.com" \
+  --key-id "test-key-2" \
+  --api-key "${TEST_ANTHROPIC_KEY_2}" \
+  --priority 2
+
+# 创建用户
+./sproxy admin user add test-user --group test-engineering --password test123
+TOKEN=$(./sproxy admin token create test-user --ttl 1h)
+
+# =============================================================================
+# 测试场景 1: Priority 策略选择
+# =============================================================================
+
+echo "Test 1: Priority strategy selection"
+
+# 发送请求，应该使用 key-1
+RESPONSE=$(curl -s -X POST "${SPROXY_URL}/v1/messages" \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -d '{
+    "model": "claude-3-haiku-20240307",
+    "messages": [{"role": "user", "content": "Hello"}],
+    "max_tokens": 100
+  }')
+
+# 验证 key-1 被使用
+STATS=$(./sproxy admin keypool stats test-engineering --days 1)
+if ! echo "$STATS" | grep -q "test-key-1"; then
+    echo "FAIL: test-key-1 not used"
+    exit 1
+fi
+
+echo "✓ Test 1 passed"
+
+# =============================================================================
+# 测试场景 2: 429 后自动切换
+# =============================================================================
+
+echo "Test 2: Auto switch after 429"
+
+# 手动将 key-1 标记为 rate_limited
+./sproxy admin keypool set-key-state test-engineering test-key-1 \
+  --state rate_limited --duration 5m
+
+# 发送请求，应该使用 key-2
+RESPONSE=$(curl -s -X POST "${SPROXY_URL}/v1/messages" \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -d '{
+    "model": "claude-3-haiku-20240307",
+    "messages": [{"role": "user", "content": "Hello again"}],
+    "max_tokens": 100
+  }')
+
+# 验证 key-2 被使用
+STATS=$(./sproxy admin keypool stats test-engineering --days 1)
+if ! echo "$STATS" | grep -q "test-key-2"; then
+    echo "FAIL: test-key-2 not used"
+    exit 1
+fi
+
+echo "✓ Test 2 passed"
+
+# =============================================================================
+# 测试场景 3: 所有 Key 不可用时的错误信息
+# =============================================================================
+
+echo "Test 3: All keys unavailable error"
+
+# 将所有 key 标记为不可用
+./sproxy admin keypool set-key-state test-engineering test-key-1 \
+  --state rate_limited --duration 5m
+./sproxy admin keypool set-key-state test-engineering test-key-2 \
+  --state rate_limited --duration 5m
+
+# 发送请求，应该返回 503 和详细错误
+RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${SPROXY_URL}/v1/messages" \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -d '{
+    "model": "claude-3-haiku-20240307",
+    "messages": [{"role": "user", "content": "Test"}],
+    "max_tokens": 100
+  }')
+
+HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+BODY=$(echo "$RESPONSE" | head -n -1)
+
+if [ "$HTTP_CODE" != "503" ]; then
+    echo "FAIL: expected 503, got $HTTP_CODE"
+    exit 1
+fi
+
+if ! echo "$BODY" | grep -q "all_keys_unavailable"; then
+    echo "FAIL: expected all_keys_unavailable error"
+    echo "$BODY"
+    exit 1
+fi
+
+echo "✓ Test 3 passed"
+
+# =============================================================================
+# 测试场景 4: Weighted 策略分布
+# =============================================================================
+
+echo "Test 4: Weighted strategy distribution"
+
+# 切换到 weighted 策略
+./sproxy admin keypool set-strategy test-engineering --strategy weighted
+
+# 重置 key 状态
+./sproxy admin keypool reset-all-limited test-engineering
+
+# 发送 100 个请求
+for i in {1..100}; do
+  curl -s -X POST "${SPROXY_URL}/v1/messages" \
+    -H "Authorization: Bearer ${TOKEN}" \
+    -d '{
+      "model": "claude-3-haiku-20240307",
+      "messages": [{"role": "user", "content": "Test '$i'"}],
+      "max_tokens": 10
+    }' > /dev/null &
+done
+wait
+
+# 验证分布
+STATS=$(./sproxy admin keypool stats test-engineering --days 1)
+
+# 两个 key 应该都被使用
+if ! echo "$STATS" | grep -q "test-key-1" || ! echo "$STATS" | grep -q "test-key-2"; then
+    echo "FAIL: both keys should be used in weighted mode"
+    exit 1
+fi
+
+echo "✓ Test 4 passed"
+
+# =============================================================================
+# 测试场景 5: 成本追踪
+# =============================================================================
+
+echo "Test 5: Cost tracking"
+
+# 查询成本报告
+REPORT=$(./sproxy admin keypool stats test-engineering --days 7)
+
+# 应该显示总 token 数和成本
+if ! echo "$REPORT" | grep -q "tokens" || ! echo "$REPORT" | grep -q "\$"; then
+    echo "FAIL: cost report should show tokens and cost"
+    echo "$REPORT"
+    exit 1
+fi
+
+echo "✓ Test 5 passed"
+
+echo ""
+echo "========================================"
+echo "All Key Pool E2E tests passed!"
+echo "========================================"
+```
+
+---
+
+### 22.10 实现检查清单
+
+#### 22.10.1 数据层
+
+- [ ] `GroupKeyPool` 模型 + 迁移脚本
+- [ ] `GroupTargetEntry` 模型 + 迁移脚本
+- [ ] `GroupKeyEntry` 模型 + 迁移脚本
+- [ ] `UsageLog` 扩展（增加 group_id, key_id, target_url）
+- [ ] `GroupKeyPoolRepo` 实现 + 单元测试
+- [ ] `GroupKeyEntryRepo` 实现 + 单元测试
+
+#### 22.10.2 业务逻辑层
+
+- [ ] `KeySelector` 核心选择逻辑 + 单元测试
+- [ ] Key 状态管理（available/rate_limited/error）
+- [ ] Priority 选择策略
+- [ ] Weighted 选择策略
+- [ ] 兜底重试逻辑
+- [ ] 成本追踪统计
+
+#### 22.10.3 API 层
+
+- [ ] Admin API: Key Pool CRUD
+- [ ] Admin API: Key 状态查询/管理
+- [ ] Admin API: 成本统计报表
+
+#### 22.10.4 CLI
+
+- [ ] `sproxy admin keypool` 子命令
+- [ ] `sproxy admin keypool stats` 统计命令
+
+#### 22.10.5 Dashboard
+
+- [ ] Key Pool 管理页面
+- [ ] Key 状态实时展示
+- [ ] 成本报告页面
+
+#### 22.10.6 测试
+
+- [ ] 单元测试覆盖率 > 80%
+- [ ] 集成测试
+- [ ] E2E 测试
+
+---
+
+### 22.11 成功标准
+
+| 功能 | 标准 |
+|------|------|
+| **Group 隔离** | 团队 A 的 Key 不会被团队 B 使用 |
+| **Priority 策略** | 按 priority 顺序选择，高优先级 Key 优先 |
+| **Weighted 策略** | 按 weight 随机分布，误差 < 10% |
+| **429 自动切换** | 收到 429 后自动切换到下一个可用 Key |
+| **兜底重试** | 所有 Key 不可用时，按顺序重试并返回详细错误 |
+| **成本追踪** | 可按 Group/Key 统计 token 用量和成本 |
+| **状态恢复** | rate_limited 状态 60s 后自动恢复 |
+| **并发安全** | 100 并发请求无竞态条件 |
 
 ---
 
