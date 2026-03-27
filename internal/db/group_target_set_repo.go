@@ -85,7 +85,7 @@ func (r *GroupTargetSetRepo) GetByName(name string) (*GroupTargetSet, error) {
 // GetByGroupID 根据 group ID 获取 target set
 func (r *GroupTargetSetRepo) GetByGroupID(groupID string) (*GroupTargetSet, error) {
 	var set GroupTargetSet
-	if err := r.db.Preload("Members").First(&set, "group_id = ?", groupID).Error; err != nil {
+	if err := r.db.First(&set, "group_id = ?", groupID).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return nil, nil
 		}
@@ -101,7 +101,7 @@ func (r *GroupTargetSetRepo) GetByGroupID(groupID string) (*GroupTargetSet, erro
 // GetDefault 获取默认 target set
 func (r *GroupTargetSetRepo) GetDefault() (*GroupTargetSet, error) {
 	var set GroupTargetSet
-	if err := r.db.Preload("Members").First(&set, "is_default = ? AND group_id IS NULL", true).Error; err != nil {
+	if err := r.db.First(&set, "is_default = ? AND group_id IS NULL", true).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return nil, nil
 		}
@@ -166,7 +166,9 @@ func (r *GroupTargetSetRepo) AddMember(setID string, member *GroupTargetSetMembe
 
 	member.TargetSetID = setID
 	member.CreatedAt = time.Now()
-	member.HealthStatus = "unknown"
+	if member.HealthStatus == "" {
+		member.HealthStatus = "unknown"
+	}
 
 	if err := r.db.Create(member).Error; err != nil {
 		r.logger.Error("failed to add member",

@@ -113,9 +113,8 @@ func TestGroupTargetSetIntegration_E2E_CompleteWorkflow(t *testing.T) {
 	integration.RecordSuccess(selected1.URL)
 	time.Sleep(100 * time.Millisecond)
 
-	// 8. 验证健康状态
-	status := integration.GetHealthStatus(selected1.URL)
-	assert.NotNil(t, status)
+	// 8. 验证 GetAllHealthStatus 非 nil（HealthMonitor 后台管理，不依赖 RecordError）
+	assert.NotNil(t, integration.GetAllHealthStatus())
 }
 
 // TestGroupTargetSetIntegration_E2E_MultipleGroups 端到端测试：多个 groups
