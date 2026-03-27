@@ -201,8 +201,69 @@
     refreshTimer = setInterval(function() { fetchEvents(false); }, 15000);
   }
 
+  /* ── SSE 实时更新 ── */
+  function connectSSE() {
+    try {
+      var eventSource = new EventSource('/api/admin/alerts/stream');
+
+      eventSource.addEventListener('connected', function(e) {
+        console.log('Connected to alert stream');
+        document.getElementById('liveIndicator').innerHTML =
+          '<span class="inline-block w-2 h-2 rounded-full bg-green-400 animate-pulse"></span>实时';
+      });
+
+      eventSource.addEventListener('alert_update', function(e) {
+        try {
+          var event = JSON.parse(e.data);
+          console.log('Received alert update:', event);
+
+          // 添加新事件到列表顶部
+          if (event.alert) {
+            var newEvent = {
+              time: event.timestamp || new Date().toISOString(),
+              level: event.alert.severity === 'critical' ? 'error' : 'warn',
+              logger: 'TargetAlert',
+              message: event.alert.error_message || 'Target alert: ' + event.alert.alert_type,
+              fields: {
+                target: event.alert.target_url,
+                type: event.alert.alert_type,
+                status_code: event.alert.status_code
+              }
+            };
+            allEvents.unshift(newEvent);
+            if (allEvents.length > 300) allEvents = allEvents.slice(0, 300);
+            lastEventTime = newEvent.time;
+            renderTable();
+            updateStatus();
+          }
+        } catch(err) {
+          console.error('Error processing alert update:', err);
+        }
+      });
+
+      eventSource.addEventListener('error', function(e) {
+        console.error('SSE connection error:', e);
+        document.getElementById('liveIndicator').innerHTML =
+          '<span class="inline-block w-2 h-2 rounded-full bg-red-400"></span>连接失败';
+        eventSource.close();
+        // 尝试重新连接
+        setTimeout(connectSSE, 5000);
+      });
+
+      // 页面卸载时关闭连接
+      window.addEventListener('beforeunload', function() {
+        eventSource.close();
+      });
+    } catch(err) {
+      console.error('Failed to connect to SSE:', err);
+      // 降级到轮询模式
+      startAutoRefresh();
+    }
+  }
+
   /* ── 初始化 ── */
   fetchEvents(true);
+  connectSSE();
   startAutoRefresh();
 })();
 </script>
