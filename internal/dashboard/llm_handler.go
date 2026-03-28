@@ -327,18 +327,6 @@ func (h *Handler) handleLLMDistribute(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/dashboard/llm?flash="+neturl.QueryEscape("均分完成，共分配"+strconv.Itoa(len(userIDs))+"个用户"), http.StatusSeeOther)
 }
 
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	buf := make([]byte, 0, 10)
-	for n > 0 {
-		buf = append([]byte{byte('0' + n%10)}, buf...)
-		n /= 10
-	}
-	return string(buf)
-}
-
 // ---------------------------------------------------------------------------
 // 排水控制
 // ---------------------------------------------------------------------------
