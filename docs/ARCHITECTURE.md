@@ -299,3 +299,23 @@ Converts between API formats:
 - [ ] Implement service mesh (Istio)
 - [ ] Add GraphQL API
 - [ ] Implement webhook notifications
+
+---
+
+## v2.20.0 新增组件
+
+### Group-Target Set Integration (internal/proxy)
+
+GroupTargetSetIntegration 是代理层与 Group-Target Set 功能的集成层，封装 selector、alertManager、healthMonitor，对外提供 SelectTarget、RecordError、RecordSuccess、GetActiveAlerts、SubscribeAlerts、GetHealthStatus 接口。
+
+### Target Alert Manager (internal/alert)
+
+TargetAlertManager 维护内存中的活跃告警状态（activeAlerts map），通过 eventCh 异步广播告警事件给所有 SSE 订阅者。事件循环每 30s 执行一次 checkRecovery，自动解除已恢复的告警。
+
+### Target Health Monitor (internal/alert)
+
+TargetHealthMonitor 每 interval（默认30s）对所有 IsActive=true 的 GroupTargetSetMember 并发发起 HTTP GET health check，根据连续失败/成功次数更新数据库 health_status，并向 TargetAlertManager 发送 target_health_changed 事件。
+
+### GroupTargetSetRepo (internal/db)
+
+管理 group_target_sets 和 group_target_set_members 两张表。关键实现：AddMember 使用原生 SQL INSERT 绕过 GORM 零值陷阱（Bug 7），GetAvailableTargetsForGroup 对 is_active 和 group_id 做内联过滤。

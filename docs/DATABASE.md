@@ -204,3 +204,21 @@ func (r *Repo) Delete(id string) error {
 - [ ] Implement connection pooling for PostgreSQL
 - [ ] Add database backup/restore utilities
 - [ ] Implement audit log retention policies
+
+---
+
+## v2.20.0 新增表
+
+### group_target_sets
+
+分组目标集表。字段：id（PK）、group_id（FK→groups，NULL=默认组）、name（唯一）、strategy（weighted_random/round_robin/priority）、retry_policy（try_next/fail_fast）、is_default、created_at、updated_at。
+
+### group_target_set_members
+
+目标集成员表。字段：id（PK）、target_set_id（FK）、target_url、weight（默认1）、priority（默认0）、is_active（默认true）、health_status（healthy/unhealthy/unknown，默认unknown）、last_health_check、consecutive_failures（默认0）、created_at。
+
+重要：is_active 字段写入必须使用原生 SQL INSERT，不可使用 GORM Create（Bug 7：GORM 将 bool 零值 false 视为未设置，应用 default:true 覆盖为 true）。
+
+### target_alerts
+
+告警事件持久化表。字段：id（PK）、target_url、alert_type（error/health_check_failed）、severity（warning/error/critical）、status_code、error_message、affected_groups（JSON）、alert_key（去重）、occurrence_count（默认1）、last_occurrence、resolved_at（NULL=未解除）、created_at。

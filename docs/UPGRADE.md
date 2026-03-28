@@ -1,6 +1,6 @@
 # PairProxy 升级指南
 
-> 当前版本：**v2.18.0** | 更新日期：2026-03-22
+> 当前版本：**v2.20.0** | 更新日期：2026-03-28
 
 本文档描述各版本间的升级步骤、数据库 Schema 变更、回滚方法及不兼容变更。
 
@@ -722,3 +722,25 @@ curl -X POST http://localhost:9000/api/admin/undrain \
 2. **设置合理的超时**：`drain wait --timeout` 避免无限等待
 3. **长连接请求**：SSE 流式请求可能需要较长时间完成
 4. **自动恢复**：节点重启后自动退出排水模式
+
+---
+
+### v2.20.0 — Group-Target Set、告警管理、目标健康监控
+
+**新增数据库表（自动 AutoMigrate）**
+
+- group_target_sets：分组目标集
+- group_target_set_members：目标集成员（含 is_active、health_status）
+- target_alerts：告警事件持久化
+
+**配置变更**
+
+新增可选配置节（不配置时行为与 v2.19.0 完全一致）：alert.enabled、alert.triggers、alert.recovery、health_monitor.interval、health_monitor.failure_threshold 等。
+
+**重要修复（Bug 7）**
+
+AddMember 改用原生 SQL INSERT，修复 GORM 零值陷阱导致 IsActive=false 被写为 true 的问题。升级后已有数据无需迁移。
+
+**回滚**
+
+回滚到 v2.19.0 时，新增的三张表不影响旧版本运行。如需清理：DROP TABLE IF EXISTS target_alerts; DROP TABLE IF EXISTS group_target_set_members; DROP TABLE IF EXISTS group_target_sets;

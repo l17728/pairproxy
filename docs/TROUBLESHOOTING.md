@@ -1035,3 +1035,23 @@ require.Eventually(t, func() bool {
 ```
 
 **解决方案**：为所有 target 配置 `health_check_path`（如 `/health`），确保后端实现该端点。有 `health_check_path` 的新 target 会先经过主动检查再进入路由池。
+---
+
+## 17. Group-Target Set 问题
+
+### 17.1 IsActive=false 的成员仍出现在路由结果中
+
+症状：AddMember 传入 IsActive=false，但 GetAvailableTargetsForGroup 仍返回该成员。
+根因：GORM Create 将 bool 零值 false 视为未设置，应用 default:true 标签写为 true（Bug 7）。
+修复：v2.20.0 已修复，AddMember 改用原生 SQL INSERT。
+验证：SELECT id, target_url, is_active FROM group_target_set_members;
+
+### 17.2 健康监控不检查某个 target
+
+症状：Target Health Monitor 不对某个 target 执行健康检查。
+排查：确认该 target 的 group_target_set_members 记录中 is_active=true。健康监控只检查 IsActive=true 的成员。
+
+### 17.3 告警 Stop() 阻塞
+
+症状：alert.enabled=false 时调用 Stop() 永久阻塞。
+修复：v2.20.0 已修复，Start() 通过 sync.Once 安全关闭 done 通道。
