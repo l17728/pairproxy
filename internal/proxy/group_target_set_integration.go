@@ -57,7 +57,21 @@ func (i *GroupTargetSetIntegration) SelectTarget(
 	groupID string,
 	tried []string,
 ) (*SelectedTarget, bool, error) {
-	return i.selector.SelectTarget(ctx, groupID, tried)
+	result, hasMore, err := i.selector.SelectTarget(ctx, groupID, tried)
+	if err != nil {
+		i.logger.Warn("select target failed",
+			zap.String("group_id", groupID),
+			zap.Strings("tried", tried),
+			zap.Error(err),
+		)
+		return nil, false, err
+	}
+	i.logger.Debug("target selected",
+		zap.String("group_id", groupID),
+		zap.String("target_url", result.URL),
+		zap.Bool("has_more", hasMore),
+	)
+	return result, hasMore, nil
 }
 
 // RecordError 记录 target 错误
@@ -67,11 +81,18 @@ func (i *GroupTargetSetIntegration) RecordError(
 	err error,
 	affectedGroups []string,
 ) {
+	i.logger.Debug("recording target error",
+		zap.String("target_url", targetURL),
+		zap.Int("status_code", statusCode),
+	)
 	i.alertManager.RecordError(targetURL, statusCode, err, affectedGroups)
 }
 
 // RecordSuccess 记录成功
 func (i *GroupTargetSetIntegration) RecordSuccess(targetURL string) {
+	i.logger.Debug("recording target success",
+		zap.String("target_url", targetURL),
+	)
 	i.alertManager.RecordSuccess(targetURL)
 }
 

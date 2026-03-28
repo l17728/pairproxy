@@ -148,7 +148,7 @@ func (r *GroupTargetSetRepo) Delete(id string) error {
 // ListAll 列出所有 target sets
 func (r *GroupTargetSetRepo) ListAll() ([]GroupTargetSet, error) {
 	var sets []GroupTargetSet
-	if err := r.db.Preload("Members").Find(&sets).Error; err != nil {
+	if err := r.db.Find(&sets).Error; err != nil {
 		r.logger.Error("failed to list all target sets", zap.Error(err))
 		return nil, fmt.Errorf("list all target sets: %w", err)
 	}
@@ -170,7 +170,11 @@ func (r *GroupTargetSetRepo) AddMember(setID string, member *GroupTargetSetMembe
 		member.HealthStatus = "unknown"
 	}
 
-	if err := r.db.Create(member).Error; err != nil {
+	// 使用原生 SQL 插入，确保 IsActive 字段被正确保存（包括 false 值）
+	if err := r.db.Exec(
+		"INSERT INTO group_target_set_members (id, target_set_id, target_url, weight, priority, is_active, health_status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+		member.ID, member.TargetSetID, member.TargetURL, member.Weight, member.Priority, member.IsActive, member.HealthStatus, member.CreatedAt,
+	).Error; err != nil {
 		r.logger.Error("failed to add member",
 			zap.String("target_set_id", setID),
 			zap.String("target_url", member.TargetURL),
@@ -253,21 +257,27 @@ type TargetWithWeight struct {
 // GetAvailableTargetsForGroup 获取 Group 可用的 targets
 func (r *GroupTargetSetRepo) GetAvailableTargetsForGroup(groupID string) ([]TargetWithWeight, error) {
 	var members []GroupTargetSetMember
-	query := r.db
 
 	// 如果 groupID 为空，获取默认 target set
 	if groupID == "" {
-		query = query.Where("target_set_id IN (SELECT id FROM group_target_sets WHERE is_default = ? AND group_id IS NULL)", true)
+		if err := r.db.Where(
+			"target_set_id IN (SELECT id FROM group_target_sets WHERE is_default = ? AND group_id IS NULL) AND is_active = ?",
+			true, true,
+		).Find(&members).Error; err != nil {
+			r.logger.Error("failed to get available targets for default group", zap.Error(err))
+			return nil, fmt.Errorf("get available targets: %w", err)
+		}
 	} else {
-		query = query.Where("target_set_id IN (SELECT id FROM group_target_sets WHERE group_id = ?)", groupID)
-	}
-
-	if err := query.Where("is_active = ?", true).Find(&members).Error; err != nil {
-		r.logger.Error("failed to get available targets",
-			zap.String("group_id", groupID),
-			zap.Error(err),
-		)
-		return nil, fmt.Errorf("get available targets: %w", err)
+		if err := r.db.Where(
+			"target_set_id IN (SELECT id FROM group_target_sets WHERE group_id = ?) AND is_active = ?",
+			groupID, true,
+		).Find(&members).Error; err != nil {
+			r.logger.Error("failed to get available targets",
+				zap.String("group_id", groupID),
+				zap.Error(err),
+			)
+			return nil, fmt.Errorf("get available targets: %w", err)
+		}
 	}
 
 	targets := make([]TargetWithWeight, len(members))
