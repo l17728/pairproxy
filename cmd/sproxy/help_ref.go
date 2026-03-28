@@ -975,4 +975,16 @@ Natural language: "start server", "start sproxy", "run the proxy"
 | Enable semantic route | sproxy admin route enable code_tasks  **[primary-only]** |
 | Disable semantic route | sproxy admin route disable code_tasks  **[primary-only]** |
 | Hash a new admin password | sproxy hash-password |
+| List all target sets | sproxy admin targetset list |
+| Create a target set | sproxy admin targetset create <name> --group <group> --strategy weighted_random |
+| Delete a target set | sproxy admin targetset delete <name> |
+| Show target set details | sproxy admin targetset show <name> |
+| Add target to set | sproxy admin targetset add-target <set_name> --url <url> --weight 2 |
+| Remove target from set | sproxy admin targetset remove-target <set_name> --url <url> |
+| Set target weight | sproxy admin targetset set-weight <set_name> --url <url> --weight 3 |
+| List active alerts | sproxy admin alert list |
+| List alerts by target | sproxy admin alert list --target https://api.anthropic.com |
+| View alert history | sproxy admin alert history --days 7 |
+| Resolve an alert | sproxy admin alert resolve <alert_id> |
+| View alert statistics | sproxy admin alert stats --days 30 |
 `
