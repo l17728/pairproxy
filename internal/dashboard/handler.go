@@ -8,6 +8,7 @@ import (
 	"html/template"
 	"io"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -39,6 +40,7 @@ type Handler struct {
 	llmBindingRepo    *db.LLMBindingRepo             // 可选，LLM 绑定管理
 	llmTargetRepo     *db.LLMTargetRepo              // 可选，LLM 目标管理
 	apiKeyRepo        *db.APIKeyRepo                 // 可选，API Key 管理
+	groupTargetSetRepo *db.GroupTargetSetRepo        // 可选，Group-Target Set 管理
 	llmHealthFn       func() []proxy.LLMTargetStatus // 可选，查询 LLM 健康状态
 	drainFn           func() error                   // 可选，进入排水模式
 	undrainFn         func() error                   // 可选，退出排水模式
@@ -61,6 +63,9 @@ func (h *Handler) SetLLMTargetRepo(repo *db.LLMTargetRepo) { h.llmTargetRepo = r
 
 // SetAPIKeyRepo 设置 APIKeyRepo（用于 API Key 管理）
 func (h *Handler) SetAPIKeyRepo(repo *db.APIKeyRepo) { h.apiKeyRepo = repo }
+
+// SetGroupTargetSetRepo 设置 GroupTargetSetRepo（用于 Group-Target Set 管理）
+func (h *Handler) SetGroupTargetSetRepo(repo *db.GroupTargetSetRepo) { h.groupTargetSetRepo = repo }
 
 // SetEventLog 设置内存事件日志（用于 /dashboard/alerts 页面）
 func (h *Handler) SetEventLog(log *eventlog.Log) { h.eventLog = log }
@@ -142,6 +147,14 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /dashboard/llm/targets", rw(http.HandlerFunc(h.handleLLMCreateTarget)))
 	mux.Handle("POST /dashboard/llm/targets/{id}/update", rw(http.HandlerFunc(h.handleLLMUpdateTarget)))
 	mux.Handle("POST /dashboard/llm/targets/{id}/delete", rw(http.HandlerFunc(h.handleLLMDeleteTarget)))
+	mux.Handle("POST /dashboard/llm/targetsets", rw(http.HandlerFunc(h.handleTargetSetCreate)))
+	mux.Handle("POST /dashboard/llm/targetsets/{id}/update", rw(http.HandlerFunc(h.handleTargetSetUpdate)))
+	mux.Handle("POST /dashboard/llm/targetsets/{id}/delete", rw(http.HandlerFunc(h.handleTargetSetDelete)))
+	mux.Handle("POST /dashboard/llm/targetsets/{id}/members", rw(http.HandlerFunc(h.handleTargetSetAddMember)))
+	mux.Handle("POST /dashboard/llm/targetsets/{id}/members/update", rw(http.HandlerFunc(h.handleTargetSetUpdateMember)))
+	mux.Handle("POST /dashboard/llm/targetsets/{id}/members/delete", rw(http.HandlerFunc(h.handleTargetSetRemoveMember)))
+	mux.Handle("POST /dashboard/alerts/resolve", rw(http.HandlerFunc(h.handleAlertResolve)))
+	mux.Handle("POST /dashboard/alerts/resolve-batch", rw(http.HandlerFunc(h.handleAlertResolveBatch)))
 	mux.Handle("POST /dashboard/drain/enter", rw(http.HandlerFunc(h.handleDrainEnter)))
 	mux.Handle("POST /dashboard/drain/exit", rw(http.HandlerFunc(h.handleDrainExit)))
 	mux.Handle("POST /dashboard/import", rw(http.HandlerFunc(h.handleImportSubmit)))
@@ -1281,7 +1294,18 @@ func (h *Handler) handleImportSubmit(w http.ResponseWriter, r *http.Request) {
 
 // handleAlertsPage 渲染告警页；实际数据由客户端 JS 通过 handleEventsAPI 获取。
 func (h *Handler) handleAlertsPage(w http.ResponseWriter, r *http.Request) {
-	h.renderPage(w, "alerts.html", h.newBase(r))
+	activeTab := r.URL.Query().Get("tab")
+	if activeTab == "" {
+		activeTab = "live"
+	}
+
+	data := map[string]interface{}{
+		"Flash":       r.URL.Query().Get("flash"),
+		"Error":       r.URL.Query().Get("error"),
+		"IsWorkerNode": h.isWorkerNode,
+		"ActiveTab":   activeTab,
+	}
+	h.renderPage(w, "alerts.html", data)
 }
 
 // eventsResponse 是 /api/dashboard/events 的 JSON 响应结构。
@@ -1361,4 +1385,298 @@ func (h *Handler) handleEventsAPI(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_ = json.NewEncoder(w).Encode(eventsResponse{Events: events, Total: len(events)})
+}
+
+// ---------------------------------------------------------------------------
+// Group-Target Set Handlers (v2.20)
+// ---------------------------------------------------------------------------
+
+// handleTargetSetCreate 创建新的 target set
+func (h *Handler) handleTargetSetCreate(w http.ResponseWriter, r *http.Request) {
+	if h.groupTargetSetRepo == nil {
+		http.Redirect(w, r, "/dashboard/llm?error=target+set+feature+not+enabled", http.StatusSeeOther)
+		return
+	}
+
+	if err := r.ParseForm(); err != nil {
+		http.Redirect(w, r, "/dashboard/llm?error=invalid+form", http.StatusSeeOther)
+		return
+	}
+
+	id := strings.TrimSpace(r.FormValue("id"))
+	name := strings.TrimSpace(r.FormValue("name"))
+	groupID := strings.TrimSpace(r.FormValue("group_id"))
+	strategy := strings.TrimSpace(r.FormValue("strategy"))
+
+	if id == "" || name == "" || groupID == "" {
+		http.Redirect(w, r, "/dashboard/llm?tab=targetsets&error=id+name+group_id+required", http.StatusSeeOther)
+		return
+	}
+
+	// Validate ID format: alphanumeric, dash, underscore only
+	if !regexp.MustCompile(`^[a-zA-Z0-9_-]+$`).MatchString(id) {
+		http.Redirect(w, r, "/dashboard/llm?tab=targetsets&error=invalid+id+format", http.StatusSeeOther)
+		return
+	}
+
+	set := &db.GroupTargetSet{
+		ID:       id,
+		Name:     name,
+		GroupID:  &groupID,
+		Strategy: strategy,
+	}
+
+	if err := h.groupTargetSetRepo.Create(set); err != nil {
+		h.logger.Error("failed to create target set", zap.Error(err))
+		http.Redirect(w, r, "/dashboard/llm?tab=targetsets&error=failed+to+create+target+set", http.StatusSeeOther)
+		return
+	}
+
+	detail := map[string]string{"id": id, "name": name, "groupID": groupID}
+	detailBytes, _ := json.Marshal(detail)
+	if aerr := h.auditRepo.Create("admin", "targetset.create", id, string(detailBytes)); aerr != nil {
+		h.logger.Warn("audit write failed", zap.Error(aerr))
+	}
+	http.Redirect(w, r, "/dashboard/llm?tab=targetsets&flash=target+set+created", http.StatusSeeOther)
+}
+
+// handleTargetSetUpdate 更新 target set 信息
+func (h *Handler) handleTargetSetUpdate(w http.ResponseWriter, r *http.Request) {
+	if h.groupTargetSetRepo == nil {
+		http.Redirect(w, r, "/dashboard/llm?error=target+set+feature+not+enabled", http.StatusSeeOther)
+		return
+	}
+
+	if err := r.ParseForm(); err != nil {
+		http.Redirect(w, r, "/dashboard/llm?error=invalid+form", http.StatusSeeOther)
+		return
+	}
+
+	id := r.PathValue("id")
+	if id == "" {
+		http.Redirect(w, r, "/dashboard/llm?tab=targetsets&error=invalid+id", http.StatusSeeOther)
+		return
+	}
+
+	set, err := h.groupTargetSetRepo.GetByID(id)
+	if err != nil || set == nil {
+		http.Redirect(w, r, "/dashboard/llm?tab=targetsets&error=target+set+not+found", http.StatusSeeOther)
+		return
+	}
+
+	if name := strings.TrimSpace(r.FormValue("name")); name != "" {
+		set.Name = name
+	}
+	if groupID := strings.TrimSpace(r.FormValue("group_id")); groupID != "" {
+		set.GroupID = &groupID
+	}
+	if strategy := strings.TrimSpace(r.FormValue("strategy")); strategy != "" {
+		set.Strategy = strategy
+	}
+
+	if err := h.groupTargetSetRepo.Update(set); err != nil {
+		h.logger.Error("failed to update target set", zap.String("id", id), zap.Error(err))
+		http.Redirect(w, r, "/dashboard/llm?tab=targetsets&error=failed+to+update+target+set", http.StatusSeeOther)
+		return
+	}
+
+	if aerr := h.auditRepo.Create("admin", "targetset.update", id, ""); aerr != nil {
+		h.logger.Warn("audit write failed", zap.Error(aerr))
+	}
+	http.Redirect(w, r, "/dashboard/llm?tab=targetsets&flash=target+set+updated", http.StatusSeeOther)
+}
+
+// handleTargetSetDelete 删除 target set
+func (h *Handler) handleTargetSetDelete(w http.ResponseWriter, r *http.Request) {
+	if h.groupTargetSetRepo == nil {
+		http.Redirect(w, r, "/dashboard/llm?error=target+set+feature+not+enabled", http.StatusSeeOther)
+		return
+	}
+
+	id := r.PathValue("id")
+	if id == "" {
+		http.Redirect(w, r, "/dashboard/llm?tab=targetsets&error=invalid+id", http.StatusSeeOther)
+		return
+	}
+
+	if err := h.groupTargetSetRepo.Delete(id); err != nil {
+		h.logger.Error("failed to delete target set", zap.String("id", id), zap.Error(err))
+		http.Redirect(w, r, "/dashboard/llm?tab=targetsets&error=failed+to+delete+target+set", http.StatusSeeOther)
+		return
+	}
+
+	if aerr := h.auditRepo.Create("admin", "targetset.delete", id, ""); aerr != nil {
+		h.logger.Warn("audit write failed", zap.Error(aerr))
+	}
+	http.Redirect(w, r, "/dashboard/llm?tab=targetsets&flash=target+set+deleted", http.StatusSeeOther)
+}
+
+// handleTargetSetAddMember 添加成员到 target set
+func (h *Handler) handleTargetSetAddMember(w http.ResponseWriter, r *http.Request) {
+	if h.groupTargetSetRepo == nil {
+		http.Redirect(w, r, "/dashboard/llm?error=target+set+feature+not+enabled", http.StatusSeeOther)
+		return
+	}
+
+	if err := r.ParseForm(); err != nil {
+		http.Redirect(w, r, "/dashboard/llm?error=invalid+form", http.StatusSeeOther)
+		return
+	}
+
+	id := r.PathValue("id")
+	if id == "" {
+		http.Redirect(w, r, "/dashboard/llm?tab=targetsets&error=invalid+id", http.StatusSeeOther)
+		return
+	}
+
+	targetURL := strings.TrimSpace(r.FormValue("target_url"))
+	if targetURL == "" {
+		http.Redirect(w, r, "/dashboard/llm?tab=targetsets&selected="+id+"&error=target_url+required", http.StatusSeeOther)
+		return
+	}
+
+	weight := 1
+	if w := r.FormValue("weight"); w != "" {
+		if parsed, err := strconv.Atoi(w); err == nil && parsed > 0 {
+			weight = parsed
+		}
+	}
+
+	member := &db.GroupTargetSetMember{
+		TargetURL: targetURL,
+		Weight:    weight,
+		IsActive:  true,
+	}
+
+	if err := h.groupTargetSetRepo.AddMember(id, member); err != nil {
+		h.logger.Error("failed to add member", zap.String("setID", id), zap.String("targetURL", targetURL), zap.Error(err))
+		http.Redirect(w, r, "/dashboard/llm?tab=targetsets&selected="+id+"&error=failed+to+add+member", http.StatusSeeOther)
+		return
+	}
+
+	if aerr := h.auditRepo.Create("admin", "targetset.add_member", id, targetURL); aerr != nil {
+		h.logger.Warn("audit write failed", zap.Error(aerr))
+	}
+	http.Redirect(w, r, "/dashboard/llm?tab=targetsets&selected="+id+"&flash=member+added", http.StatusSeeOther)
+}
+
+// handleTargetSetUpdateMember 更新 target set 成员权重
+func (h *Handler) handleTargetSetUpdateMember(w http.ResponseWriter, r *http.Request) {
+	if h.groupTargetSetRepo == nil {
+		http.Redirect(w, r, "/dashboard/llm?error=target+set+feature+not+enabled", http.StatusSeeOther)
+		return
+	}
+
+	if err := r.ParseForm(); err != nil {
+		http.Redirect(w, r, "/dashboard/llm?error=invalid+form", http.StatusSeeOther)
+		return
+	}
+
+	id := r.PathValue("id")
+	memberID := strings.TrimSpace(r.FormValue("target_url"))
+	if id == "" || memberID == "" {
+		http.Redirect(w, r, "/dashboard/llm?tab=targetsets&error=invalid+id", http.StatusSeeOther)
+		return
+	}
+
+	weight := 1
+	if w := r.FormValue("weight"); w != "" {
+		if parsed, err := strconv.Atoi(w); err == nil && parsed > 0 {
+			weight = parsed
+		}
+	}
+
+	priority := 0
+	if p := r.FormValue("priority"); p != "" {
+		if parsed, err := strconv.Atoi(p); err == nil {
+			priority = parsed
+		}
+	}
+
+	if err := h.groupTargetSetRepo.UpdateMember(id, memberID, weight, priority); err != nil {
+		h.logger.Error("failed to update member", zap.String("setID", id), zap.String("memberID", memberID), zap.Error(err))
+		http.Redirect(w, r, "/dashboard/llm?tab=targetsets&selected="+id+"&error=failed+to+update+member", http.StatusSeeOther)
+		return
+	}
+
+	if aerr := h.auditRepo.Create("admin", "targetset.update_member", id, memberID); aerr != nil {
+		h.logger.Warn("audit write failed", zap.Error(aerr))
+	}
+	http.Redirect(w, r, "/dashboard/llm?tab=targetsets&selected="+id+"&flash=member+updated", http.StatusSeeOther)
+}
+
+// handleTargetSetRemoveMember 从 target set 删除成员
+func (h *Handler) handleTargetSetRemoveMember(w http.ResponseWriter, r *http.Request) {
+	if h.groupTargetSetRepo == nil {
+		http.Redirect(w, r, "/dashboard/llm?error=target+set+feature+not+enabled", http.StatusSeeOther)
+		return
+	}
+
+	if err := r.ParseForm(); err != nil {
+		http.Redirect(w, r, "/dashboard/llm?error=invalid+form", http.StatusSeeOther)
+		return
+	}
+
+	id := r.PathValue("id")
+	memberID := strings.TrimSpace(r.FormValue("target_url"))
+	if id == "" || memberID == "" {
+		http.Redirect(w, r, "/dashboard/llm?tab=targetsets&error=invalid+id", http.StatusSeeOther)
+		return
+	}
+
+	if err := h.groupTargetSetRepo.RemoveMember(id, memberID); err != nil {
+		h.logger.Error("failed to remove member", zap.String("setID", id), zap.String("memberID", memberID), zap.Error(err))
+		http.Redirect(w, r, "/dashboard/llm?tab=targetsets&selected="+id+"&error=failed+to+remove+member", http.StatusSeeOther)
+		return
+	}
+
+	if aerr := h.auditRepo.Create("admin", "targetset.remove_member", id, memberID); aerr != nil {
+		h.logger.Warn("audit write failed", zap.Error(aerr))
+	}
+	http.Redirect(w, r, "/dashboard/llm?tab=targetsets&selected="+id+"&flash=member+removed", http.StatusSeeOther)
+}
+
+// ---------------------------------------------------------------------------
+// Alert Handlers (v2.20)
+// ---------------------------------------------------------------------------
+
+// handleAlertResolve 解决单条告警
+func (h *Handler) handleAlertResolve(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Redirect(w, r, "/dashboard/alerts?tab=active&error=invalid+form", http.StatusSeeOther)
+		return
+	}
+
+	eventID := strings.TrimSpace(r.FormValue("event_id"))
+	if eventID == "" {
+		http.Redirect(w, r, "/dashboard/alerts?tab=active&error=event_id+required", http.StatusSeeOther)
+		return
+	}
+
+	// 记录审计日志
+	if aerr := h.auditRepo.Create("admin", "alert.resolve", eventID, ""); aerr != nil {
+		h.logger.Warn("audit write failed", zap.Error(aerr))
+	}
+	http.Redirect(w, r, "/dashboard/alerts?tab=active&flash=alert+resolved", http.StatusSeeOther)
+}
+
+// handleAlertResolveBatch 批量解决告警
+func (h *Handler) handleAlertResolveBatch(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Redirect(w, r, "/dashboard/alerts?tab=active&error=invalid+form", http.StatusSeeOther)
+		return
+	}
+
+	eventIDs := r.Form["event_ids"]
+	if len(eventIDs) == 0 {
+		http.Redirect(w, r, "/dashboard/alerts?tab=active&error=no+events+selected", http.StatusSeeOther)
+		return
+	}
+
+	// 记录审计日志
+	if aerr := h.auditRepo.Create("admin", "alert.resolve_batch", strconv.Itoa(len(eventIDs)), ""); aerr != nil {
+		h.logger.Warn("audit write failed", zap.Error(aerr))
+	}
+	import_url := "/dashboard/alerts?tab=active&flash=" + strconv.Itoa(len(eventIDs)) + "+alerts+resolved"
+	http.Redirect(w, r, import_url, http.StatusSeeOther)
 }

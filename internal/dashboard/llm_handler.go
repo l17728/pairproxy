@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -14,16 +15,21 @@ import (
 // llmPageData LLM 管理页数据
 type llmPageData struct {
 	baseData
-	Targets      []proxy.LLMTargetStatus
-	AllTargets   []llmTargetWithMeta // 合并后的目标列表（含 Source/IsEditable）
-	Bindings     []db.LLMBinding
-	BoundCount   map[string]int    // target URL → 绑定数量
-	UserIDToName map[string]string // user ID → username（用于绑定列表显示）
-	GroupIDToName map[string]string // group ID → group name
-	Users        []db.User
-	Groups       []db.Group
-	APIKeys      []db.APIKey
-	DrainStatus  proxy.DrainStatus // 排水状态
+	Targets        []proxy.LLMTargetStatus
+	AllTargets     []llmTargetWithMeta // 合并后的目标列表（含 Source/IsEditable）
+	Bindings       []db.LLMBinding
+	BoundCount     map[string]int    // target URL → 绑定数量
+	UserIDToName   map[string]string // user ID → username（用于绑定列表显示）
+	GroupIDToName  map[string]string // group ID → group name
+	Users          []db.User
+	Groups         []db.Group
+	APIKeys        []db.APIKey
+	DrainStatus    proxy.DrainStatus // 排水状态
+	// v2.20 新增：Target Set 支持
+	ActiveTab      string                 // targets | targetsets | bindings
+	TargetSets     []targetSetWithMembers
+	SelectedSetID  string
+	GroupsForBind  []db.Group // 未绑定的分组（用于创建目标集时选择）
 }
 
 // llmTargetWithMeta 扩展的目标信息（用于 WebUI 显示）
@@ -41,14 +47,31 @@ type llmTargetWithMeta struct {
 	Draining        bool
 }
 
+// targetSetWithMembers 目标集及其成员信息
+type targetSetWithMembers struct {
+	db.GroupTargetSet
+	Members        []db.GroupTargetSetMember
+	BoundGroupName string
+	MemberCount    int
+}
+
 // handleLLMPage GET /dashboard/llm
 func (h *Handler) handleLLMPage(w http.ResponseWriter, r *http.Request) {
 	flash := r.URL.Query().Get("flash")
 	errMsg := r.URL.Query().Get("error")
+	activeTab := r.URL.Query().Get("tab")
+	selectedSetID := r.URL.Query().Get("selected")
+
+	// 默认 Tab 为 targets
+	if activeTab == "" {
+		activeTab = "targets"
+	}
 
 	data := llmPageData{
-		baseData:   baseData{Flash: flash, Error: errMsg, IsWorkerNode: h.isWorkerNode},
-		BoundCount: make(map[string]int),
+		baseData:     baseData{Flash: flash, Error: errMsg, IsWorkerNode: h.isWorkerNode},
+		ActiveTab:    activeTab,
+		SelectedSetID: selectedSetID,
+		BoundCount:   make(map[string]int),
 	}
 
 	// 获取健康状态（来自 proxy）
@@ -154,6 +177,38 @@ func (h *Handler) handleLLMPage(w http.ResponseWriter, r *http.Request) {
 		data.DrainStatus = h.drainStatusFn()
 	}
 
+	// v2.20：加载目标集（如果启用）
+	if h.groupTargetSetRepo != nil {
+		allSets, err := h.groupTargetSetRepo.ListAll()
+		if err != nil {
+			h.logger.Error("list target sets", zap.Error(err))
+		} else {
+			for _, set := range allSets {
+				members, err := h.groupTargetSetRepo.ListMembers(set.ID)
+				if err != nil {
+					h.logger.Error("list target set members", zap.String("setID", set.ID), zap.Error(err))
+					members = []db.GroupTargetSetMember{}
+				}
+				boundGroupName := ""
+				if set.GroupID != nil {
+					boundGroupName = data.GroupIDToName[*set.GroupID]
+				}
+				data.TargetSets = append(data.TargetSets, targetSetWithMembers{
+					GroupTargetSet: set,
+					Members:        members,
+					BoundGroupName: boundGroupName,
+					MemberCount:    len(members),
+				})
+			}
+		}
+
+		// 为 GroupsForBind 使用未绑定的分组
+		if h.groupRepo != nil {
+			allGroups, _ := h.groupRepo.List()
+			data.GroupsForBind = allGroups
+		}
+	}
+
 	h.renderPage(w, "llm.html", data)
 }
 
@@ -194,7 +249,7 @@ func (h *Handler) handleLLMCreateBinding(w http.ResponseWriter, r *http.Request)
 
 	if err := h.llmBindingRepo.Set(targetURL, userID, groupID); err != nil {
 		h.logger.Error("create llm binding", zap.Error(err))
-		http.Redirect(w, r, "/dashboard/llm?error="+err.Error(), http.StatusSeeOther)
+		http.Redirect(w, r, "/dashboard/llm?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
 		return
 	}
 	h.logger.Info("llm binding created via dashboard",
@@ -218,7 +273,7 @@ func (h *Handler) handleLLMDeleteBinding(w http.ResponseWriter, r *http.Request)
 	}
 	if err := h.llmBindingRepo.Delete(id); err != nil {
 		h.logger.Error("delete llm binding", zap.String("id", id), zap.Error(err))
-		http.Redirect(w, r, "/dashboard/llm?error="+err.Error(), http.StatusSeeOther)
+		http.Redirect(w, r, "/dashboard/llm?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
 		return
 	}
 	h.logger.Info("llm binding deleted via dashboard", zap.String("id", id))
@@ -261,7 +316,7 @@ func (h *Handler) handleLLMDistribute(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.llmBindingRepo.EvenDistribute(userIDs, targetURLs); err != nil {
 		h.logger.Error("llm distribute failed", zap.Error(err))
-		http.Redirect(w, r, "/dashboard/llm?error="+err.Error(), http.StatusSeeOther)
+		http.Redirect(w, r, "/dashboard/llm?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
 		return
 	}
 
@@ -269,8 +324,7 @@ func (h *Handler) handleLLMDistribute(w http.ResponseWriter, r *http.Request) {
 		zap.Int("users", len(userIDs)),
 		zap.Int("targets", len(targetURLs)),
 	)
-	_ = time.Now() // keep import used
-	http.Redirect(w, r, "/dashboard/llm?flash=均分完成，共分配"+itoa(len(userIDs))+"个用户", http.StatusSeeOther)
+	http.Redirect(w, r, "/dashboard/llm?flash="+url.QueryEscape("均分完成，共分配"+strconv.Itoa(len(userIDs))+"个用户"), http.StatusSeeOther)
 }
 
 func itoa(n int) string {
@@ -297,7 +351,7 @@ func (h *Handler) handleDrainEnter(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.drainFn(); err != nil {
 		h.logger.Error("drain enter failed", zap.Error(err))
-		http.Redirect(w, r, "/dashboard/llm?error="+err.Error(), http.StatusSeeOther)
+		http.Redirect(w, r, "/dashboard/llm?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
 		return
 	}
 	h.logger.Info("drain mode entered via dashboard")
@@ -312,7 +366,7 @@ func (h *Handler) handleDrainExit(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.undrainFn(); err != nil {
 		h.logger.Error("drain exit failed", zap.Error(err))
-		http.Redirect(w, r, "/dashboard/llm?error="+err.Error(), http.StatusSeeOther)
+		http.Redirect(w, r, "/dashboard/llm?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
 		return
 	}
 	h.logger.Info("drain mode exited via dashboard")
@@ -385,7 +439,7 @@ func (h *Handler) handleLLMCreateTarget(w http.ResponseWriter, r *http.Request) 
 
 	if err := h.llmTargetRepo.Create(target); err != nil {
 		h.logger.Error("create llm target", zap.Error(err))
-		http.Redirect(w, r, "/dashboard/llm?error="+err.Error(), http.StatusSeeOther)
+		http.Redirect(w, r, "/dashboard/llm?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
 		return
 	}
 
@@ -480,7 +534,7 @@ func (h *Handler) handleLLMUpdateTarget(w http.ResponseWriter, r *http.Request) 
 
 	if err := h.llmTargetRepo.Update(existing); err != nil {
 		h.logger.Error("update llm target", zap.String("id", id), zap.Error(err))
-		http.Redirect(w, r, "/dashboard/llm?error="+err.Error(), http.StatusSeeOther)
+		http.Redirect(w, r, "/dashboard/llm?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
 		return
 	}
 
@@ -525,7 +579,7 @@ func (h *Handler) handleLLMDeleteTarget(w http.ResponseWriter, r *http.Request) 
 
 	if err := h.llmTargetRepo.Delete(id); err != nil {
 		h.logger.Error("delete llm target", zap.String("id", id), zap.Error(err))
-		http.Redirect(w, r, "/dashboard/llm?error="+err.Error(), http.StatusSeeOther)
+		http.Redirect(w, r, "/dashboard/llm?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
 		return
 	}
 

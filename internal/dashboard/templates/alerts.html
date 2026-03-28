@@ -1,9 +1,32 @@
 {{template "layout" .}}
 {{define "content"}}
 <div class="max-w-7xl mx-auto">
+  <div class="mb-6">
+    <h2 class="text-xl font-bold text-gray-800 mb-4">系统告警与错误</h2>
 
+    <!-- Tab 导航 -->
+    <div class="border-b border-gray-200">
+      <nav class="flex gap-1">
+        <a href="/dashboard/alerts?tab=live"
+           class="px-3 py-2 text-sm font-medium {{if eq .ActiveTab "live"}}text-indigo-600 border-b-2 border-indigo-600{{else}}text-gray-600 hover:text-gray-800{{end}}">
+          实时告警
+        </a>
+        <a href="/dashboard/alerts?tab=active"
+           class="px-3 py-2 text-sm font-medium {{if eq .ActiveTab "active"}}text-indigo-600 border-b-2 border-indigo-600{{else}}text-gray-600 hover:text-gray-800{{end}}">
+          活跃告警
+        </a>
+        <a href="/dashboard/alerts?tab=history"
+           class="px-3 py-2 text-sm font-medium {{if eq .ActiveTab "history"}}text-indigo-600 border-b-2 border-indigo-600{{else}}text-gray-600 hover:text-gray-800{{end}}">
+          历史查询
+        </a>
+      </nav>
+    </div>
+  </div>
+
+  {{if eq .ActiveTab "live"}}
+  <!-- Tab: 实时告警 -->
   <div class="flex items-center justify-between mb-6">
-    <h2 class="text-xl font-bold text-gray-800">系统告警与错误</h2>
+    <h3 class="text-base font-semibold text-gray-700">实时事件流</h3>
     <div class="flex items-center gap-3">
       <!-- 过滤器 -->
       <div class="flex rounded-lg border border-gray-200 overflow-hidden text-sm">
@@ -52,16 +75,136 @@
     <span id="statusText">—</span>
     <span>容量上限 500 条 · 重启后清空</span>
   </div>
+
+  {{else if eq .ActiveTab "active"}}
+  <!-- Tab: 活跃告警 -->
+  <section class="mb-8">
+    <div class="flex items-center justify-between mb-4">
+      <h3 class="text-base font-semibold text-gray-700">活跃告警</h3>
+      {{if not .IsWorkerNode}}
+      <button onclick="resolveBatchAlerts()" class="px-4 py-2 bg-indigo-600 text-white text-sm rounded hover:bg-indigo-700">
+        批量解决
+      </button>
+      {{end}}
+    </div>
+
+    <!-- 统计卡片 -->
+    <div class="grid grid-cols-3 gap-4 mb-6">
+      <div class="bg-white rounded shadow p-4">
+        <p class="text-sm text-gray-600 mb-1">严重错误</p>
+        <p id="criticalCount" class="text-2xl font-bold text-red-600">0</p>
+      </div>
+      <div class="bg-white rounded shadow p-4">
+        <p class="text-sm text-gray-600 mb-1">普通错误</p>
+        <p id="errorCount" class="text-2xl font-bold text-orange-600">0</p>
+      </div>
+      <div class="bg-white rounded shadow p-4">
+        <p class="text-sm text-gray-600 mb-1">警告</p>
+        <p id="warningCount" class="text-2xl font-bold text-yellow-600">0</p>
+      </div>
+    </div>
+
+    <!-- 活跃告警表格 -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="border-b border-gray-100 bg-gray-50 text-left text-xs text-gray-500 font-medium">
+            <th class="px-4 py-3 w-6"><input type="checkbox" id="selectAllCheckbox" onchange="toggleSelectAll(this.checked)" class="rounded border-gray-300"/></th>
+            <th class="px-4 py-3 w-36">发生时间</th>
+            <th class="px-3 py-3 w-16">级别</th>
+            <th class="px-3 py-3 w-36">来源</th>
+            <th class="px-3 py-3">消息</th>
+            <th class="px-3 py-3 w-20">操作</th>
+          </tr>
+        </thead>
+        <tbody id="activeAlertsBody">
+          <tr><td colspan="6" class="px-4 py-8 text-center text-sm text-gray-400">正在加载活跃告警…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  {{else}}
+  <!-- Tab: 历史查询 -->
+  <section class="mb-8">
+    <div class="bg-white rounded shadow p-4 mb-6">
+      <h3 class="text-base font-semibold text-gray-700 mb-4">查询告警历史</h3>
+      <form id="historyForm" class="space-y-3">
+        <div class="grid grid-cols-3 gap-4">
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">时间范围</label>
+            <select name="days" id="daysSelect" class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm">
+              <option value="7">过去 7 天</option>
+              <option value="30">过去 30 天</option>
+              <option value="90" selected>过去 90 天</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">级别筛选</label>
+            <select name="level" id="levelSelect" class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm">
+              <option value="">全部</option>
+              <option value="error">仅错误</option>
+              <option value="warn">仅警告</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">来源筛选</label>
+            <input type="text" name="source" id="sourceFilter" placeholder="可选" class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm" />
+          </div>
+        </div>
+        <div class="flex gap-2">
+          <button type="button" onclick="queryHistory()" class="px-4 py-2 bg-indigo-600 text-white text-sm rounded hover:bg-indigo-700">
+            查询
+          </button>
+          <button type="reset" class="px-4 py-2 bg-gray-300 text-gray-700 text-sm rounded hover:bg-gray-400">
+            重置
+          </button>
+        </div>
+      </form>
+    </div>
+
+    <!-- 历史告警表格 -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="border-b border-gray-100 bg-gray-50 text-left text-xs text-gray-500 font-medium">
+            <th class="px-4 py-3 w-36">发生时间</th>
+            <th class="px-3 py-3 w-16">级别</th>
+            <th class="px-3 py-3 w-36">来源</th>
+            <th class="px-3 py-3">消息</th>
+            <th class="px-3 py-3 w-36">字段</th>
+          </tr>
+        </thead>
+        <tbody id="historyBody">
+          <tr><td colspan="5" class="px-4 py-8 text-center text-sm text-gray-400">未执行查询</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- 分页控件 -->
+    <div class="mt-4 flex items-center justify-between text-sm text-gray-500">
+      <span id="pageInfo">—</span>
+      <div class="flex gap-2">
+        <button type="button" onclick="prevPage()" id="prevBtn" class="px-3 py-1 border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50" disabled>上一页</button>
+        <button type="button" onclick="nextPage()" id="nextBtn" class="px-3 py-1 border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50" disabled>下一页</button>
+      </div>
+    </div>
+  </section>
+
+  {{end}}
 </div>
 
 <script>
 (function() {
   var currentFilter = 'all';
-  var lastEventTime = null;   // ISO string of newest event we have
-  var allEvents = [];         // all fetched events (newest first)
+  var lastEventTime = null;
+  var allEvents = [];
   var refreshTimer = null;
+  var historyPage = 0;
+  var historyPageSize = 50;
+  var totalHistory = 0;
 
-  /* ── 过滤器 ── */
+  /* ── 过滤器（实时告警 Tab） ── */
   window.setFilter = function(f) {
     currentFilter = f;
     document.querySelectorAll('.filter-btn').forEach(function(btn) {
@@ -76,7 +219,7 @@
     renderTable();
   };
 
-  /* ── 数据获取 ── */
+  /* ── 数据获取（实时告警 Tab） ── */
   window.fetchEvents = function(full) {
     var url = '/api/dashboard/events';
     if (!full && lastEventTime) {
@@ -92,9 +235,7 @@
         if (full) {
           allEvents = data.events;
         } else {
-          // Prepend new events (they arrive newest-first already)
           allEvents = data.events.concat(allEvents);
-          // Cap at 300 to avoid DOM bloat
           if (allEvents.length > 300) allEvents = allEvents.slice(0, 300);
         }
         if (allEvents.length > 0) {
@@ -109,9 +250,11 @@
       });
   };
 
-  /* ── 渲染 ── */
+  /* ── 渲染实时告警表格 ── */
   function renderTable() {
     var tbody = document.getElementById('eventsBody');
+    if (!tbody) return;
+
     var loadRow = document.getElementById('loadingRow');
     if (loadRow) loadRow.remove();
 
@@ -151,6 +294,126 @@
     tbody.innerHTML = rows.join('');
   }
 
+  /* ── 活跃告警 Tab ── */
+  window.toggleSelectAll = function(checked) {
+    document.querySelectorAll('input[name="alert_ids"]').forEach(function(cb) {
+      cb.checked = checked;
+    });
+  };
+
+  window.resolveBatchAlerts = function() {
+    var checkboxes = document.querySelectorAll('input[name="alert_ids"]:checked');
+    if (checkboxes.length === 0) {
+      alert('请选择要解决的告警');
+      return;
+    }
+
+    var form = document.createElement('form');
+    form.method = 'POST';
+    form.action = '/dashboard/alerts/resolve-batch';
+
+    checkboxes.forEach(function(cb) {
+      var input = document.createElement('input');
+      input.type = 'hidden';
+      input.name = 'event_ids';
+      input.value = cb.value;
+      form.appendChild(input);
+    });
+
+    document.body.appendChild(form);
+    form.submit();
+  };
+
+  /* ── 历史查询 Tab ── */
+  window.queryHistory = function() {
+    var days = document.getElementById('daysSelect').value;
+    var level = document.getElementById('levelSelect').value;
+    var source = document.getElementById('sourceFilter').value;
+
+    historyPage = 0;
+    var url = '/api/dashboard/events?limit=' + historyPageSize;
+    if (level) url += '&level=' + level;
+    if (source) url += '&source=' + source;
+
+    fetch(url)
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        allEvents = data.events || [];
+        totalHistory = data.total || 0;
+        renderHistoryTable();
+        updateHistoryPaging();
+      })
+      .catch(function() {
+        alert('查询历史告警失败');
+      });
+  };
+
+  function renderHistoryTable() {
+    var tbody = document.getElementById('historyBody');
+    if (!tbody) return;
+
+    if (allEvents.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" class="px-4 py-8 text-center text-sm text-gray-400">无查询结果</td></tr>';
+      return;
+    }
+
+    var start = historyPage * historyPageSize;
+    var end = Math.min(start + historyPageSize, allEvents.length);
+    var pageEvents = allEvents.slice(start, end);
+
+    var rows = pageEvents.map(function(e) {
+      var isError = e.level === 'error';
+      var badge = isError
+        ? '<span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-semibold bg-red-100 text-red-700">ERROR</span>'
+        : '<span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-semibold bg-amber-100 text-amber-700">WARN</span>';
+
+      var ts = formatTime(e.time);
+      var logger = escHtml(e.logger || '—');
+      var msg = escHtml(e.message || '');
+      var fields = formatFields(e.fields);
+
+      return '<tr class="border-b border-gray-100 last:border-0 hover:bg-gray-50 align-top">' +
+        '<td class="px-4 py-2.5 text-xs text-gray-500 whitespace-nowrap font-mono">' + ts + '</td>' +
+        '<td class="px-3 py-2.5">' + badge + '</td>' +
+        '<td class="px-3 py-2.5 text-xs text-gray-600 font-mono">' + logger + '</td>' +
+        '<td class="px-3 py-2.5 text-gray-800 font-medium">' + msg + '</td>' +
+        '<td class="px-3 py-2.5 text-xs text-gray-500 font-mono">' + fields + '</td>' +
+        '</tr>';
+    });
+
+    tbody.innerHTML = rows.join('');
+  }
+
+  function updateHistoryPaging() {
+    var total = Math.ceil(allEvents.length / historyPageSize);
+    var pageInfo = document.getElementById('pageInfo');
+    if (pageInfo) {
+      pageInfo.textContent = '第 ' + (historyPage + 1) + ' / ' + Math.max(1, total) + ' 页';
+    }
+
+    var prevBtn = document.getElementById('prevBtn');
+    var nextBtn = document.getElementById('nextBtn');
+    if (prevBtn) prevBtn.disabled = historyPage === 0;
+    if (nextBtn) nextBtn.disabled = (historyPage + 1) >= total;
+  }
+
+  window.prevPage = function() {
+    if (historyPage > 0) {
+      historyPage--;
+      renderHistoryTable();
+      updateHistoryPaging();
+    }
+  };
+
+  window.nextPage = function() {
+    var total = Math.ceil(allEvents.length / historyPageSize);
+    if (historyPage + 1 < total) {
+      historyPage++;
+      renderHistoryTable();
+      updateHistoryPaging();
+    }
+  };
+
   /* ── 辅助函数 ── */
   function formatTime(iso) {
     if (!iso) return '—';
@@ -169,7 +432,6 @@
       var v = fields[k];
       if (v === null || v === undefined) return;
       var vStr = (typeof v === 'object') ? JSON.stringify(v) : String(v);
-      // Truncate long values
       if (vStr.length > 60) vStr = vStr.slice(0, 57) + '…';
       parts.push('<span class="text-gray-400">' + escHtml(k) + '=</span>' + escHtml(vStr));
     });
@@ -191,25 +453,27 @@
     var now = new Date();
     var pad = function(n) { return n < 10 ? '0' + n : n; };
     var ts = pad(now.getHours()) + ':' + pad(now.getMinutes()) + ':' + pad(now.getSeconds());
-    document.getElementById('statusText').textContent =
-      '共 ' + total + ' 条（错误 ' + errors + '，警告 ' + warns + '）· 更新于 ' + ts;
+    var statusText = document.getElementById('statusText');
+    if (statusText) {
+      statusText.textContent = '共 ' + total + ' 条（错误 ' + errors + '，警告 ' + warns + '）· 更新于 ' + ts;
+    }
   }
 
-  /* ── 自动刷新 ── */
   function startAutoRefresh() {
     if (refreshTimer) clearInterval(refreshTimer);
     refreshTimer = setInterval(function() { fetchEvents(false); }, 15000);
   }
 
-  /* ── SSE 实时更新 ── */
   function connectSSE() {
     try {
       var eventSource = new EventSource('/api/admin/alerts/stream');
 
       eventSource.addEventListener('connected', function(e) {
         console.log('Connected to alert stream');
-        document.getElementById('liveIndicator').innerHTML =
-          '<span class="inline-block w-2 h-2 rounded-full bg-green-400 animate-pulse"></span>实时';
+        var liveIndicator = document.getElementById('liveIndicator');
+        if (liveIndicator) {
+          liveIndicator.innerHTML = '<span class="inline-block w-2 h-2 rounded-full bg-green-400 animate-pulse"></span>实时';
+        }
       });
 
       eventSource.addEventListener('alert_update', function(e) {
@@ -217,7 +481,6 @@
           var event = JSON.parse(e.data);
           console.log('Received alert update:', event);
 
-          // 添加新事件到列表顶部
           if (event.alert) {
             var newEvent = {
               time: event.timestamp || new Date().toISOString(),
@@ -243,28 +506,30 @@
 
       eventSource.addEventListener('error', function(e) {
         console.error('SSE connection error:', e);
-        document.getElementById('liveIndicator').innerHTML =
-          '<span class="inline-block w-2 h-2 rounded-full bg-red-400"></span>连接失败';
+        var liveIndicator = document.getElementById('liveIndicator');
+        if (liveIndicator) {
+          liveIndicator.innerHTML = '<span class="inline-block w-2 h-2 rounded-full bg-red-400"></span>连接失败';
+        }
         eventSource.close();
-        // 尝试重新连接
         setTimeout(connectSSE, 5000);
       });
 
-      // 页面卸载时关闭连接
       window.addEventListener('beforeunload', function() {
         eventSource.close();
       });
     } catch(err) {
       console.error('Failed to connect to SSE:', err);
-      // 降级到轮询模式
       startAutoRefresh();
     }
   }
 
-  /* ── 初始化 ── */
-  fetchEvents(true);
-  connectSSE();
-  startAutoRefresh();
+  /* ── 初始化（仅对实时 Tab） ── */
+  var eventsBody = document.getElementById('eventsBody');
+  if (eventsBody) {
+    fetchEvents(true);
+    connectSSE();
+    startAutoRefresh();
+  }
 })();
 </script>
 {{end}}

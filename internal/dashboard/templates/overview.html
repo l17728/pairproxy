@@ -36,6 +36,81 @@
   </div>
 </div>
 
+<!-- 运维快速操作面板 (v2.20) -->
+<div class="mb-8">
+  <h3 class="text-base font-semibold text-gray-700 mb-4">运维快速操作</h3>
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+    <!-- LLM 目标状态卡片 -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+      <div class="flex items-center justify-between mb-4">
+        <h4 class="text-sm font-semibold text-gray-700">LLM 目标状态</h4>
+        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-indigo-100 text-indigo-800" id="llmHealthBadge">加载中</span>
+      </div>
+      <div class="space-y-2 text-sm mb-4">
+        <div class="flex justify-between">
+          <span class="text-gray-600">健康:</span>
+          <span id="llmHealthyCount" class="font-semibold text-green-600">—</span>
+        </div>
+        <div class="flex justify-between">
+          <span class="text-gray-600">告警:</span>
+          <span id="llmAlertCount" class="font-semibold text-red-600">—</span>
+        </div>
+        <div class="flex justify-between">
+          <span class="text-gray-600">目标集:</span>
+          <span id="llmSetCount" class="font-semibold text-indigo-600">—</span>
+        </div>
+      </div>
+      <a href="/dashboard/llm" class="text-xs text-indigo-600 hover:text-indigo-800 font-medium">进入 LLM 管理 →</a>
+    </div>
+
+    <!-- 系统告警卡片 -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+      <div class="flex items-center justify-between mb-4">
+        <h4 class="text-sm font-semibold text-gray-700">系统告警</h4>
+        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800" id="alertBadge">加载中</span>
+      </div>
+      <div class="space-y-2 text-sm mb-4">
+        <div class="flex justify-between">
+          <span class="text-gray-600">未解决:</span>
+          <span id="unResolvedAlerts" class="font-semibold text-red-600">—</span>
+        </div>
+        <div class="flex justify-between">
+          <span class="text-gray-600">错误:</span>
+          <span id="errorAlertCount" class="font-semibold text-red-600">—</span>
+        </div>
+        <div class="flex justify-between">
+          <span class="text-gray-600">警告:</span>
+          <span id="warnAlertCount" class="font-semibold text-yellow-600">—</span>
+        </div>
+      </div>
+      <a href="/dashboard/alerts?tab=active" class="text-xs text-indigo-600 hover:text-indigo-800 font-medium">查看告警详情 →</a>
+    </div>
+
+    <!-- 用户/分组卡片 -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+      <div class="flex items-center justify-between mb-4">
+        <h4 class="text-sm font-semibold text-gray-700">用户/分组</h4>
+        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800" id="userBadge">加载中</span>
+      </div>
+      <div class="space-y-2 text-sm mb-4">
+        <div class="flex justify-between">
+          <span class="text-gray-600">活跃用户:</span>
+          <span id="activeUserCount" class="font-semibold text-indigo-600">—</span>
+        </div>
+        <div class="flex justify-between">
+          <span class="text-gray-600">总分组:</span>
+          <span id="totalGroupCount" class="font-semibold text-indigo-600">—</span>
+        </div>
+        <div class="flex justify-between">
+          <span class="text-gray-600">今日新增:</span>
+          <span id="newUserCount" class="font-semibold text-green-600">—</span>
+        </div>
+      </div>
+      <a href="/dashboard/users" class="text-xs text-indigo-600 hover:text-indigo-800 font-medium">管理用户 →</a>
+    </div>
+  </div>
+</div>
+
 <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
   <div class="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
     <h3 class="text-sm font-semibold text-gray-700">最近请求</h3>
@@ -253,5 +328,65 @@ document.getElementById('costDaysSelect').addEventListener('change', (e) => {
 
 // 页面加载时初始化
 loadTrends(7);
+
+// 加载快速操作面板数据 (v2.20)
+async function loadQuickOps() {
+  try {
+    // 获取事件 API 数据
+    const eventsRes = await fetch('/api/dashboard/events?limit=100');
+    const eventsData = await eventsRes.json();
+    const events = eventsData.events || [];
+
+    // 计算告警统计
+    const unResolvedCount = events.length;
+    const errorCount = events.filter(e => e.level === 'error').length;
+    const warnCount = events.filter(e => e.level === 'warn').length;
+
+    document.getElementById('unResolvedAlerts').textContent = unResolvedCount;
+    document.getElementById('errorAlertCount').textContent = errorCount;
+    document.getElementById('warnAlertCount').textContent = warnCount;
+
+    if (unResolvedCount > 0) {
+      document.getElementById('alertBadge').textContent = '警告';
+      document.getElementById('alertBadge').className = 'inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800';
+    } else {
+      document.getElementById('alertBadge').textContent = '正常';
+      document.getElementById('alertBadge').className = 'inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800';
+    }
+  } catch (err) {
+    console.error('Failed to load alerts data:', err);
+  }
+
+  try {
+    // 获取用户统计
+    const statsRes = await fetch('/dashboard/api/user-stats');
+    const statsData = await statsRes.json();
+
+    if (statsData.total_users !== undefined) {
+      document.getElementById('activeUserCount').textContent = statsData.active_users || 0;
+      document.getElementById('totalGroupCount').textContent = statsData.total_groups || 0;
+      document.getElementById('newUserCount').textContent = statsData.new_users_today || 0;
+
+      document.getElementById('userBadge').textContent = '正常';
+      document.getElementById('userBadge').className = 'inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800';
+    }
+  } catch (err) {
+    console.error('Failed to load user stats:', err);
+  }
+
+  try {
+    // 模拟 LLM 目标状态（实际实现需要调用 LLM 相关 API）
+    document.getElementById('llmHealthyCount').textContent = '—';
+    document.getElementById('llmAlertCount').textContent = '—';
+    document.getElementById('llmSetCount').textContent = '—';
+    document.getElementById('llmHealthBadge').textContent = '未配置';
+    document.getElementById('llmHealthBadge').className = 'inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800';
+  } catch (err) {
+    console.error('Failed to load LLM status:', err);
+  }
+}
+
+// 页面加载时初始化快速操作面板
+loadQuickOps();
 </script>
 {{end}}
