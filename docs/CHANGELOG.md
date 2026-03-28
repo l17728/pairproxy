@@ -1,6 +1,6 @@
 # PairProxy Changelog
 
-## [v2.20.0] - 2026-03-28
+## [v2.22.0] - 2026-03-28
 
 ### ✨ New Features
 
