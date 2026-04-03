@@ -806,9 +806,7 @@ func TestResolveAPIKeyID_SameProvider_SameKey_Reuses(t *testing.T) {
 	assert.Equal(t, int64(1), count, "should have only 1 API key record (reused)")
 
 	// 两个 llm_targets 应指向同一个 api_key_id
-	target1 := &db.LLMTarget{URL: urlA, APIKeyID: idA, Provider: "openai", Weight: 1, IsActive: true}
-	target2 := &db.LLMTarget{URL: urlB, APIKeyID: idB, Provider: "openai", Weight: 1, IsActive: true}
-	assert.Equal(t, target1.APIKeyID, target2.APIKeyID, "both targets should share same api_key_id")
+	assert.Equal(t, idA, idB, "both targets should share same api_key_id when using same key value")
 }
 
 // TestResolveAPIKeyID_DifferentProviders_Independent 验证回归：
