@@ -163,8 +163,10 @@ func (hc *HealthChecker) UpdateCredentials(creds map[string]TargetCredential) {
 	)
 }
 
-// Start 启动后台主动健康检查 goroutine，ctx 取消时退出。
+// Start 启动主动健康检查循环。
+// 调用方应在完成后通过取消 ctx 来停止循环，然后调用 Wait 等待所有 goroutine 完成。
 func (hc *HealthChecker) Start(ctx context.Context) {
+	hc.wg.Add(1)
 	go hc.loop(ctx)
 }
 
@@ -207,6 +209,8 @@ func (hc *HealthChecker) CheckTarget(id string) {
 }
 
 func (hc *HealthChecker) loop(ctx context.Context) {
+	defer hc.wg.Done()
+
 	ticker := time.NewTicker(hc.interval)
 	defer ticker.Stop()
 
