@@ -165,6 +165,12 @@ func (hc *HealthChecker) UpdateCredentials(creds map[string]TargetCredential) {
 
 // Start 启动主动健康检查循环。
 // 调用方应在完成后通过取消 ctx 来停止循环，然后调用 Wait 等待所有 goroutine 完成。
+//
+// CRITICAL: hc.wg.Add(1) must be called here to track the main loop goroutine itself.
+// WaitGroup must account for ALL long-lived goroutines (main loop + child workers),
+// not just child workers. Failing to track the main loop causes data races in tests
+// when Wait() is called before the loop exits.
+// See: memory/concurrency_waitgroup_patterns.md
 func (hc *HealthChecker) Start(ctx context.Context) {
 	hc.wg.Add(1)
 	go hc.loop(ctx)
@@ -209,6 +215,9 @@ func (hc *HealthChecker) CheckTarget(id string) {
 }
 
 func (hc *HealthChecker) loop(ctx context.Context) {
+	// CRITICAL: defer hc.wg.Done() matches the hc.wg.Add(1) in Start().
+	// This ensures the WaitGroup counter is decremented when the loop exits,
+	// allowing Wait() to return when all goroutines (main loop + children) are complete.
 	defer hc.wg.Done()
 
 	ticker := time.NewTicker(hc.interval)

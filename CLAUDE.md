@@ -140,6 +140,61 @@ echo -e "testuser\ntestpass123" | ./cproxy.exe login --server http://localhost:9
 - **bodyclose lint**: 测试中 `http.Response` 即使不读 body 也必须 `defer resp.Body.Close()`，否则 `bodyclose` linter 报错
 - **gosimple lint**: `if x != nil && len(x) != 0` 应简化为 `if len(x) != 0`，nil slice 的 len 为 0
 
+### Concurrency Testing (v2.22.0+ Critical Requirements)
+
+**WaitGroup Synchronization** — All long-lived goroutines must be tracked:
+```go
+// ✅ CORRECT: Track main loop AND children
+func (hc *HealthChecker) Start(ctx context.Context) {
+    hc.wg.Add(1)          // ← Track loop itself
+    go hc.loop(ctx)
+}
+
+func (hc *HealthChecker) loop(ctx context.Context) {
+    defer hc.wg.Done()    // ← Must match Add(1)
+    ticker := time.NewTicker(interval)
+    defer ticker.Stop()
+    
+    for {
+        select {
+        case <-ctx.Done():
+            return
+        case <-ticker.C:
+            hc.spawnChildren()  // These also Add(1)
+        }
+    }
+}
+
+func (hc *HealthChecker) Wait() { hc.wg.Wait() }
+
+// In tests:
+ctx, cancel := context.WithCancel(context.Background())
+hc.Start(ctx)
+cancel()      // Signal all goroutines to stop
+hc.Wait()     // Wait for all to actually finish (REQUIRED)
+```
+
+**Race Condition Debugging** — Correct flow: understand → design → verify:
+1. Run with `-race` to identify unsynchronized concurrent access
+2. Design ONE structural fix (never use `time.Sleep()` as a fix)
+3. Verify with `go test ./internal/lb -race -count=10`
+
+**Test Cleanup Checklist**:
+- [ ] Long-lived goroutines use `context.WithCancel()` + `defer cancel()`
+- [ ] Before test returns: explicit `cancel()` then `hc.Wait()`
+- [ ] Async notifiers use `zap.NewNop()` not `zaptest.NewLogger()`
+- [ ] HTTP servers have `defer srv.Close()` before async operations exit
+- [ ] All `-race` test runs pass (min 10 iterations with `-count=10`)
+
+**Common mistakes**:
+- ❌ Forgetting `wg.Add(1)` for main loop goroutine
+- ❌ Using `time.Sleep()` instead of proper synchronization
+- ❌ Injecting `zaptest.NewLogger` into notifiers in async contexts
+- ❌ Not calling `Wait()` after `cancel()`
+- ❌ Testing only once with `-race` (race detection is probabilistic)
+
+See `memory/concurrency_waitgroup_patterns.md` and `memory/concurrency_race_debugging.md` for detailed examples.
+
 ## Configuration
 
 ### YAML Format
