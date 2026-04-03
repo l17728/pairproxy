@@ -203,3 +203,18 @@ func (r *APIKeyRepo) findByAssignment(id string, isUser bool) (*APIKey, error) {
 	}
 	return &key, nil
 }
+
+// FindByProviderAndValue 按 (provider, encrypted_value) 查找 API Key。
+// 用于 config-sync 时检查相同 key 值是否已存在，避免重复创建。
+// 返回 nil 表示不存在（不是错误）。
+func (r *APIKeyRepo) FindByProviderAndValue(provider, encryptedValue string) (*APIKey, error) {
+	var key APIKey
+	err := r.db.Where("provider = ? AND encrypted_value = ?", provider, encryptedValue).First(&key).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("find api key by provider and value: %w", err)
+	}
+	return &key, nil
+}

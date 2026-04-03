@@ -246,22 +246,21 @@ func (sp *SProxy) SetConfigAndDB(cfg *config.SProxyFullConfig, gormDB *gorm.DB) 
 }
 
 // resolveAPIKeyID 解析 API Key 字符串为 API Key ID。
+// 按 (provider, encrypted_value) 去重：相同 key 值复用已有记录，不同 key 值创建新记录。
+// targetURL 用于生成唯一的 Name，避免 uniqueIndex 冲突。
 // 如果 API Key 不存在，创建新记录。
-func (sp *SProxy) resolveAPIKeyID(apiKey, provider string) (*string, error) {
+func (sp *SProxy) resolveAPIKeyID(apiKey, provider, targetURL string) (*string, error) {
 	if apiKey == "" {
 		return nil, nil // API Key 可选
 	}
 
 	obfuscated := obfuscateKey(apiKey)
 
-	// 查询是否已存在（按 provider 查找第一个）
+	// 查询是否已存在（按 provider + encrypted_value 匹配，支持多个不同 key 值）
 	var existingKey db.APIKey
-	err := sp.db.Where("provider = ?", provider).First(&existingKey).Error
+	err := sp.db.Where("provider = ? AND encrypted_value = ?", provider, obfuscated).First(&existingKey).Error
 	if err == nil {
-		// 已存在：更新混淆值（自动迁移旧明文记录）
-		if err2 := sp.db.Model(&existingKey).Update("encrypted_value", obfuscated).Error; err2 != nil {
-			return nil, fmt.Errorf("update api key: %w", err2)
-		}
+		// 已存在相同 key 值的记录，直接复用（不覆盖）
 		return &existingKey.ID, nil
 	}
 	if err != gorm.ErrRecordNotFound {
@@ -269,9 +268,11 @@ func (sp *SProxy) resolveAPIKeyID(apiKey, provider string) (*string, error) {
 	}
 
 	// 不存在，创建新记录（混淆存储）
+	// Name 使用 "Auto-{targetURL}" 保证 uniqueIndex 不冲突
+	autoName := fmt.Sprintf("Auto-%s", targetURL)
 	newKey := &db.APIKey{
 		ID:             uuid.NewString(),
-		Name:           fmt.Sprintf("Auto-created for %s", provider),
+		Name:           autoName,
 		Provider:       provider,
 		EncryptedValue: obfuscated,
 		IsActive:       true,
@@ -284,6 +285,7 @@ func (sp *SProxy) resolveAPIKeyID(apiKey, provider string) (*string, error) {
 
 	sp.logger.Info("auto-created api key for config target",
 		zap.String("provider", provider),
+		zap.String("target_url", targetURL),
 		zap.String("key_id", newKey.ID))
 
 	return &newKey.ID, nil
@@ -302,7 +304,7 @@ func (sp *SProxy) syncConfigTargetsToDatabase(repo *db.LLMTargetRepo) error {
 	configURLs := make([]string, 0, len(configTargets))
 	for _, ct := range configTargets {
 		// 解析 API Key ID
-		apiKeyID, err := sp.resolveAPIKeyID(ct.APIKey, ct.Provider)
+		apiKeyID, err := sp.resolveAPIKeyID(ct.APIKey, ct.Provider, ct.URL)
 		if err != nil {
 			logger.Warn("failed to resolve api key",
 				zap.String("url", ct.URL),

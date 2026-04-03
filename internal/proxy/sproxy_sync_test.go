@@ -710,3 +710,280 @@ func TestSyncLLMTargets_EmptyTargetList(t *testing.T) {
 		t.Error("Pick should return error when all targets are disabled")
 	}
 }
+
+// TestResolveAPIKeyID_SameProvider_DifferentKeys 验证 Issue #2 修复：
+// 同一 provider 下，两个不同的 key 值应各自创建独立的 APIKey 记录，
+// 而不是互相覆盖。这是号池共享的核心功能：支持多个 openai-compatible 供应商
+// （如百炼和火山引擎）各用各的 key。
+func TestResolveAPIKeyID_SameProvider_DifferentKeys(t *testing.T) {
+	logger := zap.NewNop()
+	gormDB, err := db.Open(logger, ":memory:")
+	require.NoError(t, err)
+	require.NoError(t, db.Migrate(logger, gormDB))
+
+	sp := &SProxy{
+		db:     gormDB,
+		logger: logger,
+	}
+
+	// 两个 openai targets，各用不同的 key 值（复现 Bug 的场景）
+	keyA := "sk-openai-key-A-for-bailian"
+	keyB := "sk-openai-key-B-for-huoshan"
+	urlA := "https://dashscope.aliyuncs.com/openai/api/v1"
+	urlB := "https://ark.cn-beijing.volces.com/api/v1"
+
+	// 第一次 resolve：创建 A 的 APIKey 记录
+	idA, err := sp.resolveAPIKeyID(keyA, "openai", urlA)
+	require.NoError(t, err)
+	require.NotNil(t, idA)
+
+	// 第二次 resolve：B 应创建新记录，而不是覆盖 A
+	idB, err := sp.resolveAPIKeyID(keyB, "openai", urlB)
+	require.NoError(t, err)
+	require.NotNil(t, idB)
+
+	// 断言 A 和 B 的 ID 不同
+	assert.NotEqual(t, idA, idB, "different key values should create different APIKey records")
+
+	// 断言 api_keys 表有 2 条记录
+	var count int64
+	err = gormDB.Model(&db.APIKey{}).Count(&count).Error
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), count, "should have 2 API key records")
+
+	// 断言两条记录的 encrypted_value 不同
+	var keyRecA, keyRecB db.APIKey
+	err = gormDB.Where("id = ?", *idA).First(&keyRecA).Error
+	require.NoError(t, err)
+	err = gormDB.Where("id = ?", *idB).First(&keyRecB).Error
+	require.NoError(t, err)
+	assert.NotEqual(t, keyRecA.EncryptedValue, keyRecB.EncryptedValue, "encrypted values should differ")
+
+	// 断言两条记录都是 active
+	assert.True(t, keyRecA.IsActive, "key A should be active")
+	assert.True(t, keyRecB.IsActive, "key B should be active")
+
+	// 断言 Name 包含 URL（用于区分）
+	assert.Contains(t, keyRecA.Name, urlA, "key A name should contain its URL")
+	assert.Contains(t, keyRecB.Name, urlB, "key B name should contain its URL")
+}
+
+// TestResolveAPIKeyID_SameProvider_SameKey_Reuses 验证：
+// 同一 provider 下，相同的 key 值应复用已有记录（不重复创建）。
+func TestResolveAPIKeyID_SameProvider_SameKey_Reuses(t *testing.T) {
+	logger := zap.NewNop()
+	gormDB, err := db.Open(logger, ":memory:")
+	require.NoError(t, err)
+	require.NoError(t, db.Migrate(logger, gormDB))
+
+	sp := &SProxy{
+		db:     gormDB,
+		logger: logger,
+	}
+
+	// 两个 openai targets，使用相同的 key 值
+	sameKey := "sk-openai-shared-key"
+	urlA := "https://provider-a.com/api"
+	urlB := "https://provider-b.com/api"
+
+	// 第一次 resolve
+	idA, err := sp.resolveAPIKeyID(sameKey, "openai", urlA)
+	require.NoError(t, err)
+	require.NotNil(t, idA)
+
+	// 第二次 resolve，相同 key 值应复用
+	idB, err := sp.resolveAPIKeyID(sameKey, "openai", urlB)
+	require.NoError(t, err)
+	require.NotNil(t, idB)
+
+	// 断言两次返回的 ID 相同（复用）
+	assert.Equal(t, idA, idB, "same key value should reuse same APIKey record")
+
+	// 断言 api_keys 表只有 1 条记录
+	var count int64
+	err = gormDB.Model(&db.APIKey{}).Count(&count).Error
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), count, "should have only 1 API key record (reused)")
+
+	// 两个 llm_targets 应指向同一个 api_key_id
+	target1 := &db.LLMTarget{ID: "t1", URL: urlA, APIKeyID: idA, Provider: "openai", Weight: 1, IsActive: true}
+	target2 := &db.LLMTarget{ID: "t2", URL: urlB, APIKeyID: idB, Provider: "openai", Weight: 1, IsActive: true}
+	assert.Equal(t, target1.APIKeyID, target2.APIKeyID, "both targets should share same api_key_id")
+}
+
+// TestResolveAPIKeyID_DifferentProviders_Independent 验证回归：
+// 不同 provider 的 key 应各自独立，互不影响。
+func TestResolveAPIKeyID_DifferentProviders_Independent(t *testing.T) {
+	logger := zap.NewNop()
+	gormDB, err := db.Open(logger, ":memory:")
+	require.NoError(t, err)
+	require.NoError(t, db.Migrate(logger, gormDB))
+
+	sp := &SProxy{
+		db:     gormDB,
+		logger: logger,
+	}
+
+	keyAnthrop := "sk-anthropic-key"
+	keyOpenAI := "sk-openai-key"
+
+	idA, err := sp.resolveAPIKeyID(keyAnthrop, "anthropic", "https://api.anthropic.com")
+	require.NoError(t, err)
+
+	idB, err := sp.resolveAPIKeyID(keyOpenAI, "openai", "https://api.openai.com")
+	require.NoError(t, err)
+
+	// 两个不同 provider 的 key 应创建不同的记录
+	assert.NotEqual(t, idA, idB)
+
+	var count int64
+	err = gormDB.Model(&db.APIKey{}).Count(&count).Error
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), count)
+
+	// 验证 provider 字段正确
+	var keyRecA, keyRecB db.APIKey
+	gormDB.Where("id = ?", *idA).First(&keyRecA)
+	gormDB.Where("id = ?", *idB).First(&keyRecB)
+	assert.Equal(t, "anthropic", keyRecA.Provider)
+	assert.Equal(t, "openai", keyRecB.Provider)
+}
+
+// TestResolveAPIKeyID_EmptyKey_ReturnsNil 验证：
+// 空 key 值返回 nil，不创建数据库记录。
+func TestResolveAPIKeyID_EmptyKey_ReturnsNil(t *testing.T) {
+	logger := zap.NewNop()
+	gormDB, err := db.Open(logger, ":memory:")
+	require.NoError(t, err)
+	require.NoError(t, db.Migrate(logger, gormDB))
+
+	sp := &SProxy{
+		db:     gormDB,
+		logger: logger,
+	}
+
+	// 空 key
+	id, err := sp.resolveAPIKeyID("", "openai", "https://api.openai.com")
+	require.NoError(t, err)
+	assert.Nil(t, id)
+
+	// 数据库应无记录
+	var count int64
+	gormDB.Model(&db.APIKey{}).Count(&count)
+	assert.Equal(t, int64(0), count)
+}
+
+// TestSyncConfigTargets_MultipleOpenAI_DifferentKeys 验证完整流程：
+// config targets 同步到 db 时，多个 openai-compatible 供应商各自创建独立的 APIKey。
+func TestSyncConfigTargets_MultipleOpenAI_DifferentKeys(t *testing.T) {
+	logger := zap.NewNop()
+	gormDB, err := db.Open(logger, ":memory:")
+	require.NoError(t, err)
+	require.NoError(t, db.Migrate(logger, gormDB))
+
+	cfg := &config.SProxyFullConfig{
+		LLM: config.LLMConfig{
+			Targets: []config.LLMTarget{
+				{
+					URL:      "https://dashscope.aliyuncs.com/api",
+					APIKey:   "sk-key-for-bailian",
+					Provider: "openai",
+					Name:     "Alibaba Bailian",
+					Weight:   1,
+				},
+				{
+					URL:      "https://ark.volces.com/api",
+					APIKey:   "sk-key-for-huoshan",
+					Provider: "openai",
+					Name:     "Volcano Huoshan",
+					Weight:   1,
+				},
+				{
+					URL:      "https://api.anthropic.com",
+					APIKey:   "sk-ant-key",
+					Provider: "anthropic",
+					Name:     "Anthropic",
+					Weight:   1,
+				},
+			},
+		},
+	}
+
+	sp := &SProxy{cfg: cfg, db: gormDB, logger: logger}
+	repo := db.NewLLMTargetRepo(gormDB, logger)
+
+	// Sync
+	err = sp.syncConfigTargetsToDatabase(repo)
+	require.NoError(t, err)
+
+	// 断言有 3 个 llm_targets
+	targets, err := repo.ListAll()
+	require.NoError(t, err)
+	assert.Len(t, targets, 3)
+
+	// 断言两个 openai targets 指向不同的 api_key_id
+	var openaiTargets []*db.LLMTarget
+	for _, target := range targets {
+		if target.Provider == "openai" {
+			openaiTargets = append(openaiTargets, target)
+		}
+	}
+	require.Len(t, openaiTargets, 2)
+	assert.NotEqual(t, openaiTargets[0].APIKeyID, openaiTargets[1].APIKeyID,
+		"two different openai keys should create different APIKey records")
+
+	// 断言 api_keys 表有 3 条记录
+	var keyCount int64
+	gormDB.Model(&db.APIKey{}).Count(&keyCount)
+	assert.Equal(t, int64(3), keyCount)
+}
+
+// TestSyncConfigTargets_Idempotent_MultipleSync 验证幂等性：
+// 执行多次 sync，api_keys 表记录数不增加。
+func TestSyncConfigTargets_Idempotent_MultipleSync(t *testing.T) {
+	logger := zap.NewNop()
+	gormDB, err := db.Open(logger, ":memory:")
+	require.NoError(t, err)
+	require.NoError(t, db.Migrate(logger, gormDB))
+
+	cfg := &config.SProxyFullConfig{
+		LLM: config.LLMConfig{
+			Targets: []config.LLMTarget{
+				{
+					URL:      "https://openai-1.com",
+					APIKey:   "key1",
+					Provider: "openai",
+					Weight:   1,
+				},
+				{
+					URL:      "https://openai-2.com",
+					APIKey:   "key2",
+					Provider: "openai",
+					Weight:   1,
+				},
+			},
+		},
+	}
+
+	sp := &SProxy{cfg: cfg, db: gormDB, logger: logger}
+	repo := db.NewLLMTargetRepo(gormDB, logger)
+
+	// 第一次 sync
+	err = sp.syncConfigTargetsToDatabase(repo)
+	require.NoError(t, err)
+
+	var count1 int64
+	gormDB.Model(&db.APIKey{}).Count(&count1)
+
+	// 第二次 sync（相同配置）
+	err = sp.syncConfigTargetsToDatabase(repo)
+	require.NoError(t, err)
+
+	var count2 int64
+	gormDB.Model(&db.APIKey{}).Count(&count2)
+
+	// 记录数应不变
+	assert.Equal(t, count1, count2, "second sync should not create duplicate APIKey records")
+	assert.Equal(t, int64(2), count2, "should have exactly 2 APIKey records")
+}
+
