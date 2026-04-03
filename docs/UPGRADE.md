@@ -436,9 +436,14 @@ sproxy admin track clear <username>
 |----------|--------|------|
 | `auth.provider` | `"local"` | 认证提供者，`"local"` 或 `"ldap"` |
 | `auth.ldap.*` | 见示例 | LDAP 配置（provider="ldap" 时生效） |
-| `admin.key_encryption_key` | `""` | API Key 加密密钥（F-5） |
 | `llm.targets[].provider` | `"anthropic"` | LLM 类型（F-1） |
 | `cluster.alert_webhooks` | `[]` | 多 Webhook 告警（F-6） |
+
+**配置文件新增字段（条件必填）**
+
+| 字段路径 | 默认值 | 说明 |
+|----------|--------|------|
+| `admin.key_encryption_key` | `""` | API Key 加密密钥，**使用 `admin apikey` 命令时必填**（F-5） |
 
 ---
 

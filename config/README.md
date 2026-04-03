@@ -82,6 +82,7 @@ export ANTHROPIC_API_KEY=any-placeholder-value
 | `auth.keygen_secret` | — | v2.15.0 | sk-pp- Key 生成密钥（**必填**，≥32字符）|
 | `auth.provider` | `local` | v2.x | 认证提供者：`local` 或 `ldap` |
 | `admin.password_hash` | — | v1.0 | Admin 面板密码 hash（**必填**）|
+| `admin.key_encryption_key` | — | v2.x | API Key 加密密钥（使用 `admin apikey` 命令时**必填**，≥32字符）|
 | `cluster.role` | `primary` | v2.0 | `primary` 或 `worker`（SQLite 模式）|
 | `cluster.mode` | — | v2.14.0 | `peer`（PostgreSQL Peer Mode）|
 | `pricing.models` | — | v2.x | 按模型定价，用于 Dashboard 费用统计 |

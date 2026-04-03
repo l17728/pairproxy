@@ -2693,7 +2693,7 @@ var adminApikeyAddCmd = &cobra.Command{
 		}
 		defer closeGormDB(logger, database)
 		if cfg.Admin.KeyEncryptionKey == "" {
-			return fmt.Errorf("admin.key_encryption_key is not configured in sproxy.yaml")
+			return fmt.Errorf("admin.key_encryption_key not configured in sproxy.yaml: please set admin.key_encryption_key (≥32 chars) in the [admin] section to use API Key management")
 		}
 		value := apikeyAddValue
 		if value == "" {
