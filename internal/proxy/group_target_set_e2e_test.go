@@ -81,8 +81,10 @@ func TestGroupTargetSetIntegration_E2E_CompleteWorkflow(t *testing.T) {
 	}
 
 	// 4. 测试选择 target（多次）
+	// 使用 100 次采样确保加权随机算法在小样本下也能覆盖全部 3 个 target
+	// weights: 1:2:3，10 次有概率漏掉权重最小的 target，100 次概率 >99.99%
 	selectedURLs := make(map[string]int)
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 100; i++ {
 		selected, hasMore, err := integration.SelectTarget(context.Background(), "", []string{})
 		require.NoError(t, err)
 		assert.NotNil(t, selected)
