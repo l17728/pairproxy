@@ -155,6 +155,8 @@ type LLMTarget struct {
 	Name            string            `yaml:"name"`              // 可选显示名称（空则使用 URL）
 	HealthCheckPath string            `yaml:"health_check_path"` // 主动健康检查路径，空=仅被动检查
 	ModelMapping    map[string]string `yaml:"model_mapping,omitempty"` // Anthropic 模型名 → Ollama/OpenAI 模型名映射；"*" 匹配所有未命中的模型
+	SupportedModels []string          `yaml:"supported_models,omitempty"` // 该 target 支持的模型名列表（支持通配符，空表示支持所有）
+	AutoModel       string            `yaml:"auto_model,omitempty"` // auto 模式下使用的模型名（空表示降级或透传）
 }
 
 // DatabaseConfig 数据库配置（支持 SQLite 和 PostgreSQL）

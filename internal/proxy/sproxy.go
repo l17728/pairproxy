@@ -1914,3 +1914,69 @@ func (sp *SProxy) ServeDirect(w http.ResponseWriter, r *http.Request) {
 	)
 	sp.serveProxy(w, r)
 }
+
+// ======================== Model-Aware Routing Functions (F2+F3) ========================
+
+// matchModel 检查 model 是否匹配 patterns 中的任一模式。
+// 模式支持：精确匹配 | 前缀通配（"claude-*"）| 全通配（"*"）
+func matchModel(model string, patterns []string) bool {
+	for _, p := range patterns {
+		if p == "*" || p == model {
+			return true
+		}
+		if strings.HasSuffix(p, "*") && strings.HasPrefix(model, strings.TrimSuffix(p, "*")) {
+			return true
+		}
+	}
+	return false
+}
+
+// rewriteModelInBody 将 JSON body 中的 model 字段从 old 值替换为 newModel。
+// 解析失败或无 model 字段时原样返回 body。
+func rewriteModelInBody(body []byte, old, newModel string) []byte {
+	var req map[string]interface{}
+	if err := json.Unmarshal(body, &req); err != nil {
+		return body  // 非 JSON，原样返回
+	}
+	if m, ok := req["model"].(string); ok && m == old {
+		req["model"] = newModel
+		if newBody, err := json.Marshal(req); err == nil {
+			return newBody
+		}
+	}
+	return body  // 无 model 字段或编码失败，原样返回
+}
+
+// filterByModel 过滤 targets，仅保留支持 model 的（或未配置 supported_models 的）。
+// 未配置 supported_models 的 target 视为支持所有模型。
+func filterByModel(targets []lb.Target, model string) []lb.Target {
+	var out []lb.Target
+	for _, t := range targets {
+		// 未配置 = 不限制，始终参与候选
+		if len(t.SupportedModels) == 0 || matchModel(model, t.SupportedModels) {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// autoModelFromBalancer 从当前 balancer 快照中查询 targetID 的 auto_model。
+// 降级策略：auto_model > supported_models[0] > ""（透传）
+// 查询 sp.llmBalancer.Targets() 而非 sp.targets，支持 WebUI 热更新。
+func (sp *SProxy) autoModelFromBalancer(targetID string) string {
+	if sp.llmBalancer == nil {
+		return ""
+	}
+	for _, t := range sp.llmBalancer.Targets() {
+		if t.ID == targetID {
+			if t.AutoModel != "" {
+				return t.AutoModel
+			}
+			if len(t.SupportedModels) > 0 {
+				return t.SupportedModels[0]
+			}
+			return ""
+		}
+	}
+	return ""
+}

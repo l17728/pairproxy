@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -617,6 +618,337 @@ func TestSProxyNoBindingResolver_FallsBackToLoadBalancer(t *testing.T) {
 	// 请求应被转发到 mock LLM，返回 200
 	if rr.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200 (should fall through to load balancer)", rr.Code)
+	}
+}
+
+// ======================== Model-Aware Routing Tests (F2+F3) ========================
+
+// TestMatchModel_ExactMatch 精确匹配
+func TestMatchModel_ExactMatch(t *testing.T) {
+	tests := []struct {
+		name     string
+		model    string
+		patterns []string
+		want     bool
+	}{
+		{"exact match", "claude-3-sonnet", []string{"claude-3-sonnet"}, true},
+		{"exact match multiple patterns", "gpt-4", []string{"claude-*", "gpt-4", "mistral*"}, true},
+		{"no match exact", "claude-3-opus", []string{"claude-3-sonnet"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := matchModel(tt.model, tt.patterns)
+			if got != tt.want {
+				t.Errorf("matchModel(%q, %v) = %v, want %v", tt.model, tt.patterns, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestMatchModel_PrefixWildcard 前缀通配
+func TestMatchModel_PrefixWildcard(t *testing.T) {
+	tests := []struct {
+		name     string
+		model    string
+		patterns []string
+		want     bool
+	}{
+		{"prefix match", "claude-3-sonnet-20250219", []string{"claude-3-*"}, true},
+		{"prefix match variants", "gpt-4-turbo-preview", []string{"gpt-4-*"}, true},
+		{"prefix no match", "gpt-3.5-turbo", []string{"gpt-4-*"}, false},
+		{"prefix multiple", "mistral-7b-v2", []string{"claude-*", "gpt-*", "mistral-*"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := matchModel(tt.model, tt.patterns)
+			if got != tt.want {
+				t.Errorf("matchModel(%q, %v) = %v, want %v", tt.model, tt.patterns, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestMatchModel_FullWildcard 全通配
+func TestMatchModel_FullWildcard(t *testing.T) {
+	tests := []struct {
+		name     string
+		model    string
+		patterns []string
+	}{
+		{"full wildcard any model", "anything", []string{"*"}},
+		{"full wildcard with others", "unknown-model", []string{"claude-*", "*"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := matchModel(tt.model, tt.patterns)
+			if !got {
+				t.Errorf("matchModel(%q, %v) = %v, want true (full wildcard)", tt.model, tt.patterns, got)
+			}
+		})
+	}
+}
+
+// TestMatchModel_EdgeCases 边界条件
+func TestMatchModel_EdgeCases(t *testing.T) {
+	tests := []struct {
+		name     string
+		model    string
+		patterns []string
+		want     bool
+	}{
+		{"empty patterns", "claude-3-sonnet", []string{}, false},
+		{"empty model", "", []string{"*"}, true},
+		{"empty model no match", "", []string{"claude-*"}, false},
+		{"dash at start", "-model", []string{"-*"}, true},
+		{"multiple dashes", "claude-3-sonnet-20250219", []string{"claude-*"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := matchModel(tt.model, tt.patterns)
+			if got != tt.want {
+				t.Errorf("matchModel(%q, %v) = %v, want %v", tt.model, tt.patterns, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestRewriteModelInBody_ValidJSON JSON 正确情况
+func TestRewriteModelInBody_ValidJSON(t *testing.T) {
+	tests := []struct {
+		name     string
+		body     []byte
+		old      string
+		newModel string
+		wantBody string
+	}{
+		{
+			"simple model field",
+			[]byte(`{"model":"claude-3-sonnet","max_tokens":100}`),
+			"claude-3-sonnet",
+			"claude-3-opus-20250119",
+			`{"max_tokens":100,"model":"claude-3-opus-20250119"}`,
+		},
+		{
+			"auto to specific",
+			[]byte(`{"model":"auto","messages":[]}`),
+			"auto",
+			"gpt-4-turbo",
+			`{"messages":[],"model":"gpt-4-turbo"}`,
+		},
+		{
+			"model not matching old value",
+			[]byte(`{"model":"other-model"}`),
+			"old-model",
+			"new-model",
+			`{"model":"other-model"}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := rewriteModelInBody(tt.body, tt.old, tt.newModel)
+			// 由于 JSON marshal 顺序不确定，比较解析后的对象
+			var gotObj, wantObj map[string]interface{}
+			if err := json.Unmarshal(got, &gotObj); err != nil {
+				t.Fatalf("unmarshal got: %v", err)
+			}
+			if err := json.Unmarshal([]byte(tt.wantBody), &wantObj); err != nil {
+				t.Fatalf("unmarshal want: %v", err)
+			}
+			if gotObj["model"] != wantObj["model"] {
+				t.Errorf("model field = %v, want %v", gotObj["model"], wantObj["model"])
+			}
+		})
+	}
+}
+
+// TestRewriteModelInBody_InvalidJSON 非法 JSON
+func TestRewriteModelInBody_InvalidJSON(t *testing.T) {
+	tests := []struct {
+		name     string
+		body     []byte
+		old      string
+		newModel string
+	}{
+		{"malformed json", []byte(`{invalid}`), "old", "new"},
+		{"not json", []byte(`some random text`), "old", "new"},
+		{"empty string", []byte(``), "old", "new"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := rewriteModelInBody(tt.body, tt.old, tt.newModel)
+			if !bytes.Equal(got, tt.body) {
+				t.Errorf("invalid JSON should return original body, got %q want %q", got, tt.body)
+			}
+		})
+	}
+}
+
+// TestRewriteModelInBody_NoModelField 无 model 字段
+func TestRewriteModelInBody_NoModelField(t *testing.T) {
+	body := []byte(`{"max_tokens":100,"messages":[]}`)
+	got := rewriteModelInBody(body, "old", "new")
+	var obj map[string]interface{}
+	if err := json.Unmarshal(got, &obj); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, ok := obj["model"]; ok {
+		t.Error("model field should not be added when not present")
+	}
+}
+
+// TestFilterByModel_ExactMatches 精确匹配过滤
+func TestFilterByModel_ExactMatches(t *testing.T) {
+	targets := []lb.Target{
+		{ID: "t1", Addr: "http://t1", Weight: 1, SupportedModels: []string{"claude-3-opus-20250119"}},
+		{ID: "t2", Addr: "http://t2", Weight: 1, SupportedModels: []string{"gpt-4-turbo"}},
+		{ID: "t3", Addr: "http://t3", Weight: 1, SupportedModels: []string{"llama2"}},
+	}
+	got := filterByModel(targets, "claude-3-opus-20250119")
+	if len(got) != 1 || got[0].ID != "t1" {
+		t.Errorf("filterByModel for claude-3-opus-20250119 = %v, want [t1]", []string{got[0].ID})
+	}
+}
+
+// TestFilterByModel_PatternMatches 模式匹配过滤
+func TestFilterByModel_PatternMatches(t *testing.T) {
+	targets := []lb.Target{
+		{ID: "t1", Addr: "http://t1", Weight: 1, SupportedModels: []string{"claude-3-*"}},
+		{ID: "t2", Addr: "http://t2", Weight: 1, SupportedModels: []string{"gpt-4-*"}},
+		{ID: "t3", Addr: "http://t3", Weight: 1, SupportedModels: []string{"llama*"}},
+	}
+	got := filterByModel(targets, "claude-3-sonnet-20250219")
+	if len(got) != 1 || got[0].ID != "t1" {
+		t.Errorf("filterByModel for claude-3-sonnet-20250219 = %v, want [t1]", []string{got[0].ID})
+	}
+}
+
+// TestFilterByModel_NoSupportedModels 未配置 supported_models（接受所有）
+func TestFilterByModel_NoSupportedModels(t *testing.T) {
+	targets := []lb.Target{
+		{ID: "t1", Addr: "http://t1", Weight: 1, SupportedModels: []string{}}, // empty = all
+		{ID: "t2", Addr: "http://t2", Weight: 1, SupportedModels: []string{"gpt-4-*"}},
+	}
+	got := filterByModel(targets, "unknown-model")
+	// t1 (empty list) 和所有不匹配 t2 的目标都应参与
+	// 在这个例子中，只有 t1 匹配
+	if len(got) != 1 || got[0].ID != "t1" {
+		t.Errorf("filterByModel for unknown-model = %v, want [t1]", []string{got[0].ID})
+	}
+}
+
+// TestFilterByModel_FailOpen 失败开启（无任何目标匹配）
+func TestFilterByModel_FailOpen(t *testing.T) {
+	targets := []lb.Target{
+		{ID: "t1", Addr: "http://t1", Weight: 1, SupportedModels: []string{"claude-*"}},
+		{ID: "t2", Addr: "http://t2", Weight: 1, SupportedModels: []string{"gpt-*"}},
+	}
+	got := filterByModel(targets, "unknown-model")
+	// 注意：filterByModel 不实现 fail-open 行为
+	// fail-open 应在上层调用者实现（pickLLMTarget 中）
+	// 这里只测试直接过滤行为：无匹配 = 空列表
+	if len(got) != 0 {
+		t.Errorf("filterByModel for unknown-model with specific patterns = %d targets, want 0", len(got))
+	}
+}
+
+// TestFilterByModel_MultipleMatches 多个目标匹配
+func TestFilterByModel_MultipleMatches(t *testing.T) {
+	targets := []lb.Target{
+		{ID: "t1", Addr: "http://t1", Weight: 1, SupportedModels: []string{"claude-3-*"}},
+		{ID: "t2", Addr: "http://t2", Weight: 1, SupportedModels: []string{"claude-3-sonnet-20250219"}},
+		{ID: "t3", Addr: "http://t3", Weight: 1, SupportedModels: []string{"gpt-4-*"}},
+	}
+	got := filterByModel(targets, "claude-3-sonnet-20250219")
+	if len(got) != 2 {
+		t.Errorf("filterByModel for claude-3-sonnet-20250219 = %d targets, want 2", len(got))
+	}
+	ids := make(map[string]bool)
+	for _, t := range got {
+		ids[t.ID] = true
+	}
+	if !ids["t1"] || !ids["t2"] {
+		t.Errorf("got targets = %v, want [t1, t2]", got)
+	}
+}
+
+// TestAutoModelFromBalancer_ExplicitAutoModel 显式配置 auto_model
+func TestAutoModelFromBalancer_ExplicitAutoModel(t *testing.T) {
+	sp, _ := newTestSProxy(t, "http://mock")
+
+	lbTargets := []lb.Target{
+		{ID: "http://target1", Addr: "http://target1", Weight: 1, AutoModel: "claude-3-sonnet-20250219"},
+		{ID: "http://target2", Addr: "http://target2", Weight: 1, AutoModel: "gpt-4-turbo"},
+	}
+	bal := lb.NewWeightedRandom(lbTargets)
+	sp.SetLLMHealthChecker(bal, nil)
+
+	got1 := sp.autoModelFromBalancer("http://target1")
+	if got1 != "claude-3-sonnet-20250219" {
+		t.Errorf("autoModelFromBalancer for target1 = %q, want claude-3-sonnet-20250219", got1)
+	}
+
+	got2 := sp.autoModelFromBalancer("http://target2")
+	if got2 != "gpt-4-turbo" {
+		t.Errorf("autoModelFromBalancer for target2 = %q, want gpt-4-turbo", got2)
+	}
+}
+
+// TestAutoModelFromBalancer_FallbackToFirst 降级到 supported_models[0]
+func TestAutoModelFromBalancer_FallbackToFirst(t *testing.T) {
+	sp, _ := newTestSProxy(t, "http://mock")
+
+	lbTargets := []lb.Target{
+		{ID: "http://target1", Addr: "http://target1", Weight: 1, SupportedModels: []string{"claude-3-opus-20250119", "claude-3-sonnet-20250219"}, AutoModel: ""},
+	}
+	bal := lb.NewWeightedRandom(lbTargets)
+	sp.SetLLMHealthChecker(bal, nil)
+
+	got := sp.autoModelFromBalancer("http://target1")
+	if got != "claude-3-opus-20250119" {
+		t.Errorf("autoModelFromBalancer fallback = %q, want claude-3-opus-20250119", got)
+	}
+}
+
+// TestAutoModelFromBalancer_EmptyFallback 无配置时返回空（透传）
+func TestAutoModelFromBalancer_EmptyFallback(t *testing.T) {
+	sp, _ := newTestSProxy(t, "http://mock")
+
+	lbTargets := []lb.Target{
+		{ID: "http://target1", Addr: "http://target1", Weight: 1, SupportedModels: []string{}, AutoModel: ""},
+	}
+	bal := lb.NewWeightedRandom(lbTargets)
+	sp.SetLLMHealthChecker(bal, nil)
+
+	got := sp.autoModelFromBalancer("http://target1")
+	if got != "" {
+		t.Errorf("autoModelFromBalancer with no config = %q, want empty string", got)
+	}
+}
+
+// TestAutoModelFromBalancer_NotFound 目标不存在时返回空
+func TestAutoModelFromBalancer_NotFound(t *testing.T) {
+	sp, _ := newTestSProxy(t, "http://mock")
+
+	lbTargets := []lb.Target{
+		{ID: "http://target1", Addr: "http://target1", Weight: 1, AutoModel: "claude-3-sonnet-20250219"},
+	}
+	bal := lb.NewWeightedRandom(lbTargets)
+	sp.SetLLMHealthChecker(bal, nil)
+
+	got := sp.autoModelFromBalancer("http://nonexistent")
+	if got != "" {
+		t.Errorf("autoModelFromBalancer for nonexistent target = %q, want empty string", got)
+	}
+}
+
+// TestAutoModelFromBalancer_NoBalancer 无均衡器时返回空
+func TestAutoModelFromBalancer_NoBalancer(t *testing.T) {
+	sp, _ := newTestSProxy(t, "http://mock")
+	// 不设置 llmBalancer
+
+	got := sp.autoModelFromBalancer("http://target1")
+	if got != "" {
+		t.Errorf("autoModelFromBalancer with no balancer = %q, want empty string", got)
 	}
 }
 

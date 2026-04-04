@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -40,6 +41,8 @@ var (
 	addName            string
 	addWeight          int
 	addHealthCheckPath string
+	addSupportedModels []string
+	addAutoModel       string
 )
 
 // llmTargetAddCmd 添加 LLM target
@@ -81,19 +84,28 @@ var llmTargetAddCmd = &cobra.Command{
 		}
 
 		// 创建 target
+		supportedModelsJSON := "[]"
+		if len(addSupportedModels) > 0 {
+			if b, err := json.Marshal(addSupportedModels); err == nil {
+				supportedModelsJSON = string(b)
+			}
+		}
+
 		target := &db.LLMTarget{
-			ID:              uuid.NewString(),
-			URL:             addURL,
-			APIKeyID:        &addAPIKeyID,
-			Provider:        addProvider,
-			Name:            addName,
-			Weight:          addWeight,
-			HealthCheckPath: addHealthCheckPath,
-			Source:          "database",
-			IsEditable:      true,
-			IsActive:        true,
-			CreatedAt:       time.Now(),
-			UpdatedAt:       time.Now(),
+			ID:                  uuid.NewString(),
+			URL:                 addURL,
+			APIKeyID:            &addAPIKeyID,
+			Provider:            addProvider,
+			Name:                addName,
+			Weight:              addWeight,
+			HealthCheckPath:     addHealthCheckPath,
+			SupportedModelsJSON: supportedModelsJSON,
+			AutoModel:           addAutoModel,
+			Source:              "database",
+			IsEditable:          true,
+			IsActive:            true,
+			CreatedAt:           time.Now(),
+			UpdatedAt:           time.Now(),
 		}
 
 		if err := repo.Create(target); err != nil {
@@ -101,15 +113,28 @@ var llmTargetAddCmd = &cobra.Command{
 		}
 
 		// 记录审计日志
-		auditCLI(gormDB, logger, "llm_target.add", addURL, fmt.Sprintf("provider=%s name=%s", addProvider, addName))
+		auditDetails := fmt.Sprintf("provider=%s name=%s", addProvider, addName)
+		if len(addSupportedModels) > 0 {
+			auditDetails += fmt.Sprintf(" supported_models=%v", addSupportedModels)
+		}
+		if addAutoModel != "" {
+			auditDetails += fmt.Sprintf(" auto_model=%s", addAutoModel)
+		}
+		auditCLI(gormDB, logger, "llm_target.add", addURL, auditDetails)
 
 		// 输出成功信息
 		fmt.Printf("✓ LLM target added successfully\n")
-		fmt.Printf("  ID:       %s\n", target.ID)
-		fmt.Printf("  URL:      %s\n", target.URL)
-		fmt.Printf("  Provider: %s\n", target.Provider)
-		fmt.Printf("  Name:     %s\n", target.Name)
-		fmt.Printf("  Weight:   %d\n", target.Weight)
+		fmt.Printf("  ID:               %s\n", target.ID)
+		fmt.Printf("  URL:              %s\n", target.URL)
+		fmt.Printf("  Provider:         %s\n", target.Provider)
+		fmt.Printf("  Name:             %s\n", target.Name)
+		fmt.Printf("  Weight:           %d\n", target.Weight)
+		if len(addSupportedModels) > 0 {
+			fmt.Printf("  Supported Models: %v\n", addSupportedModels)
+		}
+		if addAutoModel != "" {
+			fmt.Printf("  Auto Model:       %s\n", addAutoModel)
+		}
 		fmt.Printf("  Source:   %s\n", target.Source)
 
 		return nil
@@ -123,6 +148,8 @@ func init() {
 	llmTargetAddCmd.Flags().StringVar(&addName, "name", "", "Display name")
 	llmTargetAddCmd.Flags().IntVar(&addWeight, "weight", 1, "Load balancing weight")
 	llmTargetAddCmd.Flags().StringVar(&addHealthCheckPath, "health-check-path", "", "Health check path")
+	llmTargetAddCmd.Flags().StringSliceVar(&addSupportedModels, "supported-models", []string{}, "Supported models (comma-separated, e.g., claude-3-*,gpt-4-*)")
+	llmTargetAddCmd.Flags().StringVar(&addAutoModel, "auto-model", "", "Model to use for auto mode requests")
 
 	_ = llmTargetAddCmd.MarkFlagRequired("url")
 	_ = llmTargetAddCmd.MarkFlagRequired("api-key-id")
@@ -139,6 +166,8 @@ var (
 	updateName            string
 	updateWeight          int
 	updateHealthCheckPath string
+	updateSupportedModels []string
+	updateAutoModel       string
 )
 
 // llmTargetUpdateCmd 更新 LLM target
@@ -228,7 +257,25 @@ var llmTargetUpdateCmd = &cobra.Command{
 			}
 		}
 
-		// 如果没有任何变更，提示用户
+		if cmd.Flags().Changed("supported-models") {
+			newSupportedModelsJSON := "[]"
+			if len(updateSupportedModels) > 0 {
+				if b, err := json.Marshal(updateSupportedModels); err == nil {
+					newSupportedModelsJSON = string(b)
+				}
+			}
+			if newSupportedModelsJSON != target.SupportedModelsJSON {
+				changes = append(changes, fmt.Sprintf("supported_models: %s→%s", target.SupportedModelsJSON, newSupportedModelsJSON))
+				target.SupportedModelsJSON = newSupportedModelsJSON
+			}
+		}
+
+		if cmd.Flags().Changed("auto-model") {
+			if target.AutoModel != updateAutoModel {
+				changes = append(changes, fmt.Sprintf("auto_model: %s→%s", target.AutoModel, updateAutoModel))
+				target.AutoModel = updateAutoModel
+			}
+		}
 		if len(changes) == 0 {
 			fmt.Printf("No changes detected for target: %s\n", targetURL)
 			return nil
@@ -275,6 +322,8 @@ func init() {
 	llmTargetUpdateCmd.Flags().StringVar(&updateName, "name", "", "Display name")
 	llmTargetUpdateCmd.Flags().IntVar(&updateWeight, "weight", 0, "Load balancing weight")
 	llmTargetUpdateCmd.Flags().StringVar(&updateHealthCheckPath, "health-check-path", "", "Health check path")
+	llmTargetUpdateCmd.Flags().StringSliceVar(&updateSupportedModels, "supported-models", []string{}, "Supported models (comma-separated, e.g., claude-3-*,gpt-4-*)")
+	llmTargetUpdateCmd.Flags().StringVar(&updateAutoModel, "auto-model", "", "Model to use for auto mode requests")
 }
 
 // ---------------------------------------------------------------------------

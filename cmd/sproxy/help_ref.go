@@ -364,7 +364,7 @@ Natural language: "list LLM targets", "show LLM backends", "what LLMs are config
 
 ### 8.2 Add LLM target
 
-` + bq + `sproxy admin llm target add <url> --provider <provider> [--name <name>] [--weight <n>] [--api-key <key>]` + bq + `
+` + bq + `sproxy admin llm target add <url> --provider <provider> [--name <name>] [--weight <n>] [--api-key <key>] [--supported-models <models>] [--auto-model <model>]` + bq + `
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -372,13 +372,15 @@ Natural language: "list LLM targets", "show LLM backends", "what LLMs are config
 | ` + bq + `--name` + bq + ` | auto-generated | Human-readable name for the target |
 | ` + bq + `--weight` + bq + ` | 1 | Load balancing weight (higher = more traffic) |
 | ` + bq + `--api-key` + bq + ` | prompted | API key for the target (if required) |
+| ` + bq + `--supported-models` + bq + ` | (optional) | Comma-separated list of supported models (e.g., claude-3-*,gpt-4-*) |
+| ` + bq + `--auto-model` + bq + ` | (optional) | Model to use when client requests model="auto" |
 
 Adds a new LLM target to the configuration. Changes require restart to take effect.
 
 Examples:
-  sproxy admin llm target add https://api.anthropic.com --provider anthropic --name "Anthropic Main" --weight 2
-  sproxy admin llm target add http://localhost:11434 --provider ollama --name "Local Ollama"
-  sproxy admin llm target add https://api.openai.com --provider openai --api-key sk-xxx
+  sproxy admin llm target add https://api.anthropic.com --provider anthropic --name "Anthropic Main" --weight 2 --supported-models "claude-3-*,claude-2.1" --auto-model "claude-3-sonnet-20250219"
+  sproxy admin llm target add http://localhost:11434 --provider ollama --name "Local Ollama" --supported-models "mistral,llama2"
+  sproxy admin llm target add https://api.openai.com --provider openai --api-key sk-xxx --supported-models "gpt-4-*,gpt-3.5-turbo" --auto-model "gpt-4-turbo"
 
 Natural language: "add LLM target", "register new LLM", "add backend", "configure new LLM endpoint"
 
@@ -386,20 +388,22 @@ Natural language: "add LLM target", "register new LLM", "add backend", "configur
 
 ### 8.3 Update LLM target
 
-` + bq + `sproxy admin llm target update <url> [--name <name>] [--weight <n>] [--api-key <key>]` + bq + `
+` + bq + `sproxy admin llm target update <url> [--name <name>] [--weight <n>] [--api-key <key>] [--supported-models <models>] [--auto-model <model>]` + bq + `
 
 | Flag | Description |
 |------|-------------|
 | ` + bq + `--name` + bq + ` | Update the display name |
 | ` + bq + `--weight` + bq + ` | Update load balancing weight |
 | ` + bq + `--api-key` + bq + ` | Update API key |
+| ` + bq + `--supported-models` + bq + ` | Update supported models list (comma-separated patterns) |
+| ` + bq + `--auto-model` + bq + ` | Update model to use for auto mode requests |
 
 Updates configuration for an existing LLM target. Changes require restart to take effect.
 
 Examples:
-  sproxy admin llm target update https://api.anthropic.com --weight 5
-  sproxy admin llm target update http://localhost:11434 --name "Ollama Production"
-  sproxy admin llm target update https://api.openai.com --api-key sk-new-key
+  sproxy admin llm target update https://api.anthropic.com --weight 5 --supported-models "claude-3-*,claude-2.1"
+  sproxy admin llm target update http://localhost:11434 --name "Ollama Production" --auto-model "mistral"
+  sproxy admin llm target update https://api.openai.com --api-key sk-new-key --auto-model "gpt-4-turbo"
 
 Natural language: "update LLM target", "change target weight", "update backend config", "modify LLM settings"
 

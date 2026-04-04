@@ -93,6 +93,29 @@ func (r *LLMTargetRepo) URLExists(url string) (bool, error) {
 	return count > 0, nil
 }
 
+// Seed 仅在 URL 不存在时插入 target。已存在则跳过，保留 WebUI 修改。
+// 用于配置文件启动同步：配置文件是种子，不是权威源。
+// 与 Upsert 不同的是，Seed 优先保留已存在的记录，不覆盖。
+func (r *LLMTargetRepo) Seed(target *LLMTarget) error {
+	exists, err := r.URLExists(target.URL)
+	if err != nil {
+		return fmt.Errorf("seed: check url exists: %w", err)
+	}
+	if exists {
+		r.logger.Debug("seed: target already exists, skipping",
+			zap.String("url", target.URL),
+			zap.String("source", target.Source))
+		return nil
+	}
+
+	// URL 不存在 → 首次插入，将 IsEditable 设为 true，允许 WebUI 后续修改（F1 的目标）
+	target.IsEditable = true
+	r.logger.Info("seed: inserting new config target",
+		zap.String("url", target.URL),
+		zap.String("provider", target.Provider))
+	return r.Upsert(target)
+}
+
 // Update 更新 LLM target（仅可编辑的）
 func (r *LLMTargetRepo) Update(target *LLMTarget) error {
 	// 检查是否可编辑

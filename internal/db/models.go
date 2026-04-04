@@ -113,6 +113,8 @@ type LLMTarget struct {
 	Weight          int        `gorm:"default:1"`            // 负载均衡权重
 	HealthCheckPath string     // 健康检查路径
 	ModelMappingJSON string    `gorm:"column:model_mapping;default:'{}'"` // JSON 序列化的 model_mapping（Anthropic→Ollama 模型名映射）
+	SupportedModelsJSON string `gorm:"column:supported_models;default:'[]'"` // JSON array: ["claude-sonnet-4-*", "gpt-4o", "*"]，空表示支持所有模型
+	AutoModel       string     `gorm:"column:auto_model;default:''"`         // auto 模式下使用的模型名（空表示降级到 supported_models[0] 或透传）
 	Source          string     `gorm:"default:'database'"`   // "config" | "database"
 	IsEditable      bool       `gorm:"default:true"`         // false for config-sourced
 	IsActive        bool       `gorm:"default:true"`

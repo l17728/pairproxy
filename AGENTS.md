@@ -1,37 +1,25 @@
 # PairProxy Agent Guide
 
-This Go-based LLM proxy service provides enterprise-grade rate limiting, token tracking, and multi-tenant management for Claude Code and other LLM clients.
+Go-based LLM proxy service: enterprise rate limiting, token tracking, multi-tenant management for Claude Code and other LLM clients.
 
 ## Build & Test Commands
 
-### Build
 ```bash
-make build          # Build cproxy and sproxy to bin/
-make build-dev      # Build all binaries (including mockllm/mockagent) to release/
-make release        # Cross-platform release packages to dist/
+make build              # Build cproxy + sproxy to bin/
+make build-dev          # Build all binaries (incl. mockllm/mockagent) to release/
+make test               # Run all tests
+make test-race          # Run with race detector (required before merging concurrent changes)
+make test-cover         # Generate coverage.html report
+make test-pkg PKG=./internal/quota/...  # Run single package tests (with -v)
+make fmt                # Format with gofmt/goimports (run before every commit)
+make vet                # Run go vet
+make lint               # Run golangci-lint (install: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest)
+make tidy               # Update go.mod/go.sum
 ```
 
-### Test
+### Run a single test function
 ```bash
-make test           # Run all tests
-make test-race      # Run with race detector (slower)
-make test-cover     # Generate coverage.html report
-make test-pkg PKG=./internal/quota/...  # Run single package tests
-```
-
-### Code Quality
-```bash
-make fmt            # Format with gofmt/goimports
-make vet            # Run go vet
-make lint           # Run golangci-lint (install first: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest)
-make tidy           # Update go.mod/go.sum
-```
-
-### Development
-```bash
-make run-sproxy     # Run sproxy with example config (requires config/sproxy.yaml)
-make run-cproxy     # Run cproxy with example config
-make bcrypt-hash    # Generate admin password hash for sproxy.yaml
+go test -v -run TestCheckerNoGroup ./internal/quota/
 ```
 
 ## Code Style Guidelines
@@ -39,48 +27,63 @@ make bcrypt-hash    # Generate admin password hash for sproxy.yaml
 ### Basics
 - **Go version**: 1.24.0 (per go.mod)
 - **Package names**: Lowercase, no underscores, short and descriptive
-- **Imports**: Grouped by standard library, then external, then internal
-- **Line length**: No hard limit, but keep readable (< 120 chars preferred)
-- **Comments**: Use English or Chinese based on existing file style
+- **Imports**: Grouped — standard library, then external, then internal (`github.com/l17728/pairproxy/internal/...`)
+- **Comments**: Match existing file style (English or Chinese mixed — check surrounding code)
+- **Line length**: No hard limit; keep readable (<120 chars preferred)
 
 ### Naming Conventions
 - **Types**: PascalCase (`LLMTarget`, `Checker`, `ExceededError`)
 - **Functions/Variables**: camelCase (`checkQuota`, `llmBalancer`, `apiKeyResolver`)
-- **Test functions**: `TestXxx` pattern, descriptive names (`TestCheckerNoGroup`)
-- **Error variables**: `ErrXxx` (`ErrNoLLMBinding`, `ErrBoundTargetUnavailable`)
-
-### Formatting
-- **Auto-format**: `make fmt` before commit
-- **Imports**: `goimports` manages import order
-- **No trailing spaces**, Unix line endings
+- **Test functions**: `TestXxx` pattern, descriptive (`TestCheckerNoGroup`, `TestHealthChecker_Anthropic_Auth`)
+- **Error variables**: `ErrXxx` sentinel pattern (`ErrNoLLMBinding`, `ErrBoundTargetUnavailable`)
+- **Test helpers**: `setupXxxTest(t *testing.T)` or `newXxxForTest(...)` — always call `t.Helper()`
 
 ### Error Handling
 - **Wrap with context**: `fmt.Errorf("context: %w", err)`
-- **Never ignore errors**: Add `//nolint:errcheck` with comment if intentional
-- **Public APIs**: Must handle all error paths
-- **Fail-open**: Quota/database errors should not block requests (log and bypass)
+- **Never ignore errors**: Add `//nolint:errcheck` with comment only if intentional
+- **Sentinel errors**: Define as `var ErrXxx = errors.New("...")` at package level
+- **Fail-open**: Quota/database errors must NOT block requests — log warning and bypass:
+  ```go
+  user, err := s.userRepo.GetByID(userID)
+  if err != nil {
+      s.logger.Warn("failed to get user, bypassing", zap.Error(err))
+      return nil // fail-open
+  }
+  ```
 
 ### Logging (Zap)
-- **Package logger**: Create with `logger.Named("subsystem")`
-- **Levels**:
-  - `DEBUG`: Per-request details (token counts, SSE parsing), disabled in prod
-  - `INFO`: Lifecycle events (start, shutdown, token reload)
-  - `WARN`: Recoverable errors (DB write failure, health check failure)
-  - `ERROR`: Non-recoverable errors requiring manual intervention
-- **Always add context**: `zap.String("user_id", id), zap.Error(err)`
+- **Create package logger**: `logger.Named("subsystem")` (e.g., `logger.Named("quota_checker")`)
+- **DEBUG**: Per-request details (token counts, SSE parsing) — disabled in prod
+- **INFO**: Lifecycle events (start, shutdown, token reload)
+- **WARN**: Recoverable errors (DB write failure, health check failure)
+- **ERROR**: Non-recoverable errors requiring manual intervention
+- **Always add context fields**: `zap.String("user_id", id), zap.Error(err)`
 
 ### Testing
-- **Test files**: `xxx_test.go` in same package or `_test` pkg for black-box
-- **No external assert frameworks**: Use standard `testing` package only
-- **Test helpers**: Pattern `setupXxxTest(t *testing.T)` returning cleanups
-- **No network/FS side effects**: Use `httptest.NewServer`, temp directories
-- **Race detection**: `make test-race` before merging
+- **Frameworks**: Standard `testing` package + `github.com/stretchr/testify` (assert/require)
+- **Test files**: `xxx_test.go` in same package for white-box; `_test` suffix package for black-box
+- **Test helpers**: Pattern `setupXxxTest(t *testing.T)` with `t.Helper()`, returning cleanup functions:
+  ```go
+  func setupQuotaTest(t *testing.T) (*db.UserRepo, ..., context.CancelFunc) {
+      t.Helper()
+      // ... setup in-memory DB
+      return repos..., func() { cancel(); writer.Wait() }
+  }
+  ```
+- **No real network/FS**: Use `httptest.NewServer` for HTTP mocks, `:memory:` for SQLite
+- **Goroutine lifecycle**: Every goroutine started in tests must be tracked via `sync.WaitGroup`; call `cancel()` + `Wait()` before test returns
+- **Race detection**: Run `make test-race` before merging; use `-count=10` for probabilistic race detection
+
+### Linting (.golangci.yml)
+Enabled linters: `bodyclose`, `errcheck`, `gosimple`, `govet`, `ineffassign`, `staticcheck`, `unused`, `noctx`, `gocritic`
+- `bodyclose`: Always `defer resp.Body.Close()` on `http.Response` in tests
+- `noctx`: HTTP requests must carry context; use `//nolint:noctx` only for proxy forwarding
+- Test files exempt from: `errcheck`, `noctx`
 
 ### Configuration
-- **YAML format**: Snake_case keys, use `${ENV_VAR}` for secrets
-- **Example configs**: `config/*.yaml.example` serve as reference
-- **Load config**: `config.Load(path)` from `internal/config`
-- **Environment variables**: Required for secrets (JWT_SECRET, API keys)
+- **YAML format**: Snake_case keys, `${ENV_VAR}` expansion for secrets
+- **Example configs**: `config/*.yaml.example` — always update when adding config fields
+- **Environment variables**: Required for secrets (`JWT_SECRET`, API keys, `KEYGEN_SECRET`)
 
 ### API Conventions
 - **REST endpoints**: `/api/admin/*`, `/api/internal/*`, `/api/user/*`
@@ -88,117 +91,38 @@ make bcrypt-hash    # Generate admin password hash for sproxy.yaml
 - **Pagination**: Query params `page` (default 1) and `page_size` (default 100)
 - **Error responses**: JSON with `error` and `message` fields
 
-### Database (GORM)
-- **Driver**: SQLite (default) or PostgreSQL (`driver: "postgres"`)
-- **Migration**: `db.Migrate(logger, gormDB)` on startup
-- **Async writes**: `UsageWriter` with buffer + flush interval
-- **PostgreSQL**: Use `gorm.io/driver/postgres`, all nodes share DB (Peer Mode)
-
-### Observability
-- **OpenTelemetry**: Tracing via `go.opentelemetry.io/otel`
-- **Prometheus metrics**: `GET /metrics` endpoint (cache-refreshed every 30s)
-- **Health check**: `GET /health` returns status + uptime + DB connectivity
-
-## CI/CD
-
-### CI Workflow (`.github/workflows/ci.yml`)
-- **Matrix**: Go 1.24
-- **Checks**: `go build`, `go vet`, `go test -race -count=1`, lint
-- **Coverage**: Upload artifact for report aggregation
-
-### Release Workflow (`.github/workflows/release.yml`)
-- **Tags**: Push `git tag v1.2.3 && git push origin v1.2.3`
-- **Auto-builds**: Cross-compile 5 platforms (Linux/macOS/Windows × amd64/arm64)
-- **Docker**: Multi-arch image `ghcr.io/l17728/pairproxy`
-
-## Architecture Summary
+## Architecture
 
 | Layer | Folder | Purpose |
 |-------|--------|---------|
 | CLI entrypoints | `cmd/cproxy/`, `cmd/sproxy/` | Cobra commands for user-facing binaries |
 | Core proxy logic | `internal/proxy/` | HTTP handlers, middleware, protocol conversion |
-| Auth & JWT | `internal/auth/` | Token issuance/refresh, bcrypt password hashing |
-| Quota management | `internal/quota/` | Per-user/group daily/monthly/configured limits, rate limiting |
+| Auth & JWT | `internal/auth/` | Token issuance/refresh, bcrypt, sk-pp- keygen |
+| Quota management | `internal/quota/` | Per-user/group daily/monthly limits, RPM rate limiting |
 | Database | `internal/db/` | GORM models, repositories (User, Group, Usage, LLMTarget) |
-| Load balancing | `internal/lb/` | `WeightedRandomBalancer`, health check |
+| Load balancing | `internal/lb/` | `WeightedRandomBalancer`, health checks, circuit breaker |
 | Config | `internal/config/` | YAML loader, validation, env var expansion |
 | Dashboard | `internal/dashboard/` | Web UI (Go templates + Tailwind, embedded in binary) |
 | Tracking | `internal/track/` | Full conversation recording per user |
-|_corpus | `internal/corpus/` | Training data collection (JSONL, v2.16.0+) |
+| Corpus | `internal/corpus/` | Training data collection (JSONL, v2.16.0+) |
 | Semantic router | `internal/router/` | Intent-based LLM target selection (v2.18.0+) |
+| API handlers | `internal/api/` | REST endpoints for admin/user/cluster/keygen |
+| Cluster | `internal/cluster/` | Primary+Worker (SQLite) or Peer Mode (PostgreSQL) |
+| Keygen | `internal/keygen/` | HMAC-SHA256 sk-pp- API Key generation/validation |
+| SSE parsing | `internal/tap/` | TeeResponseWriter + Anthropic/OpenAI SSE parsers |
 
-## Special Considerations
+## Key Design Decisions
 
-### Unicode/Internationalization
-- Project uses Chinese comments in many files — match existing file style
-- No formal i18n framework; English for logs/API, Chinese for internal docs
+- **Protocol support**: Anthropic (`/v1/messages`), OpenAI (`/v1/chat/completions`), Ollama — auto-conversion between formats
+- **Cluster modes**: SQLite (primary + workers, 30s sync) or PostgreSQL (peer mode, all nodes equal)
+- **Direct Proxy**: `sk-pp-` API Keys for headerless access (HMAC-SHA256, 48-char Base62)
+- **Version injection**: Binaries embed `Version`, `Commit`, `BuiltAt` via ldflags from `internal/version`
 
-### Version Injection
-- Built binaries embed version via ldflags: `Version`, `Commit`, `BuiltAt` from `internal/version`
+## Pre-commit Checklist
 
-### Protocol Support
-- **Anthropic**: `/v1/messages` (default provider)
-- **OpenAI**: `/v1/chat/completions` (protocol auto-detection via `provider: openai`)
-- **Ollama**: `/v1/chat/completions` (OpenAI-compatible, `provider: ollama`)
-- **Auto-conversion**: Interoperability between Anthropic/OpenAI formats (Claude CLI → Ollama)
-
-### Cluster Modes
-- **SQLite**: Primary + Workers (30s sync window, primary only for writes)
-- **PostgreSQL**: Peer Mode (v2.14.0+, all nodes equal, shared DB)
-
-### Direct Proxy (v2.9.0+)
-- `sk-pp-` API Key format for headerless access
-- HMAC-SHA256 based (`auth.keygen_secret` required), 48-char Base62 encoded
-
-## Projectile-Specific Patterns
-
-### Common Patterns to Follow
-
-**Error Propagation**:
-```go
-func (s *SProxy) handleRequest(ctx context.Context, req *http.Request) error {
-    user, err := s.userRepo.GetByID(userID)
-    if err != nil {
-        s.logger.Warn("failed to get user, bypassing", zap.Error(err))
-        return nil // fail-open
-    }
-    // ...
-}
-```
-
-**Test Helper**:
-```go
-func setupTestDB(t *testing.T) *gorm.DB {
-    t.Helper()
-    logger := zaptest.NewLogger(t)
-    db, err := db.Open(logger, ":memory:")
-    if err != nil {
-        t.Fatalf("db.Open: %v", err)
-    }
-    if err := db.Migrate(logger, db); err != nil {
-        t.Fatalf("db.Migrate: %v", err)
-    }
-    return db
-}
-```
-
-**Health Check Pattern**:
-```go
-func (h *HealthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-    if err := h.checkDB(); err != nil {
-        http.Error(w, "database unavailable", http.StatusServiceUnavailable)
-        return
-    }
-    json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-}
-```
-
-## PR Checklist
-
-- [ ] `make fmt` and `make vet` pass
-- [ ] `make test` passes (or `make test-race` for concurrent changes)
-- [ ] New features have tests (unit or integration)
-- [ ] Configuration changes reflected in `config/*.yaml.example`
-- [ ] CLI commands documented in `CLAUDE.md`
-- [ ] Public APIs have godoc comments
-- [ ] Breaking changes tracked in `docs/UPGRADE.md`
+- `make fmt` — format code
+- `make vet` — static analysis
+- `make test` (or `make test-race` for concurrent changes) — all tests pass
+- New features have tests (unit or integration)
+- Configuration changes reflected in `config/*.yaml.example`
+- Public APIs have godoc comments

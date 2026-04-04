@@ -1,6 +1,6 @@
 ﻿# PairProxy 用户手册
 
-**版本 v2.23.0**
+**版本 v2.24.0**
 
 ---
 
@@ -56,6 +56,7 @@
 - [§40 WebUI Phase 2：告警管理增强（v2.22.0）](#40-webui-phase-2告警管理增强v2220)
 - [§41 WebUI Phase 3：快速操作面板（v2.22.0）](#41-webui-phase-3快速操作面板v2220)
 - [§42 v2.23.0 更新说明：APIKey 号池 + 健康检查认证 + 文档修正](#42-v2230-更新说明)
+- [§43 v2.24.0 更新说明：Model-Aware Routing（模型感知路由）](#43-v2240-更新说明)
 
 ---
 
@@ -5991,3 +5992,219 @@ DEBUG   health: no credential for target  {"target": "http://localhost:11434"}
 - v2.22.0 配置文件直接可用，无需修改
 - 现有 API Key 数据库记录不受影响
 - 未设置 `health_path` 的 target 健康检查行为不变
+
+---
+
+## 43. v2.24.0 更新说明
+
+**版本**：v2.24.0
+**类型**：功能版本（Model-Aware Routing）
+
+### 43.1 新功能：Model-Aware Routing（模型感知路由）
+
+v2.24.0 引入 **Model-Aware Routing** 功能，让网关能够根据请求中的模型名称智能路由到支持该模型的目标。
+
+#### F1 — Config-as-Seed（配置即种子）
+
+配置文件中的 LLM target 定义现在作为**初始种子**写入数据库：
+
+- 首次启动时，配置中的 target 自动同步到数据库
+- 若 target URL 已存在（通过 WebUI 添加或手动修改），**跳过**，不覆盖 WebUI 的修改
+- 配置文件的作用是"提供初始值"，运行时由 WebUI 管理
+
+```yaml
+# sproxy.yaml
+llm:
+  targets:
+    - url: "https://api.anthropic.com"
+      provider: "anthropic"
+      supported_models:
+        - "claude-3-*"
+        - "claude-2.1"
+      auto_model: "claude-3-sonnet-20250219"
+```
+
+#### F2 — Per-Target Supported Models（按目标过滤模型）
+
+每个 LLM target 可以声明自己支持哪些模型，网关在路由时自动过滤：
+
+**supported_models 模式匹配规则**：
+
+| 模式 | 含义 | 示例命中 |
+|------|------|---------|
+| `claude-3-sonnet-20250219` | 精确匹配 | `claude-3-sonnet-20250219` |
+| `claude-3-*` | 前缀通配 | `claude-3-sonnet-*`、`claude-3-opus-*` |
+| `*` | 全通配 | 任意模型 |
+| `[]`（空） | 同 `*`，不限制 | 任意模型 |
+
+**Fail-Open 策略**：当请求的模型不在任何 target 的 `supported_models` 中时，网关**不拒绝请求**，而是回退到所有健康 target，允许 LLM 自行决定是否接受。
+
+路由决策流程：
+```
+请求模型: "claude-3-sonnet-20250219"
+  │
+  ├─ Level 1: Provider 过滤（anthropic / openai / ollama）
+  │   └─ 过滤后无候选 → Fail-Open，使用全部健康 target
+  │
+  └─ Level 2: Model 过滤（supported_models 匹配）
+      └─ 过滤后无候选 → Fail-Open，使用 Level 1 的候选集
+```
+
+#### F3 — Auto Mode（自动模型选择）
+
+客户端发送 `"model": "auto"` 时，网关自动为每个目标选择合适的模型：
+
+```json
+// 客户端发送
+{"model": "auto", "messages": [...]}
+
+// 网关转发到 Anthropic target（改写 model 字段）
+{"model": "claude-3-sonnet-20250219", "messages": [...]}
+
+// 网关转发到 OpenAI target（改写 model 字段）
+{"model": "gpt-4-turbo", "messages": [...]}
+```
+
+**auto_model 降级策略**：
+1. 优先使用目标的 `auto_model` 字段
+2. 若未配置，使用 `supported_models[0]`（第一个）
+3. 若都为空，透传原始 `"auto"` 字符串
+
+### 43.2 配置参考
+
+#### sproxy.yaml 完整示例
+
+```yaml
+llm:
+  targets:
+    # Anthropic 集群
+    - url: "https://api.anthropic.com/v1"
+      name: "Anthropic Primary"
+      provider: "anthropic"
+      weight: 10
+      supported_models:
+        - "claude-3-opus-20250119"
+        - "claude-3-sonnet-20250219"
+        - "claude-3-haiku-*"
+        - "claude-2.1"
+      auto_model: "claude-3-sonnet-20250219"
+
+    # OpenAI 集群
+    - url: "https://api.openai.com/v1"
+      name: "OpenAI Primary"
+      provider: "openai"
+      weight: 8
+      supported_models:
+        - "gpt-4-turbo"
+        - "gpt-4-*"
+        - "gpt-3.5-turbo"
+      auto_model: "gpt-4-turbo"
+
+    # 本地 Ollama（接受所有模型）
+    - url: "http://localhost:11434"
+      name: "Local Ollama"
+      provider: "ollama"
+      weight: 2
+      supported_models: []   # 空 = 接受所有模型
+      auto_model: "mistral"
+```
+
+#### API（动态管理）
+
+```bash
+# 创建 target（含模型过滤配置）
+curl -X POST http://localhost:9000/api/admin/llm/targets \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://api.anthropic.com",
+    "provider": "anthropic",
+    "api_key_id": "key-abc",
+    "supported_models": ["claude-3-*", "claude-2.1"],
+    "auto_model": "claude-3-sonnet-20250219"
+  }'
+
+# 更新 target 模型配置
+curl -X PUT http://localhost:9000/api/admin/llm/targets/{id} \
+  -H "Content-Type: application/json" \
+  -d '{
+    "supported_models": ["claude-3-*"],
+    "auto_model": "claude-3-opus-20250119"
+  }'
+```
+
+#### CLI（管理命令）
+
+```bash
+# 添加 target（含模型过滤）
+sproxy admin llm target add \
+  --url https://api.anthropic.com \
+  --provider anthropic \
+  --api-key-id key-abc \
+  --name "Anthropic Main" \
+  --weight 10 \
+  --supported-models "claude-3-*,claude-2.1" \
+  --auto-model "claude-3-sonnet-20250219"
+
+# 更新 target 模型配置
+sproxy admin llm target update https://api.anthropic.com \
+  --supported-models "claude-3-*" \
+  --auto-model "claude-3-opus-20250119"
+```
+
+### 43.3 诊断与故障排查
+
+**问题：请求到达了不支持该模型的 target**
+
+日志中会出现：
+```
+WARN model-aware routing: no target supports requested model, falling back to provider-filtered candidates
+     requested_model=llama3
+     diagnosis="none of the available targets are configured to support 'llama3'"
+     recovery_suggestion="add 'llama3' to supported_models or reconsider model choice"
+```
+
+解决方法：将模型添加到对应 target 的 `supported_models`，或使用空列表接受所有模型。
+
+**问题：auto 模式没有改写模型**
+
+日志中会出现：
+```
+WARN auto mode: target has no auto_model configured
+     target=http://localhost:11434
+     fallback=pass-through
+```
+
+解决方法：为该 target 设置 `auto_model` 字段。
+
+**完整配置指南**：`.sisyphus/CONFIGURATION_GUIDE.md`（552 行）
+**日志规范**：`.sisyphus/LOGGING_SPECIFICATION.md`
+
+### 43.4 数据库变更
+
+新增两列到 `llm_targets` 表（Schema 自动迁移，启动时自动执行）：
+
+| 列名 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `supported_models` | TEXT | `'[]'` | JSON 数组，目标支持的模型列表 |
+| `auto_model` | VARCHAR | `''` | auto 模式下使用的默认模型 |
+
+### 43.5 升级指南
+
+1. 替换二进制
+   ```bash
+   ./sproxy version  # 应输出：sproxy v2.24.0
+   ```
+
+2. **（可选）** 在 `sproxy.yaml` 中为各 target 添加 `supported_models` 和 `auto_model` 字段
+
+3. 重启 sproxy（Schema 自动迁移，无需手动执行 SQL）
+
+4. 验证：查看启动日志确认 `"seeding target from config"` 和 `"database migrations completed"`
+
+### 43.6 不兼容变更
+
+**无破坏性变更**。向后完全兼容：
+
+- 未配置 `supported_models` 的 target 行为不变（接受所有请求）
+- 未配置 `auto_model` 时，`"auto"` 模式透传（保持原行为）
+- 现有配置文件无需修改即可升级

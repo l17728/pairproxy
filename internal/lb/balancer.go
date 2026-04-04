@@ -11,11 +11,13 @@ var ErrNoHealthyTarget = errors.New("no healthy target available")
 
 // Target 表示一个上游节点。
 type Target struct {
-	ID       string // 唯一标识（URL 或自定义 ID）
-	Addr     string // 完整地址，如 "http://sp-2:9000"
-	Weight   int    // 权重（≥1）
-	Healthy  bool   // 当前是否健康
-	Draining bool   // 是否处于排水模式（不接受新流量）
+	ID              string   // 唯一标识（URL 或自定义 ID）
+	Addr            string   // 完整地址，如 "http://sp-2:9000"
+	Weight          int      // 权重（≥1）
+	Healthy         bool     // 当前是否健康
+	Draining        bool     // 是否处于排水模式（不接受新流量）
+	SupportedModels []string // 支持的模型名列表（含通配符）；空 = 不限制
+	AutoModel       string   // auto 模式使用的模型名；空 = 降级或透传
 }
 
 // Balancer 负载均衡器接口。

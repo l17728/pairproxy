@@ -83,12 +83,14 @@ func (h *AdminLLMTargetHandler) handleListTargets(w http.ResponseWriter, r *http
 // handleCreateTarget POST /api/admin/llm/targets - 创建新的 LLM target
 func (h *AdminLLMTargetHandler) handleCreateTarget(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		URL             string `json:"url"`
-		APIKeyID        string `json:"api_key_id"`
-		Provider        string `json:"provider"`
-		Name            string `json:"name"`
-		Weight          int    `json:"weight"`
-		HealthCheckPath string `json:"health_check_path"`
+		URL             string   `json:"url"`
+		APIKeyID        string   `json:"api_key_id"`
+		Provider        string   `json:"provider"`
+		Name            string   `json:"name"`
+		Weight          int      `json:"weight"`
+		HealthCheckPath string   `json:"health_check_path"`
+		SupportedModels []string `json:"supported_models"`
+		AutoModel       string   `json:"auto_model"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -126,20 +128,30 @@ func (h *AdminLLMTargetHandler) handleCreateTarget(w http.ResponseWriter, r *htt
 		req.Weight = 1
 	}
 
+	// 转换 supported_models 为 JSON
+	supportedModelsJSON := "[]"
+	if len(req.SupportedModels) > 0 {
+		if b, err := json.Marshal(req.SupportedModels); err == nil {
+			supportedModelsJSON = string(b)
+		}
+	}
+
 	// 创建 target
 	target := &db.LLMTarget{
-		ID:              uuid.NewString(),
-		URL:             req.URL,
-		APIKeyID:        &req.APIKeyID,
-		Provider:        req.Provider,
-		Name:            req.Name,
-		Weight:          req.Weight,
-		HealthCheckPath: req.HealthCheckPath,
-		Source:          "database",
-		IsEditable:      true,
-		IsActive:        true,
-		CreatedAt:       time.Now(),
-		UpdatedAt:       time.Now(),
+		ID:                  uuid.NewString(),
+		URL:                 req.URL,
+		APIKeyID:            &req.APIKeyID,
+		Provider:            req.Provider,
+		Name:                req.Name,
+		Weight:              req.Weight,
+		HealthCheckPath:     req.HealthCheckPath,
+		SupportedModelsJSON: supportedModelsJSON,
+		AutoModel:           req.AutoModel,
+		Source:              "database",
+		IsEditable:          true,
+		IsActive:            true,
+		CreatedAt:           time.Now(),
+		UpdatedAt:           time.Now(),
 	}
 
 	if err := h.llmTargetRepo.Create(target); err != nil {
@@ -149,8 +161,14 @@ func (h *AdminLLMTargetHandler) handleCreateTarget(w http.ResponseWriter, r *htt
 	}
 
 	// 记录审计日志
-	_ = h.auditRepo.Create("admin", "llm_target.create", req.URL,
-		fmt.Sprintf("provider=%s name=%s", req.Provider, req.Name))
+	auditDetails := fmt.Sprintf("provider=%s name=%s", req.Provider, req.Name)
+	if len(req.SupportedModels) > 0 {
+		auditDetails += fmt.Sprintf(" supported_models=%v", req.SupportedModels)
+	}
+	if req.AutoModel != "" {
+		auditDetails += fmt.Sprintf(" auto_model=%s", req.AutoModel)
+	}
+	_ = h.auditRepo.Create("admin", "llm_target.create", req.URL, auditDetails)
 
 	// 同步 balancer/HC（使新 target 立即参与健康检查）
 	if h.syncFn != nil {
@@ -160,7 +178,8 @@ func (h *AdminLLMTargetHandler) handleCreateTarget(w http.ResponseWriter, r *htt
 	h.logger.Info("llm target created",
 		zap.String("id", target.ID),
 		zap.String("url", target.URL),
-		zap.String("provider", target.Provider))
+		zap.String("provider", target.Provider),
+		zap.Int("supported_models_count", len(req.SupportedModels)))
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -217,11 +236,13 @@ func (h *AdminLLMTargetHandler) handleUpdateTarget(w http.ResponseWriter, r *htt
 	}
 
 	var req struct {
-		Provider        *string `json:"provider"`
-		APIKeyID        *string `json:"api_key_id"`
-		Name            *string `json:"name"`
-		Weight          *int    `json:"weight"`
-		HealthCheckPath *string `json:"health_check_path"`
+		Provider        *string  `json:"provider"`
+		APIKeyID        *string  `json:"api_key_id"`
+		Name            *string  `json:"name"`
+		Weight          *int     `json:"weight"`
+		HealthCheckPath *string  `json:"health_check_path"`
+		SupportedModels []string `json:"supported_models"`
+		AutoModel       *string  `json:"auto_model"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -261,6 +282,26 @@ func (h *AdminLLMTargetHandler) handleUpdateTarget(w http.ResponseWriter, r *htt
 	if req.HealthCheckPath != nil && *req.HealthCheckPath != target.HealthCheckPath {
 		changes = append(changes, fmt.Sprintf("health_check_path: %s→%s", target.HealthCheckPath, *req.HealthCheckPath))
 		target.HealthCheckPath = *req.HealthCheckPath
+	}
+
+	// 处理 supported_models（如果提供了值）
+	if req.SupportedModels != nil {
+		newSupportedModelsJSON := "[]"
+		if len(req.SupportedModels) > 0 {
+			if b, err := json.Marshal(req.SupportedModels); err == nil {
+				newSupportedModelsJSON = string(b)
+			}
+		}
+		if newSupportedModelsJSON != target.SupportedModelsJSON {
+			changes = append(changes, fmt.Sprintf("supported_models: %s→%s", target.SupportedModelsJSON, newSupportedModelsJSON))
+			target.SupportedModelsJSON = newSupportedModelsJSON
+		}
+	}
+
+	// 处理 auto_model
+	if req.AutoModel != nil && *req.AutoModel != target.AutoModel {
+		changes = append(changes, fmt.Sprintf("auto_model: %s→%s", target.AutoModel, *req.AutoModel))
+		target.AutoModel = *req.AutoModel
 	}
 
 	if len(changes) == 0 {
