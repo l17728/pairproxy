@@ -102,6 +102,12 @@ tr:nth-child(even) td{background:#111130}
     <div class="card"><h3>💧 Input vs Output Token 相关性</h3><div id="chart-io-scatter" class="chart-box"></div></div>
   </div>
 
+  <!-- Phase 4: Engagement & Upstream Latency -->
+  <div class="grid">
+    <div class="card"><h3>📊 DAU/WAU/MAU 趋势</h3><div id="chart-engagement-trend" class="chart-box"></div></div>
+    <div class="card"><h3>⏱️ 上游延迟箱线图</h3><div id="chart-upstream-latency" class="chart-box"></div></div>
+  </div>
+
   <!-- Slow Requests Table -->
   <div class="card" style="margin-bottom:20px">
     <h3>🐌 慢请求 TOP10</h3>
@@ -117,6 +123,17 @@ tr:nth-child(even) td{background:#111130}
   <div class="card" style="margin-bottom:20px">
     <h3>📝 智能洞察</h3>
     <div id="insights-container"></div>
+  </div>
+
+  <!-- Phase 4: Quota Usage Table -->
+  <div class="card" style="margin-bottom:20px">
+    <h3>📋 用户配额使用情况</h3>
+    <div class="table-wrap">
+      <table id="quota-table">
+        <thead><tr><th>用户</th><th>日配额</th><th>日已用</th><th>日使用率</th><th>月配额</th><th>月已用</th><th>月使用率</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
   </div>
 
   <div class="footer" id="report-footer"></div>
@@ -158,6 +175,8 @@ function init(){
   initModelCost();
   initIOScatter();
   renderSlowRequests();
+  initEngagementTrend();
+  initUpstreamLatency();
   renderInsights();
   window.addEventListener('resize',()=>charts.forEach(c=>c.resize()));
 }
@@ -451,6 +470,43 @@ function initIOScatter(){
   });
 }
 
+function initEngagementTrend(){
+  const c=mkChart('chart-engagement-trend');if(!c||!D.engagement_trend||!D.engagement_trend.length)return;
+  c.setOption({
+    tooltip:{trigger:'axis'},
+    legend:{data:['DAU','WAU','MAU']},
+    grid:{left:60,right:20,top:40,bottom:30},
+    xAxis:{type:'category',data:D.engagement_trend.map(r=>r.date),axisLabel:{fontSize:9}},
+    yAxis:{type:'value',name:'活跃用户数'},
+    series:[
+      {name:'DAU',type:'line',data:D.engagement_trend.map(r=>r.dau),itemStyle:{color:'#4fc3f7'},lineStyle:{width:2}},
+      {name:'WAU',type:'line',data:D.engagement_trend.map(r=>r.wau),itemStyle:{color:'#ff7043'},lineStyle:{width:2}},
+      {name:'MAU',type:'line',data:D.engagement_trend.map(r=>r.mau),itemStyle:{color:'#ef5350'},lineStyle:{width:2}}
+    ]
+  });
+}
+
+function initUpstreamLatency(){
+  const c=mkChart('chart-upstream-latency');if(!c||!D.upstream_latency_box_plot||!D.upstream_latency_box_plot.length)return;
+  const data=D.upstream_latency_box_plot.map(bp=>[bp.min,bp.q1,bp.median,bp.q3,bp.max]);
+  const labels=D.upstream_latency_box_plot.map(bp=>bp.model.replace(/^https?:\/\//,'').split('/')[0]);
+  c.setOption({
+    tooltip:{trigger:'axis',formatter:function(p){
+      const bp=D.upstream_latency_box_plot[p[0].dataIndex];
+      return bp.model+'<br>最小: '+bp.min+'ms<br>Q1: '+bp.q1+'ms<br>中位: '+bp.median+'ms<br>Q3: '+bp.q3+'ms<br>最大: '+bp.max+'ms<br>样本: '+bp.count;
+    }},
+    grid:{left:150,right:20,top:30,bottom:30},
+    xAxis:{type:'category',data:labels,axisLabel:{fontSize:9}},
+    yAxis:{type:'value',name:'延迟(ms)',axisLabel:{formatter:v=>v+'ms'}},
+    series:[{
+      type:'boxplot',
+      data:data,
+      itemStyle:{color:'#66bb6a',borderColor:'#388e3c'},
+      emphasis:{itemStyle:{shadowBlur:10,shadowColor:'rgba(0,0,0,0.5)'}}
+    }]
+  });
+}
+
 function renderSlowRequests(){
   const tbody=document.querySelector('#slow-table tbody');
   if(!tbody||!D.slow_requests||!D.slow_requests.length){
@@ -473,7 +529,21 @@ function renderInsights(){
   ).join('');
 }
 
-document.addEventListener('DOMContentLoaded',init);
+function renderQuotaTable(){
+  const tbody=document.querySelector('#quota-table tbody');
+  if(!tbody||!D.quota_usage||!D.quota_usage.length){
+    if(tbody)tbody.innerHTML='<tr><td colspan="7" style="text-align:center;color:#666">暂无配额数据或用户未设置配额</td></tr>';
+    return;
+  }
+  tbody.innerHTML=D.quota_usage.map(q=>
+    `<tr><td>${q.username}</td><td>${fmtTok(q.daily_limit)}</td><td>${fmtTok(q.daily_used)}</td><td><span style="color:${q.daily_usage_percent>80?'#ef5350':q.daily_usage_percent>50?'#ff7043':'#66bb6a'}">${fmtPct(q.daily_usage_percent)}</span></td><td>${fmtTok(q.monthly_limit)}</td><td>${fmtTok(q.monthly_used)}</td><td><span style="color:${q.monthly_usage_percent>80?'#ef5350':q.monthly_usage_percent>50?'#ff7043':'#66bb6a'}">${fmtPct(q.monthly_usage_percent)}</span></td></tr>`
+  ).join('');
+}
+
+document.addEventListener('DOMContentLoaded',function(){
+  init();
+  renderQuotaTable();
+});
 </script>
 </body>
 </html>

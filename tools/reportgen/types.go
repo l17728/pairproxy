@@ -39,9 +39,14 @@ type ReportData struct {
 	DailyLatencyTrend  []DailyLatencyRow `json:"daily_latency_trend"`
 
 	// Phase 3: 留存分析
-	RetentionData      []RetentionRow    `json:"retention_data"`
-	IOScatterPlot      []IOScatterPoint  `json:"io_scatter_plot"`
-	ModelCostBreakdown []ModelCostRow    `json:"model_cost_breakdown"`
+	RetentionData         []RetentionRow    `json:"retention_data"`
+	IOScatterPlot         []IOScatterPoint  `json:"io_scatter_plot"`
+	ModelCostBreakdown    []ModelCostRow    `json:"model_cost_breakdown"`
+
+	// Phase 4: 高价值补齐
+	EngagementTrend       []EngagementTrendRow `json:"engagement_trend"`
+	QuotaUsage            []QuotaUsageRow      `json:"quota_usage"`
+	UpstreamLatencyBoxPlot []LatencyBoxPlotRow `json:"upstream_latency_box_plot"`
 
 	Insights []Insight `json:"insights"`
 }
@@ -226,6 +231,26 @@ type ModelCostRow struct {
 	CostUSD     float64 `json:"cost_usd"`
 	CostPercent float64 `json:"cost_percent"`
 	Requests    int64   `json:"requests"`
+}
+
+// Phase 4: DAU/WAU/MAU 趋势（按日）
+type EngagementTrendRow struct {
+	Date string `json:"date"`
+	DAU  int    `json:"dau"`
+	WAU  int    `json:"wau"`
+	MAU  int    `json:"mau"`
+}
+
+// Phase 4: 用户配额使用（如果有配额数据）
+type QuotaUsageRow struct {
+	UserID            string  `json:"user_id"`
+	Username          string  `json:"username"`
+	DailyLimit        int64   `json:"daily_limit"`
+	MonthlyLimit      int64   `json:"monthly_limit"`
+	DailyUsed         int64   `json:"daily_used"`
+	MonthlyUsed       int64   `json:"monthly_used"`
+	DailyUsagePercent float64 `json:"daily_usage_percent"`
+	MonthlyUsagePercent float64 `json:"monthly_usage_percent"`
 }
 
 type Insight struct {

@@ -56,6 +56,11 @@ func GenerateReport(params QueryParams, templatePath, outputPath string) error {
 	data.IOScatterPlot, _ = q.QueryIOScatterPlot(params.From, params.To, 1000)
 	data.ModelCostBreakdown, _ = q.QueryModelCostBreakdown(params.From, params.To)
 
+	// Phase 4: High-value supplements
+	data.EngagementTrend, _ = q.QueryEngagementTrend(params.From, params.To)
+	data.QuotaUsage, _ = q.QueryQuotaUsage(params.From, params.To)
+	data.UpstreamLatencyBoxPlot, _ = q.QueryLatencyBoxPlotByUpstream(params.From, params.To)
+
 	// Generate insights
 	data.Insights = GenerateInsights(&data)
 
