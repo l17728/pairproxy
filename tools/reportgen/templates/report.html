@@ -113,6 +113,12 @@ tr:nth-child(even) td{background:#111130}
     <div class="card"><h3>⏱️ 上游延迟箱线图</h3><div id="chart-upstream-latency" class="chart-box"></div></div>
   </div>
 
+  <!-- Phase 6: Model Radar + Adoption Rate -->
+  <div class="grid" style="margin-bottom:20px">
+    <div class="card"><h3>🎯 模型能力雷达图</h3><div id="chart-model-radar" class="chart-box" style="min-height:400px"></div></div>
+    <div class="card"><h3>📊 用户采纳率</h3><div id="chart-adoption-rate" class="chart-box"></div></div>
+  </div>
+
   <!-- Slow Requests Table -->
   <div class="card" style="margin-bottom:20px">
     <h3>🐌 慢请求 TOP10</h3>
@@ -183,6 +189,8 @@ function init(){
   renderSlowRequests();
   initEngagementTrend();
   initUpstreamLatency();
+  initModelRadar();
+  initAdoptionRate();
   renderInsights();
   window.addEventListener('resize',()=>charts.forEach(c=>c.resize()));
 }
@@ -531,6 +539,46 @@ function initUpstreamLatency(){
       itemStyle:{color:'#66bb6a',borderColor:'#388e3c'},
       emphasis:{itemStyle:{shadowBlur:10,shadowColor:'rgba(0,0,0,0.5)'}}
     }]
+  });
+}
+
+function initModelRadar(){
+  const c=mkChart('chart-model-radar');if(!c||!D.model_radar_data||!D.model_radar_data.length)return;
+  const indicators=[
+    {name:'延迟',max:100},
+    {name:'成本',max:100},
+    {name:'吞吐',max:100},
+    {name:'可靠性',max:100},
+    {name:'采纳',max:100}
+  ];
+  const series=D.model_radar_data.map(m=>({
+    value:[m.latency_score,m.cost_score,m.throughput_score,m.reliability_score,m.adoption_score],
+    name:m.model
+  }));
+  c.setOption({
+    legend:{data:D.model_radar_data.map(m=>m.model),textStyle:{color:'#b0bec5'}},
+    tooltip:{trigger:'item'},
+    radar:{shape:'polygon',name:{textStyle:{color:'#b0bec5'}},splitNumber:4,name:{textStyle:{color:'#b0bec5'}},splitLine:{lineStyle:{color:['#1a1a4e','#2a2a5e','#3a3a7e','#4a4a9e'].reverse()}},splitArea:{areaStyle:{color:['rgba(79,195,247,0.1)','rgba(102,187,106,0.1)','rgba(255,112,67,0.1)','rgba(171,71,188,0.1)'].reverse()}},axisLine:{lineStyle:{color:'#555'}},indicator:indicators},
+    series:[{type:'radar',data:series,symbol:'circle',symbolSize:4,itemStyle:{color:'#4fc3f7',borderColor:'#0288d1'},areaStyle:{opacity:0.3},lineStyle:{width:2}}]
+  });
+}
+
+function initAdoptionRate(){
+  const c=mkChart('chart-adoption-rate');if(!c)return;
+  const ad=D.adoption_rate;
+  if(!ad||ad.total_registered===0)return;
+  c.setOption({
+    tooltip:{trigger:'item'},
+    series:[{
+      type:'pie',radius:['30%','70%'],center:['50%','50%'],
+      data:[
+        {value:ad.total_active,name:'活跃用户 '+ad.total_active,itemStyle:{color:'#4fc3f7'}},
+        {value:ad.total_registered-ad.total_active,name:'未激活 '+(ad.total_registered-ad.total_active),itemStyle:{color:'#ddd'}}
+      ],
+      label:{formatter:'{b|{b}}\n{per|{d}%}',rich:{b:{color:'#b0bec5',fontSize:11,fontWeight:'bold'},per:{color:'#b0bec5',fontSize:10}}},
+      emphasis:{itemStyle:{shadowBlur:10,shadowOffsetX:0,shadowColor:'rgba(0,0,0,0.5)'}}
+    }],
+    title:{text:'采纳率 '+ad.adoption_percent.toFixed(1)+'%',left:'center',top:'center',textStyle:{color:'#b0bec5',fontSize:16,fontWeight:'bold'}}
   });
 }
 

@@ -64,6 +64,15 @@ func GenerateReport(params QueryParams, templatePath, outputPath string) error {
 	// Phase 5: Medium-value supplements
 	data.GroupTokenBoxPlots, _ = q.QueryGroupTokenDistribution(params.From, params.To)
 
+	// Phase 6: Low-frequency enhancements
+	data.ModelRadarData, _ = q.QueryModelRadarData(params.From, params.To)
+	data.AdoptionRate.TotalRegistered = q.CountRegisteredUsers()
+	activeUsers, _ := q.QueryActiveUsersInPeriod(params.From, params.To)
+	data.AdoptionRate.TotalActive = activeUsers
+	if data.AdoptionRate.TotalRegistered > 0 {
+		data.AdoptionRate.AdoptionPercent = float64(activeUsers) / float64(data.AdoptionRate.TotalRegistered) * 100
+	}
+
 	// Generate insights
 	data.Insights = GenerateInsights(&data)
 

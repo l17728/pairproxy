@@ -51,6 +51,10 @@ type ReportData struct {
 	// Phase 5: 中等价值补齐
 	GroupTokenBoxPlots    []GroupTokenDistribution `json:"group_token_box_plots"`
 
+	// Phase 6: 低频补齐
+	ModelRadarData        []ModelRadarData `json:"model_radar_data"`
+	AdoptionRate          AdoptionRateData `json:"adoption_rate"`
+
 	Insights []Insight `json:"insights"`
 }
 
@@ -254,6 +258,23 @@ type QuotaUsageRow struct {
 	MonthlyUsed       int64   `json:"monthly_used"`
 	DailyUsagePercent float64 `json:"daily_usage_percent"`
 	MonthlyUsagePercent float64 `json:"monthly_usage_percent"`
+}
+
+// Phase 6: Model Radar Chart Data
+type ModelRadarData struct {
+	Model            string  `json:"model"`
+	LatencyScore     float64 `json:"latency_score"`
+	CostScore        float64 `json:"cost_score"`
+	ThroughputScore  float64 `json:"throughput_score"`
+	ReliabilityScore float64 `json:"reliability_score"`
+	AdoptionScore    float64 `json:"adoption_score"`
+}
+
+// Phase 6: Adoption Rate Data
+type AdoptionRateData struct {
+	TotalRegistered int     `json:"total_registered"`
+	TotalActive     int     `json:"total_active"`
+	AdoptionPercent float64 `json:"adoption_percent"`
 }
 
 type Insight struct {
