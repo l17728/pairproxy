@@ -184,6 +184,12 @@ func engagementInsight(data *ReportData) *Insight {
 			perUserCost, data.KPI.TotalCost, e.WAU))
 	}
 
+	// User stratification: compute layers based on Pareto data
+	if len(data.ParetoData) > 0 {
+		stratification := buildUserStratification(data)
+		lines = append(lines, stratification...)
+	}
+
 	// Pareto check
 	if len(data.ParetoData) >= 3 {
 		top3 := data.ParetoData[2].CumulativePct
@@ -396,4 +402,100 @@ func formatInt64(n int64) string {
 		return fmt.Sprintf("%.1fK", float64(n)/1_000)
 	}
 	return fmt.Sprintf("%d", n)
+}
+
+// buildUserStratification analyzes user layers based on token contribution.
+// Returns strings describing superusers, active, casual, and inactive users.
+func buildUserStratification(data *ReportData) []string {
+	if len(data.ParetoData) == 0 {
+		return nil
+	}
+
+	var lines []string
+
+	// Compute user layers based on cumulative token contribution
+	pareto := data.ParetoData
+	totalTokens := data.KPI.TotalTokens
+	if totalTokens == 0 {
+		return nil
+	}
+
+	// Layer 1: Top 10% of users (contribute 40%+ of tokens)
+	superUserCount := 0
+	superUserTokens := int64(0)
+	superUserThreshold := totalTokens * 40 / 100 // 40% contribution
+	for i := 0; i < len(pareto); i++ {
+		superUserTokens += pareto[i].TotalTokens
+		superUserCount++
+		if superUserTokens >= superUserThreshold {
+			break
+		}
+	}
+
+	// Layer 2: Active users (contribute 24% more)
+	activeUserStart := superUserCount
+	activeUserTokens := int64(0)
+	activeUserThreshold := superUserTokens + totalTokens*24/100 // next 24%
+	for i := activeUserStart; i < len(pareto); i++ {
+		activeUserTokens += pareto[i].TotalTokens
+		if superUserTokens+activeUserTokens >= activeUserThreshold {
+			break
+		}
+	}
+	activeUserCount := 0
+	for i := activeUserStart; i < len(pareto) && superUserTokens+activeUserTokens >= activeUserThreshold; i++ {
+		activeUserCount++
+		activeUserTokens += pareto[i].TotalTokens
+	}
+	// Recalculate active users properly
+	activeUserTokens = int64(0)
+	activeUserCount = 0
+	for i := activeUserStart; i < len(pareto); i++ {
+		if superUserTokens+activeUserTokens >= activeUserThreshold {
+			break
+		}
+		activeUserCount++
+		activeUserTokens += pareto[i].TotalTokens
+	}
+
+	if activeUserCount > 0 {
+		lines = append(lines, fmt.Sprintf(
+			"• 🔥 超级用户（TOP %d 人）：贡献 %.0f%% Token（%.0fM）",
+			superUserCount, float64(superUserTokens)/float64(totalTokens)*100, float64(superUserTokens)/1_000_000))
+		lines = append(lines, fmt.Sprintf(
+			"• 📊 活跃用户（中层 %d 人）：贡献 %.0f%% Token（%.0fM）",
+			activeUserCount, float64(activeUserTokens)/float64(totalTokens)*100, float64(activeUserTokens)/1_000_000))
+	}
+
+	// Casual users: rest of active users
+	casualUserStart := activeUserStart + activeUserCount
+	casualUserCount := len(pareto) - casualUserStart
+	casualUserTokens := totalTokens - superUserTokens - activeUserTokens
+	if casualUserCount > 0 && casualUserTokens > 0 {
+		lines = append(lines, fmt.Sprintf(
+			"• 💤 低频用户（底层 %d 人）：贡献 %.1f%% Token（%.0fK）",
+			casualUserCount, float64(casualUserTokens)/float64(totalTokens)*100, float64(casualUserTokens)/1_000))
+	}
+
+	// Zero-use users
+	if data.Engagement.ZeroUseCount > 0 {
+		zeroPct := float64(data.Engagement.ZeroUseCount) / float64(data.KPI.RegisteredUsers) * 100
+		lines = append(lines, fmt.Sprintf(
+			"• 🚫 零使用用户：%d 人（占 %.1f%%）",
+			data.Engagement.ZeroUseCount, zeroPct))
+	}
+
+	// Summary metrics
+	if len(pareto) > 0 {
+		maxTokens := pareto[0].TotalTokens
+		avgTokens := totalTokens / int64(len(pareto))
+		if avgTokens > 0 {
+			ratio := float64(maxTokens) / float64(avgTokens)
+			lines = append(lines, fmt.Sprintf(
+				"• 📈 用量差异：最高用户是平均的 %.0f 倍（集中度高）",
+				ratio))
+		}
+	}
+
+	return lines
 }
