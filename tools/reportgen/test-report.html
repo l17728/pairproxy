@@ -1,0 +1,624 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PairProxy 分析报告</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0f0f1a;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;line-height:1.6}
+.container{max-width:1400px;margin:0 auto;padding:20px}
+h1{font-size:1.5rem;font-weight:600;margin-bottom:4px}
+.subtitle{color:#a0a0a0;font-size:0.9rem;margin-bottom:24px}
+.kpi-row{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:24px}
+.kpi-card{background:#16213e;border-radius:12px;padding:20px;text-align:center;border:1px solid #1a1a4e}
+.kpi-card .value{font-size:1.8rem;font-weight:700;margin-bottom:4px}
+.kpi-card .label{color:#a0a0a0;font-size:0.8rem;margin-bottom:6px}
+.kpi-card .change{font-size:0.8rem;font-weight:600}
+.change-up{color:#66bb6a}
+.change-down{color:#ef5350}
+.change-neutral{color:#a0a0a0}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px}
+.grid-full{grid-column:1/-1}
+.card{background:#16213e;border-radius:12px;padding:20px;border:1px solid #1a1a4e}
+.card h3{font-size:1rem;font-weight:600;margin-bottom:16px;color:#b0bec5}
+.chart-box{width:100%;min-height:350px}
+.table-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:0.85rem}
+th{background:#1a1a3e;padding:10px 12px;text-align:left;font-weight:600;color:#b0bec5;border-bottom:1px solid #2a2a5e}
+td{padding:8px 12px;border-bottom:1px solid #1a1a3e}
+tr:nth-child(even) td{background:#111130}
+.insight-card{background:#16213e;border-radius:12px;padding:16px 20px;margin-bottom:12px;border-left:4px solid #4fc3f7}
+.insight-card h4{font-size:0.95rem;margin-bottom:8px}
+.insight-card p{font-size:0.85rem;color:#b0bec5;white-space:pre-line}
+.insight-growth{border-left-color:#4fc3f7}
+.insight-anomaly{border-left-color:#ef5350}
+.insight-cost_warning{border-left-color:#ff7043}
+.insight-engagement{border-left-color:#66bb6a}
+.insight-efficiency{border-left-color:#ab47bc}
+.insight-capacity{border-left-color:#26c6da}
+.insight-model_suggestion{border-left-color:#ffd54f}
+.footer{text-align:center;color:#666;font-size:0.8rem;margin-top:32px;padding:20px 0;border-top:1px solid #1a1a3e}
+@media(max-width:768px){
+.kpi-row{grid-template-columns:repeat(2,1fr)}
+.grid{grid-template-columns:1fr}
+}
+</style>
+</head>
+<body>
+<div class="container">
+  <h1 id="report-title">📊 PairProxy 分析报告</h1>
+  <div class="subtitle" id="report-subtitle"></div>
+
+  <!-- KPI Cards -->
+  <div class="kpi-row" id="kpi-row"></div>
+
+  <!-- Row 1: Token Trend + Cost Trend -->
+  <div class="grid">
+    <div class="card"><h3>📈 Token 用量趋势</h3><div id="chart-daily-trend" class="chart-box"></div></div>
+    <div class="card"><h3>💰 费用趋势 (USD)</h3><div id="chart-cost-trend" class="chart-box"></div></div>
+  </div>
+
+  <!-- Row 2: Heatmap + Top Users -->
+  <div class="grid">
+    <div class="card"><h3>🕐 24h×7天 请求热力图</h3><div id="chart-heatmap" class="chart-box"></div></div>
+    <div class="card"><h3>🏆 TOP10 用户 Token 用量</h3><div id="chart-top-users" class="chart-box"></div></div>
+  </div>
+
+  <!-- Row 3: Model Dist + Upstream -->
+  <div class="grid">
+    <div class="card"><h3>🤖 模型使用分布</h3><div id="chart-model-dist" class="chart-box"></div></div>
+    <div class="card"><h3>🌐 上游端点状态</h3><div id="chart-upstream" class="chart-box"></div></div>
+  </div>
+
+  <!-- Row 4: Status Codes + Streaming -->
+  <div class="grid">
+    <div class="card"><h3>📊 状态码分布</h3><div id="chart-status-codes" class="chart-box"></div></div>
+    <div class="card"><h3>⚡ 流式 vs 非流式对比</h3><div id="chart-streaming" class="chart-box"></div></div>
+  </div>
+
+  <!-- Row 5: Groups + IO Ratio -->
+  <div class="grid">
+    <div class="card"><h3>🏢 分组对比</h3><div id="chart-groups" class="chart-box"></div></div>
+    <div class="card"><h3>📊 I/O Token 比率分布</h3><div id="chart-io-ratio" class="chart-box"></div></div>
+  </div>
+
+  <!-- Phase 5: Group Token Distribution Box Plot -->
+  <div class="grid" style="margin-bottom:20px">
+    <div class="card"><h3>🎯 分组用量箱线图（组内差异）</h3><div id="chart-group-token-boxplot" class="chart-box" style="min-height:400px"></div></div>
+  </div>
+
+  <!-- Phase 2: Latency Analysis Row -->
+  <div class="grid">
+    <div class="card"><h3>⏱️ 延迟箱线图（按模型）</h3><div id="chart-latency-boxplot" class="chart-box"></div></div>
+    <div class="card"><h3>📊 P50/P95/P99 延迟趋势</h3><div id="chart-latency-percentiles" class="chart-box"></div></div>
+  </div>
+
+  <!-- Row 6: Freq + Pareto -->
+  <div class="grid">
+    <div class="card"><h3>👤 用户请求频次分布</h3><div id="chart-freq" class="chart-box"></div></div>
+    <div class="card"><h3>📈 帕累托图（累积贡献%）</h3><div id="chart-pareto" class="chart-box"></div></div>
+  </div>
+
+  <!-- Phase 3: Advanced Analysis -->
+  <div class="grid">
+    <div class="card"><h3>📈 模型费用占比</h3><div id="chart-model-cost" class="chart-box"></div></div>
+    <div class="card"><h3>💧 Input vs Output Token 相关性</h3><div id="chart-io-scatter" class="chart-box"></div></div>
+  </div>
+
+  <!-- Phase 4: Engagement & Upstream Latency -->
+  <div class="grid">
+    <div class="card"><h3>📊 DAU/WAU/MAU 趋势</h3><div id="chart-engagement-trend" class="chart-box"></div></div>
+    <div class="card"><h3>⏱️ 上游延迟箱线图</h3><div id="chart-upstream-latency" class="chart-box"></div></div>
+  </div>
+
+  <!-- Phase 6: Model Radar + Adoption Rate -->
+  <div class="grid" style="margin-bottom:20px">
+    <div class="card"><h3>🎯 模型能力雷达图</h3><div id="chart-model-radar" class="chart-box" style="min-height:400px"></div></div>
+    <div class="card"><h3>📊 用户采纳率</h3><div id="chart-adoption-rate" class="chart-box"></div></div>
+  </div>
+
+  <!-- Slow Requests Table -->
+  <div class="card" style="margin-bottom:20px">
+    <h3>🐌 慢请求 TOP10</h3>
+    <div class="table-wrap">
+      <table id="slow-table">
+        <thead><tr><th>时间</th><th>用户</th><th>模型</th><th>输入Token</th><th>输出Token</th><th>延迟(ms)</th><th>状态码</th><th>上游</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Insights -->
+  <div class="card" style="margin-bottom:20px">
+    <h3>📝 智能洞察</h3>
+    <div id="insights-container"></div>
+  </div>
+
+  <!-- Phase 4: Quota Usage Table -->
+  <div class="card" style="margin-bottom:20px">
+    <h3>📋 用户配额使用情况</h3>
+    <div class="table-wrap">
+      <table id="quota-table">
+        <thead><tr><th>用户</th><th>日配额</th><th>日已用</th><th>日使用率</th><th>月配额</th><th>月已用</th><th>月使用率</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="footer" id="report-footer"></div>
+</div>
+
+<script>
+const D = {"title":"PairProxy 分析报告","period_label":"2026-03-28 至 2026-04-04","generated_at":"2026-04-04 22:44:07","period_days":7,"prev_label":"2026-03-20 至 2026-03-27","kpi":{"total_requests":202,"total_input":1235296,"total_output":308078,"total_tokens":1543374,"total_cost":4630.122,"active_users":6,"registered_users":6,"error_count":5,"error_rate":2.4752475247524752,"avg_latency_ms":2718.8832487309646,"p95_latency_ms":4893,"p99_latency_ms":5186,"streaming_pct":74.25742574257426,"prev_total_requests":0,"requests_change":0,"tokens_change":0,"cost_change":0,"users_change":0,"error_rate_change":0,"latency_change":0},"daily_trend":[{"date":"2026-03-29","input_tokens":256084,"output_tokens":57278,"total_tokens":313362,"cost_usd":940.086,"requests":37,"active_users":6,"errors":2,"avg_latency_ms":2569.6},{"date":"2026-03-30","input_tokens":223592,"output_tokens":55316,"total_tokens":278908,"cost_usd":836.724,"requests":38,"active_users":6,"errors":1,"avg_latency_ms":2619.2432432432433},{"date":"2026-03-31","input_tokens":205405,"output_tokens":52919,"total_tokens":258324,"cost_usd":774.972,"requests":32,"active_users":6,"errors":1,"avg_latency_ms":2732.0967741935483},{"date":"2026-04-01","input_tokens":169846,"output_tokens":46351,"total_tokens":216197,"cost_usd":648.591,"requests":29,"active_users":6,"errors":0,"avg_latency_ms":2961.8275862068967},{"date":"2026-04-02","input_tokens":153640,"output_tokens":35623,"total_tokens":189263,"cost_usd":567.789,"requests":25,"active_users":6,"errors":0,"avg_latency_ms":2927.8},{"date":"2026-04-03","input_tokens":118845,"output_tokens":31006,"total_tokens":149851,"cost_usd":449.553,"requests":21,"active_users":6,"errors":0,"avg_latency_ms":2974.809523809524},{"date":"2026-04-04","input_tokens":107884,"output_tokens":29585,"total_tokens":137469,"cost_usd":412.407,"requests":20,"active_users":6,"errors":1,"avg_latency_ms":2237.7894736842104}],"heatmap_data":[{"hour":7,"day":0,"value":2},{"hour":7,"day":1,"value":2},{"hour":7,"day":2,"value":2},{"hour":7,"day":3,"value":3},{"hour":7,"day":4,"value":1},{"hour":7,"day":5,"value":1},{"hour":7,"day":6,"value":2},{"hour":8,"day":0,"value":2},{"hour":8,"day":1,"value":1},{"hour":8,"day":2,"value":3},{"hour":8,"day":3,"value":2},{"hour":8,"day":4,"value":1},{"hour":8,"day":5,"value":1},{"hour":9,"day":0,"value":2},{"hour":9,"day":2,"value":2},{"hour":9,"day":3,"value":1},{"hour":9,"day":4,"value":2},{"hour":9,"day":5,"value":3},{"hour":9,"day":6,"value":4},{"hour":10,"day":0,"value":1},{"hour":10,"day":1,"value":4},{"hour":10,"day":2,"value":1},{"hour":10,"day":3,"value":1},{"hour":10,"day":4,"value":3},{"hour":10,"day":5,"value":1},{"hour":10,"day":6,"value":1},{"hour":11,"day":0,"value":4},{"hour":11,"day":1,"value":4},{"hour":11,"day":2,"value":2},{"hour":11,"day":3,"value":4},{"hour":11,"day":4,"value":3},{"hour":11,"day":5,"value":1},{"hour":11,"day":6,"value":2},{"hour":12,"day":0,"value":2},{"hour":12,"day":2,"value":3},{"hour":12,"day":3,"value":4},{"hour":12,"day":4,"value":2},{"hour":12,"day":5,"value":1},{"hour":12,"day":6,"value":3},{"hour":13,"day":0,"value":1},{"hour":13,"day":1,"value":3},{"hour":13,"day":2,"value":1},{"hour":13,"day":3,"value":1},{"hour":14,"day":0,"value":2},{"hour":14,"day":1,"value":3},{"hour":14,"day":2,"value":5},{"hour":14,"day":3,"value":2},{"hour":14,"day":4,"value":2},{"hour":14,"day":5,"value":3},{"hour":14,"day":6,"value":1},{"hour":15,"day":0,"value":3},{"hour":15,"day":1,"value":2},{"hour":15,"day":2,"value":4},{"hour":15,"day":4,"value":1},{"hour":15,"day":5,"value":2},{"hour":15,"day":6,"value":2},{"hour":16,"day":0,"value":1},{"hour":16,"day":1,"value":1},{"hour":16,"day":2,"value":1},{"hour":16,"day":3,"value":3},{"hour":16,"day":4,"value":2},{"hour":17,"day":0,"value":4},{"hour":17,"day":1,"value":3},{"hour":17,"day":2,"value":2},{"hour":17,"day":4,"value":1},{"hour":17,"day":5,"value":3},{"hour":17,"day":6,"value":1},{"hour":18,"day":0,"value":3},{"hour":18,"day":1,"value":3},{"hour":18,"day":3,"value":1},{"hour":18,"day":4,"value":2},{"hour":18,"day":5,"value":4},{"hour":18,"day":6,"value":2},{"hour":19,"day":0,"value":4},{"hour":19,"day":1,"value":1},{"hour":19,"day":2,"value":1},{"hour":19,"day":3,"value":2},{"hour":19,"day":4,"value":2},{"hour":20,"day":0,"value":2},{"hour":20,"day":1,"value":3},{"hour":20,"day":2,"value":2},{"hour":20,"day":3,"value":4},{"hour":21,"day":0,"value":2},{"hour":21,"day":1,"value":4},{"hour":21,"day":2,"value":2},{"hour":21,"day":3,"value":1},{"hour":21,"day":5,"value":1},{"hour":22,"day":0,"value":2},{"hour":22,"day":1,"value":4},{"hour":22,"day":2,"value":1},{"hour":22,"day":4,"value":3},{"hour":22,"day":6,"value":2}],"top_users_by_token":[{"username":"alice","group_name":"engineering","value":318130,"requests":38,"input_tokens":255864,"output_tokens":62266,"cost_usd":954.39},{"username":"bob","group_name":"engineering","value":275322,"requests":36,"input_tokens":221890,"output_tokens":53432,"cost_usd":825.966},{"username":"carol","group_name":"design","value":245431,"requests":33,"input_tokens":195100,"output_tokens":50331,"cost_usd":736.293},{"username":"dave","group_name":"design","value":243129,"requests":32,"input_tokens":196643,"output_tokens":46486,"cost_usd":729.3870000000001},{"username":"eve","group_name":"engineering","value":238878,"requests":32,"input_tokens":191983,"output_tokens":46895,"cost_usd":716.634},{"username":"frank","group_name":"product","value":222484,"requests":31,"input_tokens":173816,"output_tokens":48668,"cost_usd":667.452}],"top_users_by_cost":[{"username":"alice","group_name":"engineering","value":954.39,"requests":38,"input_tokens":255864,"output_tokens":62266,"cost_usd":954.39},{"username":"bob","group_name":"engineering","value":825.966,"requests":36,"input_tokens":221890,"output_tokens":53432,"cost_usd":825.966},{"username":"carol","group_name":"design","value":736.293,"requests":33,"input_tokens":195100,"output_tokens":50331,"cost_usd":736.293},{"username":"dave","group_name":"design","value":729.3870000000001,"requests":32,"input_tokens":196643,"output_tokens":46486,"cost_usd":729.3870000000001},{"username":"eve","group_name":"engineering","value":716.634,"requests":32,"input_tokens":191983,"output_tokens":46895,"cost_usd":716.634},{"username":"frank","group_name":"product","value":667.452,"requests":31,"input_tokens":173816,"output_tokens":48668,"cost_usd":667.452}],"model_distribution":[{"model":"claude-sonnet-4-5","count":70,"input_tokens":452507,"output_tokens":108752,"total_tokens":561259,"cost_usd":1683.777,"avg_latency_ms":2853.2028985507245,"error_rate":1.4285714285714286},{"model":"claude-opus-4-5","count":68,"input_tokens":413873,"output_tokens":100327,"total_tokens":514200,"cost_usd":1542.6000000000001,"avg_latency_ms":2600.846153846154,"error_rate":4.411764705882353},{"model":"gpt-4o","count":64,"input_tokens":368916,"output_tokens":98999,"total_tokens":467915,"cost_usd":1403.7450000000001,"avg_latency_ms":2693.5555555555557,"error_rate":1.5625}],"group_comparison":[{"group_id":"1","group_name":"engineering","users":3,"active_users":3,"input_tokens":669737,"output_tokens":162593,"total_tokens":832330,"cost_usd":2496.9900000000002,"requests":106},{"group_id":"2","group_name":"design","users":2,"active_users":2,"input_tokens":391743,"output_tokens":96817,"total_tokens":488560,"cost_usd":1465.68,"requests":65},{"group_id":"3","group_name":"product","users":1,"active_users":1,"input_tokens":173816,"output_tokens":48668,"total_tokens":222484,"cost_usd":667.452,"requests":31}],"upstream_stats":[{"url":"https://api.anthropic.com","requests":103,"avg_latency":2695.59,"error_rate":2.912621359223301,"total_tokens":802439,"cost_usd":2407.317},{"url":"https://api.openai.com/v1","requests":99,"avg_latency":2742.896907216495,"error_rate":2.0202020202020203,"total_tokens":740935,"cost_usd":2222.805}],"status_code_dist":[{"status_code":200,"count":197},{"status_code":429,"count":4},{"status_code":500,"count":1}],"slow_requests":[{"created_at":"2026-03-30 22:55:00","username":"eve","model":"claude-opus-4-5","input_tokens":5784,"output_tokens":1145,"duration_ms":5283,"status_code":200,"upstream_url":"https://api.anthropic.com"},{"created_at":"2026-04-01 19:55:00","username":"dave","model":"claude-sonnet-4-5","input_tokens":7502,"output_tokens":1974,"duration_ms":5259,"status_code":200,"upstream_url":"https://api.openai.com/v1"},{"created_at":"2026-04-03 17:41:00","username":"dave","model":"claude-sonnet-4-5","input_tokens":6811,"output_tokens":1199,"duration_ms":5186,"status_code":200,"upstream_url":"https://api.openai.com/v1"},{"created_at":"2026-04-01 07:35:00","username":"bob","model":"claude-opus-4-5","input_tokens":4067,"output_tokens":1226,"duration_ms":5146,"status_code":200,"upstream_url":"https://api.openai.com/v1"},{"created_at":"2026-03-29 07:40:00","username":"bob","model":"claude-opus-4-5","input_tokens":5402,"output_tokens":1335,"duration_ms":5099,"status_code":200,"upstream_url":"https://api.openai.com/v1"},{"created_at":"2026-03-30 11:43:00","username":"bob","model":"claude-opus-4-5","input_tokens":8471,"output_tokens":2012,"duration_ms":5003,"status_code":200,"upstream_url":"https://api.openai.com/v1"},{"created_at":"2026-03-29 07:13:00","username":"carol","model":"gpt-4o","input_tokens":8040,"output_tokens":1676,"duration_ms":4975,"status_code":200,"upstream_url":"https://api.anthropic.com"},{"created_at":"2026-04-01 13:21:00","username":"alice","model":"claude-sonnet-4-5","input_tokens":7125,"output_tokens":1547,"duration_ms":4947,"status_code":200,"upstream_url":"https://api.anthropic.com"},{"created_at":"2026-04-02 10:48:00","username":"frank","model":"gpt-4o","input_tokens":9185,"output_tokens":1217,"duration_ms":4897,"status_code":200,"upstream_url":"https://api.openai.com/v1"},{"created_at":"2026-04-02 22:41:00","username":"carol","model":"gpt-4o","input_tokens":3969,"output_tokens":1165,"duration_ms":4895,"status_code":200,"upstream_url":"https://api.anthropic.com"}],"streaming_ratio":{"streaming_count":150,"non_streaming_count":52,"streaming_pct":74.25742574257426,"streaming_avg_latency":2728.8082191780823,"non_streaming_avg_latency":2690.470588235294},"engagement":{"dau":6,"wau":6,"mau":6,"stickness":100,"adoption_rate":100,"zero_use_count":0,"zero_use_pct":0,"power_users":["alice"],"new_users_this_period":1},"user_freq_buckets":[{"range":"0","count":0},{"range":"1-5","count":0},{"range":"6-20","count":0},{"range":"21-50","count":6},{"range":"51-100","count":0},{"range":"100+","count":0}],"io_ratio_buckets":[{"range":"\u003c0.5","count":0},{"range":"0.5-1","count":0},{"range":"1-3","count":54},{"range":"3-10","count":145},{"range":"\u003e10","count":3}],"pareto_data":[{"username":"alice","total_tokens":318130,"cumulative_pct":20.6},{"username":"bob","total_tokens":275322,"cumulative_pct":38.5},{"username":"carol","total_tokens":245431,"cumulative_pct":54.4},{"username":"dave","total_tokens":243129,"cumulative_pct":70.1},{"username":"eve","total_tokens":238878,"cumulative_pct":85.6},{"username":"frank","total_tokens":222484,"cumulative_pct":100}],"latency_box_plots":[{"model":"claude-sonnet-4-5","min":378,"q1":1769,"median":3025,"q3":4103,"max":5259,"iqr":2334,"count":69},{"model":"claude-opus-4-5","min":305,"q1":1238,"median":2570,"q3":3714,"max":5283,"iqr":2476,"count":65},{"model":"gpt-4o","min":300,"q1":1243,"median":2561,"q3":4227,"max":4975,"iqr":2984,"count":63}],"latency_percentiles":[{"date":"2026-03-29","p50":2804,"p95":4786,"p99":4975,"count":35},{"date":"2026-03-30","p50":2301,"p95":4763,"p99":5003,"count":37},{"date":"2026-03-31","p50":2541,"p95":4660,"p99":4781,"count":31},{"date":"2026-04-01","p50":2621,"p95":4947,"p99":5146,"count":29},{"date":"2026-04-02","p50":3195,"p95":4700,"p99":4895,"count":25},{"date":"2026-04-03","p50":3057,"p95":4893,"p99":4893,"count":21},{"date":"2026-04-04","p50":2077,"p95":4306,"p99":4306,"count":19}],"daily_latency_trend":[{"date":"2026-03-29","avg_latency":2569.6,"max_latency":5099,"cost_usd":940.09},{"date":"2026-03-30","avg_latency":2619.2,"max_latency":5283,"cost_usd":836.72},{"date":"2026-03-31","avg_latency":2732.1,"max_latency":4876,"cost_usd":774.97},{"date":"2026-04-01","avg_latency":2961.8,"max_latency":5259,"cost_usd":648.59},{"date":"2026-04-02","avg_latency":2927.8,"max_latency":4897,"cost_usd":567.79},{"date":"2026-04-03","avg_latency":2974.8,"max_latency":5186,"cost_usd":449.55},{"date":"2026-04-04","avg_latency":2237.8,"max_latency":4410,"cost_usd":412.41}],"retention_data":[{"first_use_date":"2026-03-29","days_since_birth":0,"active_users":6,"retention_rate":100},{"first_use_date":"2026-03-29","days_since_birth":1,"active_users":6,"retention_rate":100},{"first_use_date":"2026-03-29","days_since_birth":2,"active_users":6,"retention_rate":100},{"first_use_date":"2026-03-29","days_since_birth":3,"active_users":6,"retention_rate":100},{"first_use_date":"2026-03-29","days_since_birth":4,"active_users":6,"retention_rate":100},{"first_use_date":"2026-03-29","days_since_birth":5,"active_users":6,"retention_rate":100},{"first_use_date":"2026-03-29","days_since_birth":6,"active_users":6,"retention_rate":100},{"first_use_date":"2026-03-29","days_since_birth":7,"active_users":0,"retention_rate":0},{"first_use_date":"2026-03-29","days_since_birth":8,"active_users":0,"retention_rate":0},{"first_use_date":"2026-03-29","days_since_birth":9,"active_users":0,"retention_rate":0},{"first_use_date":"2026-03-29","days_since_birth":10,"active_users":0,"retention_rate":0},{"first_use_date":"2026-03-29","days_since_birth":11,"active_users":0,"retention_rate":0},{"first_use_date":"2026-03-29","days_since_birth":12,"active_users":0,"retention_rate":0},{"first_use_date":"2026-03-29","days_since_birth":13,"active_users":0,"retention_rate":0},{"first_use_date":"2026-03-29","days_since_birth":14,"active_users":0,"retention_rate":0},{"first_use_date":"2026-03-29","days_since_birth":15,"active_users":0,"retention_rate":0},{"first_use_date":"2026-03-29","days_since_birth":16,"active_users":0,"retention_rate":0},{"first_use_date":"2026-03-29","days_since_birth":17,"active_users":0,"retention_rate":0},{"first_use_date":"2026-03-29","days_since_birth":18,"active_users":0,"retention_rate":0},{"first_use_date":"2026-03-29","days_since_birth":19,"active_users":0,"retention_rate":0},{"first_use_date":"2026-03-29","days_since_birth":20,"active_users":0,"retention_rate":0},{"first_use_date":"2026-03-29","days_since_birth":21,"active_users":0,"retention_rate":0},{"first_use_date":"2026-03-29","days_since_birth":22,"active_users":0,"retention_rate":0},{"first_use_date":"2026-03-29","days_since_birth":23,"active_users":0,"retention_rate":0},{"first_use_date":"2026-03-29","days_since_birth":24,"active_users":0,"retention_rate":0},{"first_use_date":"2026-03-29","days_since_birth":25,"active_users":0,"retention_rate":0},{"first_use_date":"2026-03-29","days_since_birth":26,"active_users":0,"retention_rate":0},{"first_use_date":"2026-03-29","days_since_birth":27,"active_users":0,"retention_rate":0},{"first_use_date":"2026-03-29","days_since_birth":28,"active_users":0,"retention_rate":0},{"first_use_date":"2026-03-29","days_since_birth":29,"active_users":0,"retention_rate":0},{"first_use_date":"2026-03-29","days_since_birth":30,"active_users":0,"retention_rate":0}],"io_scatter_plot":[{"input_tokens":7590,"output_tokens":2022},{"input_tokens":4843,"output_tokens":1475},{"input_tokens":7186,"output_tokens":1347},{"input_tokens":2596,"output_tokens":1275},{"input_tokens":7958,"output_tokens":1214},{"input_tokens":8567,"output_tokens":1737},{"input_tokens":8306,"output_tokens":1596},{"input_tokens":3956,"output_tokens":2266},{"input_tokens":7602,"output_tokens":865},{"input_tokens":2733,"output_tokens":1579},{"input_tokens":8479,"output_tokens":2183},{"input_tokens":5707,"output_tokens":1070},{"input_tokens":9468,"output_tokens":879},{"input_tokens":3300,"output_tokens":1045},{"input_tokens":6944,"output_tokens":858},{"input_tokens":4893,"output_tokens":1837},{"input_tokens":7820,"output_tokens":2052},{"input_tokens":2709,"output_tokens":820},{"input_tokens":4191,"output_tokens":1535},{"input_tokens":3931,"output_tokens":1442},{"input_tokens":6773,"output_tokens":1849},{"input_tokens":3804,"output_tokens":901},{"input_tokens":8608,"output_tokens":2167},{"input_tokens":3709,"output_tokens":1592},{"input_tokens":3549,"output_tokens":1332},{"input_tokens":4011,"output_tokens":1551},{"input_tokens":2286,"output_tokens":1421},{"input_tokens":5391,"output_tokens":980},{"input_tokens":4810,"output_tokens":2159},{"input_tokens":6224,"output_tokens":1725},{"input_tokens":6602,"output_tokens":1193},{"input_tokens":8137,"output_tokens":2200},{"input_tokens":9518,"output_tokens":1724},{"input_tokens":9898,"output_tokens":1389},{"input_tokens":9147,"output_tokens":1800},{"input_tokens":6714,"output_tokens":1699},{"input_tokens":7295,"output_tokens":1818},{"input_tokens":2511,"output_tokens":1971},{"input_tokens":9365,"output_tokens":1419},{"input_tokens":7857,"output_tokens":1824},{"input_tokens":5636,"output_tokens":1070},{"input_tokens":7067,"output_tokens":1490},{"input_tokens":8966,"output_tokens":1665},{"input_tokens":2017,"output_tokens":1992},{"input_tokens":4979,"output_tokens":1278},{"input_tokens":2511,"output_tokens":1656},{"input_tokens":6608,"output_tokens":2230},{"input_tokens":5784,"output_tokens":1145},{"input_tokens":7125,"output_tokens":1547},{"input_tokens":8691,"output_tokens":1989},{"input_tokens":8203,"output_tokens":1414},{"input_tokens":2902,"output_tokens":1590},{"input_tokens":2118,"output_tokens":1322},{"input_tokens":5483,"output_tokens":1243},{"input_tokens":8443,"output_tokens":999},{"input_tokens":6951,"output_tokens":1920},{"input_tokens":6914,"output_tokens":2096},{"input_tokens":9623,"output_tokens":1660},{"input_tokens":8670,"output_tokens":894},{"input_tokens":2811,"output_tokens":898},{"input_tokens":8471,"output_tokens":2012},{"input_tokens":4224,"output_tokens":1195},{"input_tokens":3273,"output_tokens":1175},{"input_tokens":8714,"output_tokens":869},{"input_tokens":7247,"output_tokens":1081},{"input_tokens":9018,"output_tokens":2183},{"input_tokens":4088,"output_tokens":1802},{"input_tokens":7864,"output_tokens":1254},{"input_tokens":5402,"output_tokens":1335},{"input_tokens":7502,"output_tokens":1974},{"input_tokens":9237,"output_tokens":987},{"input_tokens":5724,"output_tokens":849},{"input_tokens":7645,"output_tokens":1668},{"input_tokens":5842,"output_tokens":1037},{"input_tokens":5412,"output_tokens":1982},{"input_tokens":9629,"output_tokens":1273},{"input_tokens":3588,"output_tokens":859},{"input_tokens":3969,"output_tokens":1165},{"input_tokens":6360,"output_tokens":1280},{"input_tokens":5409,"output_tokens":1358},{"input_tokens":7234,"output_tokens":2033},{"input_tokens":3015,"output_tokens":1121},{"input_tokens":8599,"output_tokens":1777},{"input_tokens":4649,"output_tokens":914},{"input_tokens":5094,"output_tokens":1555},{"input_tokens":6854,"output_tokens":1448},{"input_tokens":9007,"output_tokens":1574},{"input_tokens":4701,"output_tokens":973},{"input_tokens":9350,"output_tokens":1770},{"input_tokens":8715,"output_tokens":1094},{"input_tokens":2547,"output_tokens":2263},{"input_tokens":7818,"output_tokens":1570},{"input_tokens":8040,"output_tokens":1676},{"input_tokens":3685,"output_tokens":1034},{"input_tokens":4703,"output_tokens":1998},{"input_tokens":6897,"output_tokens":1805},{"input_tokens":8525,"output_tokens":2266},{"input_tokens":2019,"output_tokens":1145},{"input_tokens":6350,"output_tokens":2155},{"input_tokens":9126,"output_tokens":1902},{"input_tokens":6373,"output_tokens":2068},{"input_tokens":7298,"output_tokens":1583},{"input_tokens":2047,"output_tokens":1370},{"input_tokens":4670,"output_tokens":1286},{"input_tokens":8005,"output_tokens":1056},{"input_tokens":5909,"output_tokens":1381},{"input_tokens":2995,"output_tokens":1424},{"input_tokens":9049,"output_tokens":2295},{"input_tokens":2287,"output_tokens":2272},{"input_tokens":8941,"output_tokens":1162},{"input_tokens":4652,"output_tokens":897},{"input_tokens":2144,"output_tokens":1657},{"input_tokens":9067,"output_tokens":2242},{"input_tokens":2302,"output_tokens":1195},{"input_tokens":3377,"output_tokens":1920},{"input_tokens":7917,"output_tokens":1759},{"input_tokens":6332,"output_tokens":885},{"input_tokens":6479,"output_tokens":1212},{"input_tokens":9191,"output_tokens":1948},{"input_tokens":5151,"output_tokens":1020},{"input_tokens":4776,"output_tokens":1863},{"input_tokens":9185,"output_tokens":1217},{"input_tokens":3731,"output_tokens":2113},{"input_tokens":2846,"output_tokens":1549},{"input_tokens":4067,"output_tokens":1226},{"input_tokens":9369,"output_tokens":1961},{"input_tokens":4905,"output_tokens":1493},{"input_tokens":8930,"output_tokens":1946},{"input_tokens":3297,"output_tokens":1224},{"input_tokens":3384,"output_tokens":1417},{"input_tokens":4489,"output_tokens":1230},{"input_tokens":6811,"output_tokens":1199},{"input_tokens":8130,"output_tokens":1097},{"input_tokens":6179,"output_tokens":864},{"input_tokens":4882,"output_tokens":2257},{"input_tokens":7401,"output_tokens":1411},{"input_tokens":6118,"output_tokens":1563},{"input_tokens":5945,"output_tokens":2131},{"input_tokens":6738,"output_tokens":1897},{"input_tokens":8727,"output_tokens":2185},{"input_tokens":6134,"output_tokens":1342},{"input_tokens":9064,"output_tokens":1367},{"input_tokens":3512,"output_tokens":1322},{"input_tokens":3111,"output_tokens":1480},{"input_tokens":4295,"output_tokens":1974},{"input_tokens":8858,"output_tokens":1262},{"input_tokens":6264,"output_tokens":1206},{"input_tokens":8546,"output_tokens":1327},{"input_tokens":2170,"output_tokens":1681},{"input_tokens":9783,"output_tokens":2202},{"input_tokens":9354,"output_tokens":1673},{"input_tokens":4149,"output_tokens":931},{"input_tokens":2512,"output_tokens":1071},{"input_tokens":9185,"output_tokens":1854},{"input_tokens":2384,"output_tokens":1149},{"input_tokens":8977,"output_tokens":2134},{"input_tokens":4834,"output_tokens":1592},{"input_tokens":9777,"output_tokens":2285},{"input_tokens":5702,"output_tokens":1728},{"input_tokens":9194,"output_tokens":809},{"input_tokens":8262,"output_tokens":1191},{"input_tokens":4209,"output_tokens":2083},{"input_tokens":5353,"output_tokens":1389},{"input_tokens":6617,"output_tokens":1535},{"input_tokens":3524,"output_tokens":967},{"input_tokens":5754,"output_tokens":1173},{"input_tokens":5776,"output_tokens":977},{"input_tokens":7997,"output_tokens":1799},{"input_tokens":6521,"output_tokens":1422},{"input_tokens":2688,"output_tokens":1303},{"input_tokens":8410,"output_tokens":1912},{"input_tokens":8012,"output_tokens":2060},{"input_tokens":5647,"output_tokens":1757},{"input_tokens":5370,"output_tokens":1483},{"input_tokens":8986,"output_tokens":961},{"input_tokens":5908,"output_tokens":1449},{"input_tokens":4326,"output_tokens":831},{"input_tokens":4002,"output_tokens":2290},{"input_tokens":6208,"output_tokens":2196},{"input_tokens":4378,"output_tokens":1931},{"input_tokens":5670,"output_tokens":1120},{"input_tokens":9205,"output_tokens":1638},{"input_tokens":2668,"output_tokens":1091},{"input_tokens":6703,"output_tokens":2020},{"input_tokens":6587,"output_tokens":2172},{"input_tokens":3596,"output_tokens":1377},{"input_tokens":6813,"output_tokens":1701},{"input_tokens":6771,"output_tokens":1948},{"input_tokens":7805,"output_tokens":898},{"input_tokens":4878,"output_tokens":1593},{"input_tokens":4126,"output_tokens":1131},{"input_tokens":6793,"output_tokens":2066},{"input_tokens":9153,"output_tokens":1042},{"input_tokens":6008,"output_tokens":997},{"input_tokens":4566,"output_tokens":1733},{"input_tokens":3503,"output_tokens":1036},{"input_tokens":8385,"output_tokens":1567},{"input_tokens":9832,"output_tokens":1628},{"input_tokens":4869,"output_tokens":871},{"input_tokens":2973,"output_tokens":2156},{"input_tokens":8802,"output_tokens":1456},{"input_tokens":3705,"output_tokens":1944}],"model_cost_breakdown":[{"model":"claude-sonnet-4-5","cost_usd":1683.78,"cost_percent":36.37,"requests":70},{"model":"claude-opus-4-5","cost_usd":1542.6,"cost_percent":33.32,"requests":68},{"model":"gpt-4o","cost_usd":1403.75,"cost_percent":30.32,"requests":64}],"engagement_trend":[{"date":"2026-03-29","dau":6,"wau":6,"mau":6},{"date":"2026-03-30","dau":6,"wau":6,"mau":6},{"date":"2026-03-31","dau":6,"wau":6,"mau":6},{"date":"2026-04-01","dau":6,"wau":6,"mau":6},{"date":"2026-04-02","dau":6,"wau":6,"mau":6},{"date":"2026-04-03","dau":6,"wau":6,"mau":6},{"date":"2026-04-04","dau":6,"wau":6,"mau":6}],"quota_usage":null,"upstream_latency_box_plot":[{"model":"https://api.anthropic.com","min":300,"q1":1301,"median":2809,"q3":4100,"max":5283,"iqr":2799,"count":100},{"model":"https://api.openai.com/v1","min":377,"q1":1542,"median":2605,"q3":4117,"max":5259,"iqr":2575,"count":97}],"group_token_box_plots":[{"group_id":"1","group_name":"engineering","min":238878,"q1":238878,"median":275322,"q3":275322,"max":318130,"iqr":36444,"count":3},{"group_id":"2","group_name":"design","min":243129,"q1":243129,"median":243129,"q3":243129,"max":245431,"iqr":0,"count":2},{"group_id":"3","group_name":"product","min":222484,"q1":222484,"median":222484,"q3":222484,"max":222484,"iqr":0,"count":1}],"model_radar_data":[{"model":"claude-opus-4-5","latency_score":11.8,"cost_score":50,"throughput_score":33.7,"reliability_score":95.6,"adoption_score":33.7},{"model":"claude-sonnet-4-5","latency_score":0,"cost_score":50,"throughput_score":34.7,"reliability_score":98.6,"adoption_score":34.7},{"model":"gpt-4o","latency_score":7,"cost_score":50,"throughput_score":31.7,"reliability_score":98.4,"adoption_score":31.7}],"adoption_rate":{"total_registered":6,"total_active":6,"adoption_percent":100},"insights":[{"type":"cost_warning","title":"💰 成本预警","detail":"• 按当前日均消耗 $661.45 外推，预计月费用 $19843.38","emoji":"💰"},{"type":"engagement","title":"👥 用户参与度","detail":"• 活跃用户 6 / 注册用户 6（采纳率 100.0%）\n• DAU/MAU = 6/6 = 100.0%（粘性优秀）\n• 人均成本：$771.69/用户（总费用 $4630.12 ÷ 6 活跃用户）\n• 🔥 超级用户（TOP 3 人）：贡献 54% Token（1M）\n• 📊 活跃用户（中层 2 人）：贡献 31% Token（0M）\n• 💤 低频用户（底层 1 人）：贡献 14.4% Token（222K）\n• 📈 用量差异：最高用户是平均的 1 倍（集中度高）\n• TOP 3 用户贡献 54.4% 用量（帕累托效应显著）\n• 本周期新增 1 名用户开始使用\n• 核心用户（TOP 5%）：alice","emoji":"👥"},{"type":"capacity","title":"🔧 容量评估","detail":"• 峰值日请求 38 次，估算峰值 RPM ≈ 0（含突发系数 3x）","emoji":"🔧"}]};
+const charts = [];
+
+function fmt(n){return n.toLocaleString('en-US')}
+function fmtCost(n){return '$'+n.toFixed(2)}
+function fmtTok(n){
+  if(n>=1e9) return (n/1e9).toFixed(1)+'B';
+  if(n>=1e6) return (n/1e6).toFixed(1)+'M';
+  if(n>=1e3) return (n/1e3).toFixed(1)+'K';
+  return n.toString();
+}
+function fmtPct(n){return n.toFixed(1)+'%'}
+function arrow(c){return c>0?'↑':c<0?'↓':'→'}
+function changeCls(c){return c>0?'change-up':c<0?'change-down':'change-neutral'}
+
+function init(){
+  initHeader();
+  initKPI();
+  initDailyTrend();
+  initCostTrend();
+  initHeatmap();
+  initTopUsers();
+  initModelDist();
+  initUpstream();
+  initStatusCodes();
+  initStreaming();
+  initGroups();
+  initIORatio();
+  initGroupTokenBoxplot();
+  initLatencyBoxplot();
+  initLatencyPercentiles();
+  initFreq();
+  initPareto();
+  initModelCost();
+  initIOScatter();
+  renderSlowRequests();
+  initEngagementTrend();
+  initUpstreamLatency();
+  initModelRadar();
+  initAdoptionRate();
+  renderInsights();
+  window.addEventListener('resize',()=>charts.forEach(c=>c.resize()));
+}
+
+function initHeader(){
+  document.getElementById('report-subtitle').textContent=
+    D.period_label+' | 生成于 '+D.generated_at;
+  document.getElementById('report-footer').textContent=
+    '报告生成时间: '+D.generated_at+' | 数据周期: '+D.period_label+' | PairProxy Report Generator';
+}
+
+function initKPI(){
+  const k=D.kpi;
+  const items=[
+    {label:'总请求',value:fmt(k.total_requests),change:k.requests_change,unit:''},
+    {label:'总 Token',value:fmtTok(k.total_tokens),change:k.tokens_change,unit:''},
+    {label:'总费用',value:fmtCost(k.total_cost),change:k.cost_change,unit:''},
+    {label:'活跃用户',value:k.active_users,change:k.users_change,unit:'人'},
+    {label:'错误率',value:fmtPct(k.error_rate),change:k.error_rate_change,unit:''},
+    {label:'平均延迟',value:Math.round(k.avg_latency_ms)+'ms',change:k.latency_change,unit:''},
+    {label:'P95延迟',value:Math.round(k.p95_latency_ms)+'ms',change:0,unit:''},
+    {label:'P99延迟',value:Math.round(k.p99_latency_ms)+'ms',change:0,unit:''},
+  ];
+  const row=document.getElementById('kpi-row');
+  row.innerHTML=items.map(i=>{
+    const a=arrow(i.change);
+    const cls=changeCls(i.change);
+    const pct=Math.abs(i.change).toFixed(1);
+    return `<div class="kpi-card"><div class="value">${i.value}</div><div class="label">${i.label}</div><div class="change ${cls}">${a} ${pct}%</div></div>`;
+  }).join('');
+}
+
+function mkChart(id){
+  const el=document.getElementById(id);
+  if(!el)return null;
+  const c=echarts.init(el,'dark');
+  charts.push(c);
+  return c;
+}
+
+function initDailyTrend(){
+  const c=mkChart('chart-daily-trend');if(!c||!D.daily_trend||!D.daily_trend.length)return;
+  const dates=D.daily_trend.map(r=>r.date);
+  c.setOption({
+    tooltip:{trigger:'axis'},
+    legend:{data:['输入 Token','输出 Token']},
+    grid:{left:60,right:20,top:40,bottom:30},
+    xAxis:{type:'category',data:dates,axisLabel:{fontSize:10}},
+    yAxis:{type:'value',axisLabel:{formatter:v=>fmtTok(v)}},
+    series:[
+      {name:'输入 Token',type:'line',stack:'t',areaStyle:{opacity:0.3},data:D.daily_trend.map(r=>r.input_tokens),itemStyle:{color:'#4fc3f7'},lineStyle:{width:2}},
+      {name:'输出 Token',type:'line',stack:'t',areaStyle:{opacity:0.3},data:D.daily_trend.map(r=>r.output_tokens),itemStyle:{color:'#66bb6a'},lineStyle:{width:2}}
+    ]
+  });
+}
+
+function initCostTrend(){
+  const c=mkChart('chart-cost-trend');if(!c||!D.daily_trend||!D.daily_trend.length)return;
+  c.setOption({
+    tooltip:{trigger:'axis',formatter:p=>'$'+p[0].value.toFixed(2)},
+    grid:{left:60,right:20,top:30,bottom:30},
+    xAxis:{type:'category',data:D.daily_trend.map(r=>r.date),axisLabel:{fontSize:10}},
+    yAxis:{type:'value',axisLabel:{formatter:v=>'$'+v.toFixed(0)}},
+    series:[{type:'line',data:D.daily_trend.map(r=>r.cost_usd),areaStyle:{opacity:0.3,color:'#ff7043'},itemStyle:{color:'#ff7043'},lineStyle:{width:2}}]
+  });
+}
+
+function initHeatmap(){
+  const c=mkChart('chart-heatmap');if(!c||!D.heatmap_data||!D.heatmap_data.length)return;
+  const days=['周日','周一','周二','周三','周四','周五','周六'];
+  const hours=[];for(let i=0;i<24;i++)hours.push(i+':00');
+  const data=D.heatmap_data.map(h=>[h.hour,h.day,h.value]);
+  let maxVal=0;data.forEach(d=>{if(d[2]>maxVal)maxVal=d[2]});
+  c.setOption({
+    tooltip:{formatter:function(p){return days[p.value[1]]+' '+hours[p.value[0]]+'<br>请求数: '+p.value[2]}},
+    grid:{left:60,right:60,top:10,bottom:40},
+    xAxis:{type:'category',data:hours,splitArea:{show:true}},
+    yAxis:{type:'category',data:days,splitArea:{show:true}},
+    visualMap:{min:0,max:maxVal||1,calculable:true,orient:'horizontal',left:'center',bottom:0,inRange:{color:['#0d1b2a','#1b3a5c','#3a7bd5','#4fc3f7']}},
+    series:[{type:'heatmap',data:data,label:{show:false},emphasis:{itemStyle:{shadowBlur:10,shadowColor:'rgba(0,0,0,0.5)'}}}]
+  });
+}
+
+function initTopUsers(){
+  const c=mkChart('chart-top-users');if(!c||!D.top_users_by_token||!D.top_users_by_token.length)return;
+  const users=D.top_users_by_token.map(u=>u.username).reverse();
+  const vals=D.top_users_by_token.map(u=>u.value).reverse();
+  c.setOption({
+    tooltip:{trigger:'axis',axisPointer:{type:'shadow'}},
+    grid:{left:100,right:40,top:10,bottom:30},
+    xAxis:{type:'value',axisLabel:{formatter:v=>fmtTok(v)}},
+    yAxis:{type:'category',data:users},
+    series:[{type:'bar',data:vals,itemStyle:{color:new echarts.graphic.LinearGradient(0,0,1,0,[{offset:0,color:'#1565c0'},{offset:1,color:'#4fc3f7'}])},barWidth:'60%'}]
+  });
+}
+
+function initModelDist(){
+  const c=mkChart('chart-model-dist');if(!c||!D.model_distribution||!D.model_distribution.length)return;
+  const colors=['#4fc3f7','#66bb6a','#ff7043','#ab47bc','#ffd54f','#26c6da','#ef5350','#8d6e63'];
+  c.setOption({
+    tooltip:{trigger:'item',formatter:p=>p.name+'<br>Token: '+fmtTok(p.value)+'<br>占比: '+p.percent+'%'},
+    legend:{orient:'vertical',right:10,top:'center',textStyle:{color:'#b0bec5'}},
+    series:[{
+      type:'pie',radius:['40%','70%'],center:['40%','50%'],
+      data:D.model_distribution.map((m,i)=>({name:m.model,value:m.total_tokens,itemStyle:{color:colors[i%colors.length]}})),
+      label:{color:'#b0bec5'},
+      emphasis:{itemStyle:{shadowBlur:10,shadowOffsetX:0,shadowColor:'rgba(0,0,0,0.5)'}}
+    }]
+  });
+}
+
+function initUpstream(){
+  const c=mkChart('chart-upstream');if(!c||!D.upstream_stats||!D.upstream_stats.length)return;
+  const urls=D.upstream_stats.map(u=>u.url.replace(/https?:\/\//,'').split('/')[0]);
+  c.setOption({
+    tooltip:{trigger:'axis'},
+    legend:{data:['平均延迟(ms)','错误率(%)']},
+    grid:{left:60,right:60,top:40,bottom:30},
+    xAxis:{type:'category',data:urls,axisLabel:{fontSize:10}},
+    yAxis:[
+      {type:'value',name:'ms',axisLabel:{formatter:v=>v+'ms'}},
+      {type:'value',name:'%',axisLabel:{formatter:v=>v+'%'}}
+    ],
+    series:[
+      {name:'平均延迟(ms)',type:'bar',data:D.upstream_stats.map(u=>Math.round(u.avg_latency)),itemStyle:{color:'#4fc3f7'}},
+      {name:'错误率(%)',type:'bar',yAxisIndex:1,data:D.upstream_stats.map(u=>parseFloat(u.error_rate.toFixed(2))),itemStyle:{color:'#ef5350'}}
+    ]
+  });
+}
+
+function initStatusCodes(){
+  const c=mkChart('chart-status-codes');if(!c||!D.status_code_dist||!D.status_code_dist.length)return;
+  const colors=D.status_code_dist.map(s=>{
+    if(s.status_code>=200&&s.status_code<300)return'#66bb6a';
+    if(s.status_code>=400&&s.status_code<500)return'#ff7043';
+    return'#ef5350';
+  });
+  c.setOption({
+    tooltip:{trigger:'axis'},
+    grid:{left:60,right:20,top:30,bottom:30},
+    xAxis:{type:'category',data:D.status_code_dist.map(s=>s.status_code.toString())},
+    yAxis:{type:'value'},
+    series:[{type:'bar',data:D.status_code_dist.map((s,i)=>({value:s.count,itemStyle:{color:colors[i]}}))}]
+  });
+}
+
+function initStreaming(){
+  const c=mkChart('chart-streaming');if(!c)return;
+  const sr=D.streaming_ratio;
+  c.setOption({
+    tooltip:{trigger:'axis'},
+    legend:{data:['请求数','平均延迟(ms)']},
+    grid:{left:60,right:60,top:40,bottom:30},
+    xAxis:{type:'category',data:['流式','非流式']},
+    yAxis:[
+      {type:'value',name:'请求数'},
+      {type:'value',name:'ms'}
+    ],
+    series:[
+      {name:'请求数',type:'bar',data:[sr.streaming_count,sr.non_streaming_count],itemStyle:{color:'#4fc3f7'}},
+      {name:'平均延迟(ms)',type:'bar',yAxisIndex:1,data:[Math.round(sr.streaming_avg_latency),Math.round(sr.non_streaming_avg_latency)],itemStyle:{color:'#ff7043'}}
+    ]
+  });
+}
+
+function initGroups(){
+  const c=mkChart('chart-groups');if(!c||!D.group_comparison||!D.group_comparison.length)return;
+  const names=D.group_comparison.map(g=>g.group_name||g.group_id);
+  c.setOption({
+    tooltip:{trigger:'axis'},
+    legend:{data:['Token 用量','费用(USD)','活跃用户']},
+    grid:{left:60,right:60,top:40,bottom:30},
+    xAxis:{type:'category',data:names},
+    yAxis:[
+      {type:'value',axisLabel:{formatter:v=>fmtTok(v)}},
+      {type:'value',axisLabel:{formatter:v=>'$'+v}}
+    ],
+    series:[
+      {name:'Token 用量',type:'bar',data:D.group_comparison.map(g=>g.total_tokens),itemStyle:{color:'#4fc3f7'}},
+      {name:'费用(USD)',type:'bar',yAxisIndex:1,data:D.group_comparison.map(g=>parseFloat(g.cost_usd.toFixed(2))),itemStyle:{color:'#ff7043'}},
+    ]
+  });
+}
+
+function initIORatio(){
+  const c=mkChart('chart-io-ratio');if(!c||!D.io_ratio_buckets||!D.io_ratio_buckets.length)return;
+  c.setOption({
+    tooltip:{trigger:'axis'},
+    grid:{left:60,right:20,top:30,bottom:30},
+    xAxis:{type:'category',data:D.io_ratio_buckets.map(b=>b.range)},
+    yAxis:{type:'value'},
+    series:[{type:'bar',data:D.io_ratio_buckets.map(b=>b.count),itemStyle:{color:'#ab47bc'},barWidth:'60%'}]
+  });
+}
+
+function initGroupTokenBoxplot(){
+  const c=mkChart('chart-group-token-boxplot');if(!c||!D.group_token_box_plots||!D.group_token_box_plots.length)return;
+  const data=D.group_token_box_plots.map(g=>[g.min,g.q1,g.median,g.q3,g.max]);
+  const labels=D.group_token_box_plots.map(g=>g.group_name||g.group_id);
+  c.setOption({
+    tooltip:{trigger:'axis',formatter:function(p){
+      const g=D.group_token_box_plots[p[0].dataIndex];
+      return (g.group_name||g.group_id)+'<br>最小: '+fmtTok(g.min)+'<br>Q1: '+fmtTok(g.q1)+'<br>中位: '+fmtTok(g.median)+'<br>Q3: '+fmtTok(g.q3)+'<br>最大: '+fmtTok(g.max)+'<br>用户数: '+g.count;
+    }},
+    grid:{left:60,right:20,top:30,bottom:30},
+    xAxis:{type:'category',data:labels,axisLabel:{fontSize:10}},
+    yAxis:{type:'value',name:'Token 用量',axisLabel:{formatter:v=>fmtTok(v)}},
+    series:[{
+      type:'boxplot',
+      data:data,
+      itemStyle:{color:'#ab47bc',borderColor:'#7b1fa2'},
+      emphasis:{itemStyle:{shadowBlur:10,shadowColor:'rgba(0,0,0,0.5)'}}
+    }]
+  });
+}
+
+function initFreq(){
+  const c=mkChart('chart-freq');if(!c||!D.user_freq_buckets||!D.user_freq_buckets.length)return;
+  c.setOption({
+    tooltip:{trigger:'axis'},
+    grid:{left:60,right:20,top:30,bottom:30},
+    xAxis:{type:'category',data:D.user_freq_buckets.map(b=>b.range)},
+    yAxis:{type:'value'},
+    series:[{type:'bar',data:D.user_freq_buckets.map(b=>b.count),itemStyle:{color:'#26c6da'},barWidth:'60%'}]
+  });
+}
+
+function initPareto(){
+  const c=mkChart('chart-pareto');if(!c||!D.pareto_data||!D.pareto_data.length)return;
+  c.setOption({
+    tooltip:{trigger:'axis'},
+    legend:{data:['Token 用量','累积贡献%']},
+    grid:{left:60,right:60,top:40,bottom:40},
+    xAxis:{type:'category',data:D.pareto_data.slice(0,20).map(p=>p.username),axisLabel:{rotate:45,fontSize:10}},
+    yAxis:[
+      {type:'value',axisLabel:{formatter:v=>fmtTok(v)}},
+      {type:'value',max:100,axisLabel:{formatter:v=>v+'%'}}
+    ],
+    series:[
+      {name:'Token 用量',type:'bar',data:D.pareto_data.slice(0,20).map(p=>p.total_tokens),itemStyle:{color:'#ff7043'}},
+      {name:'累积贡献%',type:'line',yAxisIndex:1,data:D.pareto_data.slice(0,20).map(p=>p.cumulative_pct),itemStyle:{color:'#ef5350'},lineStyle:{width:2,type:'dashed'},markLine:{data:[{yAxis:80,name:'80%'}],lineStyle:{color:'#ffd54f',type:'dashed'}}}
+    ]
+  });
+}
+
+function initLatencyBoxplot(){
+  const c=mkChart('chart-latency-boxplot');if(!c||!D.latency_box_plots||!D.latency_box_plots.length)return;
+  const data=D.latency_box_plots.map(bp=>[bp.min,bp.q1,bp.median,bp.q3,bp.max]);
+  c.setOption({
+    tooltip:{trigger:'axis',formatter:function(p){
+      const bp=D.latency_box_plots[p[0].dataIndex];
+      return bp.model+'<br>最小: '+bp.min+'ms<br>Q1: '+bp.q1+'ms<br>中位: '+bp.median+'ms<br>Q3: '+bp.q3+'ms<br>最大: '+bp.max+'ms<br>样本: '+bp.count;
+    }},
+    grid:{left:80,right:20,top:30,bottom:30},
+    xAxis:{type:'category',data:D.latency_box_plots.map(bp=>bp.model),axisLabel:{fontSize:10}},
+    yAxis:{type:'value',name:'延迟(ms)',axisLabel:{formatter:v=>v+'ms'}},
+    series:[{
+      type:'boxplot',
+      data:data,
+      itemStyle:{color:'#4fc3f7',borderColor:'#0288d1'},
+      emphasis:{itemStyle:{shadowBlur:10,shadowColor:'rgba(0,0,0,0.5)'}}
+    }]
+  });
+}
+
+function initLatencyPercentiles(){
+  const c=mkChart('chart-latency-percentiles');if(!c||!D.latency_percentiles||!D.latency_percentiles.length)return;
+  c.setOption({
+    tooltip:{trigger:'axis'},
+    legend:{data:['P50(中位)','P95','P99']},
+    grid:{left:60,right:20,top:40,bottom:30},
+    xAxis:{type:'category',data:D.latency_percentiles.map(r=>r.date),axisLabel:{fontSize:9}},
+    yAxis:{type:'value',name:'延迟(ms)',axisLabel:{formatter:v=>v+'ms'}},
+    series:[
+      {name:'P50(中位)',type:'line',data:D.latency_percentiles.map(r=>r.p50),itemStyle:{color:'#4fc3f7'},lineStyle:{width:2}},
+      {name:'P95',type:'line',data:D.latency_percentiles.map(r=>r.p95),itemStyle:{color:'#ff7043'},lineStyle:{width:2}},
+      {name:'P99',type:'line',data:D.latency_percentiles.map(r=>r.p99),itemStyle:{color:'#ef5350'},lineStyle:{width:2}}
+    ]
+  });
+}
+
+function initModelCost(){
+  const c=mkChart('chart-model-cost');if(!c||!D.model_cost_breakdown||!D.model_cost_breakdown.length)return;
+  const colors=['#4fc3f7','#66bb6a','#ff7043','#ab47bc','#ffd54f','#26c6da','#ef5350','#8d6e63'];
+  c.setOption({
+    tooltip:{trigger:'item',formatter:p=>p.name+'<br>费用: $'+p.value.cost.toFixed(2)+'<br>占比: '+p.value.pct.toFixed(1)+'%<br>请求: '+p.value.reqs},
+    legend:{orient:'vertical',right:10,top:'center',textStyle:{color:'#b0bec5'}},
+    series:[{
+      type:'pie',radius:['40%','70%'],center:['40%','50%'],
+      data:D.model_cost_breakdown.map((m,i)=>({name:m.model,value:{cost:m.cost_usd,pct:m.cost_percent,reqs:m.requests},itemStyle:{color:colors[i%colors.length]}})),
+      label:{color:'#b0bec5'},
+      emphasis:{itemStyle:{shadowBlur:10,shadowOffsetX:0,shadowColor:'rgba(0,0,0,0.5)'}}
+    }]
+  });
+}
+
+function initIOScatter(){
+  const c=mkChart('chart-io-scatter');if(!c||!D.io_scatter_plot||!D.io_scatter_plot.length)return;
+  const data=D.io_scatter_plot.map(p=>[p.input_tokens,p.output_tokens]);
+  c.setOption({
+    tooltip:{trigger:'item'},
+    grid:{left:60,right:20,top:30,bottom:30},
+    xAxis:{type:'value',name:'输入 Token',axisLabel:{formatter:v=>fmtTok(v)}},
+    yAxis:{type:'value',name:'输出 Token',axisLabel:{formatter:v=>fmtTok(v)}},
+    series:[{
+      type:'scatter',
+      data:data,
+      symbolSize:function(val){return Math.min(15,Math.max(3,Math.sqrt(val[0]+val[1])/100))},
+      itemStyle:{color:new echarts.graphic.LinearGradient(0,0,1,1,[{offset:0,color:'#4fc3f7'},{offset:1,color:'#26c6da'}],false),opacity:0.6},
+      emphasis:{itemStyle:{opacity:1,shadowBlur:10}}
+    }]
+  });
+}
+
+function initEngagementTrend(){
+  const c=mkChart('chart-engagement-trend');if(!c||!D.engagement_trend||!D.engagement_trend.length)return;
+  c.setOption({
+    tooltip:{trigger:'axis'},
+    legend:{data:['DAU','WAU','MAU']},
+    grid:{left:60,right:20,top:40,bottom:30},
+    xAxis:{type:'category',data:D.engagement_trend.map(r=>r.date),axisLabel:{fontSize:9}},
+    yAxis:{type:'value',name:'活跃用户数'},
+    series:[
+      {name:'DAU',type:'line',data:D.engagement_trend.map(r=>r.dau),itemStyle:{color:'#4fc3f7'},lineStyle:{width:2}},
+      {name:'WAU',type:'line',data:D.engagement_trend.map(r=>r.wau),itemStyle:{color:'#ff7043'},lineStyle:{width:2}},
+      {name:'MAU',type:'line',data:D.engagement_trend.map(r=>r.mau),itemStyle:{color:'#ef5350'},lineStyle:{width:2}}
+    ]
+  });
+}
+
+function initUpstreamLatency(){
+  const c=mkChart('chart-upstream-latency');if(!c||!D.upstream_latency_box_plot||!D.upstream_latency_box_plot.length)return;
+  const data=D.upstream_latency_box_plot.map(bp=>[bp.min,bp.q1,bp.median,bp.q3,bp.max]);
+  const labels=D.upstream_latency_box_plot.map(bp=>bp.model.replace(/^https?:\/\//,'').split('/')[0]);
+  c.setOption({
+    tooltip:{trigger:'axis',formatter:function(p){
+      const bp=D.upstream_latency_box_plot[p[0].dataIndex];
+      return bp.model+'<br>最小: '+bp.min+'ms<br>Q1: '+bp.q1+'ms<br>中位: '+bp.median+'ms<br>Q3: '+bp.q3+'ms<br>最大: '+bp.max+'ms<br>样本: '+bp.count;
+    }},
+    grid:{left:150,right:20,top:30,bottom:30},
+    xAxis:{type:'category',data:labels,axisLabel:{fontSize:9}},
+    yAxis:{type:'value',name:'延迟(ms)',axisLabel:{formatter:v=>v+'ms'}},
+    series:[{
+      type:'boxplot',
+      data:data,
+      itemStyle:{color:'#66bb6a',borderColor:'#388e3c'},
+      emphasis:{itemStyle:{shadowBlur:10,shadowColor:'rgba(0,0,0,0.5)'}}
+    }]
+  });
+}
+
+function initModelRadar(){
+  const c=mkChart('chart-model-radar');if(!c||!D.model_radar_data||!D.model_radar_data.length)return;
+  const indicators=[
+    {name:'延迟',max:100},
+    {name:'成本',max:100},
+    {name:'吞吐',max:100},
+    {name:'可靠性',max:100},
+    {name:'采纳',max:100}
+  ];
+  const series=D.model_radar_data.map(m=>({
+    value:[m.latency_score,m.cost_score,m.throughput_score,m.reliability_score,m.adoption_score],
+    name:m.model
+  }));
+  c.setOption({
+    legend:{data:D.model_radar_data.map(m=>m.model),textStyle:{color:'#b0bec5'}},
+    tooltip:{trigger:'item'},
+    radar:{shape:'polygon',name:{textStyle:{color:'#b0bec5'}},splitNumber:4,name:{textStyle:{color:'#b0bec5'}},splitLine:{lineStyle:{color:['#1a1a4e','#2a2a5e','#3a3a7e','#4a4a9e'].reverse()}},splitArea:{areaStyle:{color:['rgba(79,195,247,0.1)','rgba(102,187,106,0.1)','rgba(255,112,67,0.1)','rgba(171,71,188,0.1)'].reverse()}},axisLine:{lineStyle:{color:'#555'}},indicator:indicators},
+    series:[{type:'radar',data:series,symbol:'circle',symbolSize:4,itemStyle:{color:'#4fc3f7',borderColor:'#0288d1'},areaStyle:{opacity:0.3},lineStyle:{width:2}}]
+  });
+}
+
+function initAdoptionRate(){
+  const c=mkChart('chart-adoption-rate');if(!c)return;
+  const ad=D.adoption_rate;
+  if(!ad||ad.total_registered===0)return;
+  c.setOption({
+    tooltip:{trigger:'item'},
+    series:[{
+      type:'pie',radius:['30%','70%'],center:['50%','50%'],
+      data:[
+        {value:ad.total_active,name:'活跃用户 '+ad.total_active,itemStyle:{color:'#4fc3f7'}},
+        {value:ad.total_registered-ad.total_active,name:'未激活 '+(ad.total_registered-ad.total_active),itemStyle:{color:'#ddd'}}
+      ],
+      label:{formatter:'{b|{b}}\n{per|{d}%}',rich:{b:{color:'#b0bec5',fontSize:11,fontWeight:'bold'},per:{color:'#b0bec5',fontSize:10}}},
+      emphasis:{itemStyle:{shadowBlur:10,shadowOffsetX:0,shadowColor:'rgba(0,0,0,0.5)'}}
+    }],
+    title:{text:'采纳率 '+ad.adoption_percent.toFixed(1)+'%',left:'center',top:'center',textStyle:{color:'#b0bec5',fontSize:16,fontWeight:'bold'}}
+  });
+}
+
+function renderSlowRequests(){
+  const tbody=document.querySelector('#slow-table tbody');
+  if(!tbody||!D.slow_requests||!D.slow_requests.length){
+    if(tbody)tbody.innerHTML='<tr><td colspan="8" style="text-align:center;color:#666">无数据</td></tr>';
+    return;
+  }
+  tbody.innerHTML=D.slow_requests.map(r=>
+    `<tr><td>${r.created_at}</td><td>${r.username}</td><td>${r.model}</td><td>${fmt(r.input_tokens)}</td><td>${fmt(r.output_tokens)}</td><td>${fmt(r.duration_ms)}</td><td>${r.status_code}</td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.upstream_url}</td></tr>`
+  ).join('');
+}
+
+function renderInsights(){
+  const container=document.getElementById('insights-container');
+  if(!container||!D.insights||!D.insights.length){
+    if(container)container.innerHTML='<p style="color:#666;text-align:center">暂无洞察数据</p>';
+    return;
+  }
+  container.innerHTML=D.insights.map(i=>
+    `<div class="insight-card insight-${i.type}"><h4>${i.title}</h4><p>${i.detail}</p></div>`
+  ).join('');
+}
+
+function renderQuotaTable(){
+  const tbody=document.querySelector('#quota-table tbody');
+  if(!tbody||!D.quota_usage||!D.quota_usage.length){
+    if(tbody)tbody.innerHTML='<tr><td colspan="7" style="text-align:center;color:#666">暂无配额数据或用户未设置配额</td></tr>';
+    return;
+  }
+  tbody.innerHTML=D.quota_usage.map(q=>
+    `<tr><td>${q.username}</td><td>${fmtTok(q.daily_limit)}</td><td>${fmtTok(q.daily_used)}</td><td><span style="color:${q.daily_usage_percent>80?'#ef5350':q.daily_usage_percent>50?'#ff7043':'#66bb6a'}">${fmtPct(q.daily_usage_percent)}</span></td><td>${fmtTok(q.monthly_limit)}</td><td>${fmtTok(q.monthly_used)}</td><td><span style="color:${q.monthly_usage_percent>80?'#ef5350':q.monthly_usage_percent>50?'#ff7043':'#66bb6a'}">${fmtPct(q.monthly_usage_percent)}</span></td></tr>`
+  ).join('');
+}
+
+document.addEventListener('DOMContentLoaded',function(){
+  init();
+  renderQuotaTable();
+});
+</script>
+</body>
+</html>
