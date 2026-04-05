@@ -34,6 +34,34 @@ jobs:
         run: make release
         # 输出：dist/pairproxy-<version>-<os>-<arch>.tar.gz / .zip
 
+      - name: Build reportgen binaries
+        run: |
+          VERSION=${{ github.ref_name }}
+          mkdir -p dist
+          cd tools/reportgen
+          for GOOS in linux darwin windows; do
+            for GOARCH in amd64 arm64; do
+              EXT=""
+              [ "$GOOS" = "windows" ] && EXT=".exe"
+              OUTPUT="../../dist/reportgen-${VERSION}-${GOOS}-${GOARCH}${EXT}"
+              echo "Building $OUTPUT"
+              GOOS=$GOOS GOARCH=$GOARCH go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o "$OUTPUT" .
+            done
+          done
+          cd ../..
+          # 打包：linux/darwin 用 tar.gz，windows 用 zip
+          for GOOS in linux darwin; do
+            for GOARCH in amd64 arm64; do
+              NAME="reportgen-${VERSION}-${GOOS}-${GOARCH}"
+              tar -czf "dist/${NAME}.tar.gz" -C dist "${NAME}"
+              rm "dist/${NAME}"
+            done
+          done
+          for GOARCH in amd64 arm64; do
+            NAME="reportgen-${VERSION}-windows-${GOARCH}.exe"
+            (cd dist && zip "${NAME%.exe}.zip" "${NAME}" && rm "${NAME}")
+          done
+
       - name: Generate SHA256 checksums
         run: |
           cd dist
