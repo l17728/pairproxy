@@ -1,10 +1,10 @@
 # PairProxy 项目验收报告
 
 **项目名称**: PairProxy - 企业级 LLM API 代理网关
-**版本**: v2.22.0 (WebUI Expansion Phase 1/2/3)
-**提交日期**: 2026-03-28
-**开发语言**: Go 1.23
-**代码规模**: 60,800+ 行非空非注释 Go 代码（含测试，v2.22.0 新增约 334 行文档）
+**版本**: v2.24.1 (Model-Aware Routing + Reportgen CI Release)
+**提交日期**: 2026-04-05
+**开发语言**: Go 1.24
+**代码规模**: 62,000+ 行非空非注释 Go 代码（含测试）
 
 ---
 
@@ -32,6 +32,8 @@ PairProxy 是一个企业级的 LLM API 代理网关系统，提供统一的 API
 - **训练语料采集 Corpus (v2.16.0)**: 异步采集 LLM 请求/响应对为 JSONL 训练语料，质量过滤（错误响应/短回复/排除分组/空输出），支持 Anthropic/OpenAI/Ollama 三种 SSE 格式，按日期+大小文件轮转，记录 model_requested 和 model_actual 双模型字段
 - **语义路由 Semantic Router (v2.18.0)**: 根据请求 messages 语义意图缩窄 LLM 候选池；分类器复用现有 LB（防递归）；规则来自 YAML + DB（DB 优先，热更新）；REST API + CLI 管理规则；分类失败自动降级到完整候选池；仅对无绑定用户生效
 - **WebUI 健康检查运行时同步 (v2.19.0)**: 修复通过 WebUI/API 添加 LLM target 后健康检查永远不健康的问题；每次 Create/Update/Delete/Enable/Disable 后 `SyncLLMTargets()` 同步 llmBalancer 和 llmHC；有 HealthCheckPath 的新节点以 Healthy=false 入场并立即触发单次主动检查（秒级，无需等 30s ticker）；存量节点健康/排水状态在 Sync 时完整保留
+- **Model-Aware Routing (v2.24.0)**: 每个 LLM target 可声明 `supported_models`（支持通配符）和 `auto_model`；网关按模型过滤候选池，双级 Fail-Open 保障请求不被阻塞；配置文件 targets 首次启动自动种子化入库（Config-as-Seed）
+- **Reportgen 可视化报告工具 (v2.24.x)**: 从 SQLite 数据库生成交互式 HTML 分析报告，16+ 可视化卡片，覆盖用户/运维/管理三视角；v2.24.1 起提供 6 平台预编译二进制，无需自行编译
 
 ---
 

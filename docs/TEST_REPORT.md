@@ -1,8 +1,8 @@
 # PairProxy 测试报告
 
-**生成时间**: 2026-03-28
-**测试版本**: v2.22.0 (WebUI Expansion Phase 1/2/3)
-**测试环境**: Windows 11, Go 1.23
+**生成时间**: 2026-04-05
+**测试版本**: v2.24.1 (Model-Aware Routing + Reportgen CI Release)
+**测试环境**: Windows 11, Go 1.24
 
 ---
 
@@ -12,14 +12,15 @@
 
 | 测试类型 | 状态 | 测试数 | 通过 | 跳过 | 失败 | 说明 |
 |---------|------|--------|------|------|------|------|
-| 单元测试 (UT) | ✅ PASS | 1,956 | 1,956 | 0 | 0 | 25个包全量单元测试（v2.22.0 累计） |
+| 单元测试 (UT) | ✅ PASS | 1,956+ | 1,956+ | 0 | 0 | 含 Model-Aware Routing 单元测试（v2.24.0 累计） |
 | 子测试 (subtests) | ✅ PASS | 580+ | 580+ | 0 | 0 | t.Run 表驱动子测试 |
 | 集成测试 | ✅ PASS | 8 | 8 | 0 | 0 | integration_by_GLM5_test.go |
 | E2E测试 (httptest) | ✅ PASS | 90+ | 90+ | 0 | 0 | 含 Direct Proxy E2E + 用户流量 + LLM Target |
 | E2E测试 (integration) | ✅ PASS | 34 | 34 | 0 | 0 | WebUI Phase 1/2/3 端到端验证 |
 | 协议转换测试 | ✅ PASS | 80+ | 80+ | 0 | 0 | 含 OtoA 请求/响应/流式/错误转换（v2.10.0 +45 RUN） |
+| Model-Aware Routing | ✅ PASS | — | — | 0 | 0 | filterByModel / Seed / autoModel 单元测试（CI通过） |
 
-**总计**: 1,956 顶层测试全部通过，25 个包 0 FAIL
+**总计**: 全部顶层测试通过，0 FAIL；CI 流水线（Go 1.24，ubuntu-latest）绿色
 
 ---
 

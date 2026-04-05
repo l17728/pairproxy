@@ -4,27 +4,42 @@
 
 reportgen 是 PairProxy 的可视化分析报告生成工具，能够从 SQLite 数据库中提取使用数据，生成交互式 HTML 报告。报告包含 16+ 个可视化卡片，覆盖用户、运维和管理三个视角的分析需求。
 
-**最新版本**: v2.26.0  
-**发布日期**: 2026-04-07
+**最新版本**: v2.24.1
+**发布日期**: 2026-04-05
 
 ---
 
 ## 快速开始
 
-### 前置条件
+### 方式一：直接下载预编译二进制（推荐）
 
-- Go 1.21+ (仅用于编译，生成的二进制无需依赖)
-- SQLite 数据库文件 (含 users, groups, usage_logs 表)
-- 现代浏览器 (Chrome, Firefox, Safari, Edge)
+从 [GitHub Releases](https://github.com/l17728/pairproxy/releases/latest) 下载对应平台的预编译包，无需安装 Go 环境：
 
-### 最简单的用法
+| 平台 | 文件 |
+|------|------|
+| Linux x86_64 | `reportgen-v2.24.1-linux-amd64.tar.gz` |
+| Linux ARM64 | `reportgen-v2.24.1-linux-arm64.tar.gz` |
+| macOS x86_64 | `reportgen-v2.24.1-darwin-amd64.tar.gz` |
+| macOS ARM64 (Apple Silicon) | `reportgen-v2.24.1-darwin-arm64.tar.gz` |
+| Windows x86_64 | `reportgen-v2.24.1-windows-amd64.zip` |
+| Windows ARM64 | `reportgen-v2.24.1-windows-arm64.zip` |
 
 ```bash
-# 编译 (在 tools/reportgen 目录)
+# Linux/macOS 示例
+tar -xzf reportgen-v2.24.1-linux-amd64.tar.gz
+./reportgen -db /path/to/pairproxy.db -from 2026-04-01 -to 2026-04-05
+```
+
+### 方式二：从源码编译
+
+**前置条件**: Go 1.21+
+
+```bash
+# 在 tools/reportgen 目录
 go build -o reportgen
 
 # 生成报告
-./reportgen -db /path/to/pairproxy.db -from 2026-04-01 -to 2026-04-07
+./reportgen -db /path/to/pairproxy.db -from 2026-04-01 -to 2026-04-05
 ```
 
 这会在当前目录生成 `report.html`，可直接用浏览器打开。

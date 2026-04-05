@@ -1711,3 +1711,6 @@ sproxy admin corpus list
 | v2.18.0 | `POST /api/admin/semantic-router/rules/{id}/enable\|disable` — 规则启用/禁用 |
 | v2.18.0 | `GET /api/admin/semantic-router/status` — 语义路由系统状态查询 |
 | v2.18.0 | `sproxy admin semantic-router` CLI — 语义路由规则完整命令行管理 |
+| v2.24.0 | `POST /api/admin/llm/targets` 新增 `supported_models`（`[]string`，支持通配符）、`auto_model`（`string`）字段 — Model-Aware Routing |
+| v2.24.0 | `PUT /api/admin/llm/targets/{url}` 新增 `supported_models`、`auto_model` 可选字段（部分更新） |
+| v2.24.0 | `sproxy admin llm target add/update` 新增 `--supported-models`、`--auto-model` 参数 |

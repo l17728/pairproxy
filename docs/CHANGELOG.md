@@ -1,5 +1,49 @@
 # PairProxy Changelog
 
+## [v2.24.1] - 2026-04-05
+
+### 🔧 CI/CD
+- **Reportgen 发布自动化**: GitHub Release 流水线新增 reportgen 工具的交叉编译步骤，推送 `v*` tag 后自动构建并发布以下平台的预编译二进制：
+  - `reportgen-<version>-linux-amd64.tar.gz`
+  - `reportgen-<version>-linux-arm64.tar.gz`
+  - `reportgen-<version>-darwin-amd64.tar.gz`
+  - `reportgen-<version>-darwin-arm64.tar.gz`
+  - `reportgen-<version>-windows-amd64.zip`
+  - `reportgen-<version>-windows-arm64.zip`
+- 所有产物纳入统一 `SHA256SUMS.txt` 校验文件
+
+### 📚 Documentation
+- 更新 CHANGELOG、Release Notes、测试报告、验收报告、API 手册、reportgen 使用手册至 v2.24.1
+
+---
+
+## [v2.24.0] - 2026-04-04
+
+### ✨ New Features
+
+#### Model-Aware Routing (F1/F2/F3)
+
+**F1 — Config-as-Seed（配置即种子）**
+- 配置文件中的 LLM target 在首次启动时自动写入数据库（种子化）
+- 数据库中已存在的记录（WebUI 修改过的）不会被覆盖
+- `LLMTargetRepo` 新增 `Seed()` 方法，带存在性检查，防止重复写入
+
+**F2 — Per-Target Supported Models（目标级模型声明）**
+- 每个 LLM target 可通过 `supported_models` 字段声明支持的模型列表
+- 支持精确匹配、前缀通配（`claude-3-*`）、全通配（`*`）三种模式
+- 空列表 = 接受所有模型（向后兼容）
+- 新增 `auto_model` 字段：当请求模型不在支持列表时自动替换为指定模型
+- 降级策略：`auto_model` > `supported_models[0]` > 透传（空字符串）
+- 两级 Fail-Open 策略：
+  - Level 1：按 Provider 过滤，若结果为空则使用所有健康 target
+  - Level 2：按模型过滤，若结果为空则使用所有健康 target（Fail-Open）
+
+**F3 — REST API & CLI 支持**
+- `POST /api/admin/llm/targets` 和 `PUT /api/admin/llm/targets/{url}` 新增 `supported_models`、`auto_model` 字段
+- CLI `sproxy admin llm target add/update` 新增 `--supported-models`、`--auto-model` 参数
+
+---
+
 ## [v2.23.0] - 2026-04-04
 
 ### 🐛 Bug Fixes
