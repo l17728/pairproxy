@@ -350,9 +350,10 @@ func TestE2E_LLMDistribute_EvenSpread(t *testing.T) {
 	repo := db.NewLLMBindingRepo(gormDB, logger)
 
 	userIDs := []string{"u1", "u2", "u3", "u4", "u5", "u6"}
-	targets := []string{"http://ta.fake", "http://tb.fake"}
+	// 使用 UUID 风格的 targetID（LLMBinding.TargetID 存 UUID，不存 URL）
+	targetIDs := []string{"tid-ta", "tid-tb"}
 
-	if err := repo.EvenDistribute(userIDs, targets); err != nil {
+	if err := repo.EvenDistribute(userIDs, targetIDs); err != nil {
 		t.Fatalf("EvenDistribute: %v", err)
 	}
 
@@ -366,11 +367,11 @@ func TestE2E_LLMDistribute_EvenSpread(t *testing.T) {
 
 	counts := map[string]int{}
 	for _, b := range bindings {
-		counts[b.TargetURL]++
+		counts[b.TargetID]++ // 按 TargetID（UUID）统计
 	}
-	for _, tgt := range targets {
-		if counts[tgt] != 3 {
-			t.Errorf("target %q: expected 3 users, got %d", tgt, counts[tgt])
+	for _, tid := range targetIDs {
+		if counts[tid] != 3 {
+			t.Errorf("target %q: expected 3 users, got %d", tid, counts[tid])
 		}
 	}
 }

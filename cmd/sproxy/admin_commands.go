@@ -205,10 +205,17 @@ var targetsetAddTargetCmd = &cobra.Command{
 			return fmt.Errorf("target set not found: %s", setName)
 		}
 
+		// 解析 URL → target ID
+		llmTargetRepo := db.NewLLMTargetRepo(gormDB, logger)
+		targetID, err := resolveTargetID(llmTargetRepo, url)
+		if err != nil {
+			return fmt.Errorf("resolve target %q: %w", url, err)
+		}
+
 		member := &db.GroupTargetSetMember{
 			ID:           uuid.NewString(),
 			TargetSetID:  set.ID,
-			TargetURL:    url,
+			TargetID:     targetID,
 			Weight:       weight,
 			Priority:     priority,
 			IsActive:     true,
@@ -266,7 +273,14 @@ var targetsetRemoveTargetCmd = &cobra.Command{
 			return fmt.Errorf("target set not found: %s", setName)
 		}
 
-		if err := repo.RemoveMember(set.ID, url); err != nil {
+		// 解析 URL → target ID
+		llmTargetRepo := db.NewLLMTargetRepo(gormDB, logger)
+		targetID, err := resolveTargetID(llmTargetRepo, url)
+		if err != nil {
+			return fmt.Errorf("resolve target %q: %w", url, err)
+		}
+
+		if err := repo.RemoveMember(set.ID, targetID); err != nil {
 			return fmt.Errorf("remove member: %w", err)
 		}
 
@@ -314,7 +328,14 @@ var targetsetSetWeightCmd = &cobra.Command{
 			return fmt.Errorf("target set not found: %s", setName)
 		}
 
-		if err := repo.UpdateMember(set.ID, url, weight, priority); err != nil {
+		// 解析 URL → target ID
+		llmTargetRepo := db.NewLLMTargetRepo(gormDB, logger)
+		targetID, err := resolveTargetID(llmTargetRepo, url)
+		if err != nil {
+			return fmt.Errorf("resolve target %q: %w", url, err)
+		}
+
+		if err := repo.UpdateMember(set.ID, targetID, weight, priority); err != nil {
 			return fmt.Errorf("update member: %w", err)
 		}
 
@@ -391,7 +412,7 @@ var targetsetShowCmd = &cobra.Command{
 			if !m.IsActive {
 				status = "inactive"
 			}
-			fmt.Printf("  %-40s  %-8d  %-8d  %-10s\n", m.TargetURL, m.Weight, m.Priority, status)
+			fmt.Printf("  %-40s  %-8d  %-8d  %-10s\n", m.TargetID, m.Weight, m.Priority, status)
 		}
 		return nil
 	},

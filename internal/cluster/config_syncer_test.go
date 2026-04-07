@@ -335,7 +335,7 @@ func TestConfigSyncer_LLMTargetsAndBindingsSynced(t *testing.T) {
 			},
 		},
 		LLMBindings: []db.LLMBinding{
-			{ID: "b1", TargetURL: "https://api.example.com", UserID: &userID},
+			{ID: "b1", TargetID: "t1", UserID: &userID},
 		},
 	}
 
@@ -380,7 +380,7 @@ func TestConfigSyncer_LLMTargetsAndBindingsSynced(t *testing.T) {
 	}
 	found := false
 	for _, b := range bindings {
-		if b.ID == "b1" && b.TargetURL == "https://api.example.com" {
+		if b.ID == "b1" && b.TargetID == "t1" {
 			found = true
 			break
 		}

@@ -21,6 +21,23 @@ func setupTestDB(t *testing.T) *gorm.DB {
 	return testDB
 }
 
+// addTestMember 创建 LLMTarget 记录并将其添加为 target set 成员
+func addTestMember(t *testing.T, testDB *gorm.DB, repo *db.GroupTargetSetRepo, setID string, targetURL string, weight int, isActive bool, healthStatus string) {
+	t.Helper()
+	llmTargetRepo := db.NewLLMTargetRepo(testDB, zap.NewNop())
+	targetID := uuid.New().String()
+	require.NoError(t, llmTargetRepo.Create(&db.LLMTarget{
+		ID: targetID, URL: targetURL, Provider: "anthropic", Source: "database",
+	}))
+	require.NoError(t, repo.AddMember(setID, &db.GroupTargetSetMember{
+		ID:           uuid.New().String(),
+		TargetID:     targetID,
+		Weight:       weight,
+		IsActive:     isActive,
+		HealthStatus: healthStatus,
+	}))
+}
+
 // TestGroupTargetSelector_SelectTarget_WeightedRandom 测试加权随机选择
 func TestGroupTargetSelector_SelectTarget_WeightedRandom(t *testing.T) {
 	testDB := setupTestDB(t)
@@ -46,14 +63,7 @@ func TestGroupTargetSelector_SelectTarget_WeightedRandom(t *testing.T) {
 	}
 
 	for _, tc := range targetConfigs {
-		member := &db.GroupTargetSetMember{
-			ID:           uuid.New().String(),
-			TargetURL:    tc.url,
-			Weight:       tc.weight,
-			IsActive:     true,
-			HealthStatus: "healthy",
-		}
-		require.NoError(t, repo.AddMember(set.ID, member))
+		addTestMember(t, testDB, repo, set.ID, tc.url, tc.weight, true, "healthy")
 	}
 
 	// 执行选择
@@ -78,14 +88,7 @@ func TestGroupTargetSelector_SelectTarget_NoHealthyTargets(t *testing.T) {
 	require.NoError(t, repo.Create(set))
 
 	// 添加不健康的 target
-	member := &db.GroupTargetSetMember{
-		ID:           uuid.New().String(),
-		TargetURL:    "https://api.example.com",
-		Weight:       1,
-		IsActive:     true,
-		HealthStatus: "unhealthy",
-	}
-	require.NoError(t, repo.AddMember(set.ID, member))
+	addTestMember(t, testDB, repo, set.ID, "https://api.example.com", 1, true, "unhealthy")
 
 	// 执行选择（应该失败）
 	selected, _, err := selector.SelectTarget(context.Background(), "", []string{})

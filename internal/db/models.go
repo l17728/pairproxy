@@ -96,18 +96,20 @@ type AuditLog struct {
 // 用于将请求路由到指定 LLM 上游，支持精细化流量分配。
 // 优先级：用户级绑定 > 分组级绑定 > 负载均衡。
 type LLMBinding struct {
-	ID        string     `gorm:"primarykey"`
-	TargetURL string     `gorm:"not null;index"` // LLM target URL（与 config.LLMTarget.URL 匹配）
-	UserID    *string    `gorm:"index"`          // 用户级绑定（优先，与 GroupID 互斥使用）
-	GroupID   *string    `gorm:"index"`          // 分组级绑定（兜底）
+	ID       string  `gorm:"primarykey"`
+	TargetID string  `gorm:"not null;index"` // LLM target UUID（与 llm_targets.id 匹配）
+	UserID   *string `gorm:"index"`          // 用户级绑定（优先，与 GroupID 互斥使用）
+	GroupID  *string `gorm:"index"`          // 分组级绑定（兜底）
+	// TargetURL 仅用于展示（通过 JOIN 填充，不存储于此列）
+	TargetURL string `gorm:"-"`
 	CreatedAt time.Time
 }
 
 // LLMTarget LLM 目标端点（支持配置文件和数据库双来源）
 type LLMTarget struct {
 	ID              string     `gorm:"primarykey"`
-	URL             string     `gorm:"uniqueIndex;not null"` // LLM 端点 URL
-	APIKeyID        *string    `gorm:"index"`                // 外键 → api_keys.id（可选）
+	URL             string     `gorm:"not null;uniqueIndex:idx_llm_target_url_apikey"` // LLM 端点 URL（与 APIKeyID 组合唯一）
+	APIKeyID        *string    `gorm:"uniqueIndex:idx_llm_target_url_apikey;index"`    // 外键 → api_keys.id（与 URL 组合唯一）
 	Provider        string     `gorm:"default:'anthropic'"`  // "anthropic" | "openai" | "ollama"
 	Name            string     // 显示名称
 	Weight          int        `gorm:"default:1"`            // 负载均衡权重
@@ -169,7 +171,8 @@ type GroupTargetSet struct {
 type GroupTargetSetMember struct {
 	ID            string    `gorm:"primarykey"`
 	TargetSetID   string    `gorm:"not null;index"`
-	TargetURL     string    `gorm:"not null;index"`
+	TargetID      string    `gorm:"not null;index"` // FK → llm_targets.id（UUID）
+	TargetURL     string    `gorm:"-"`              // 仅用于展示（通过 JOIN 填充，不存储）
 	Weight        int       `gorm:"default:1"`
 	Priority      int       `gorm:"default:0"`
 	IsActive      bool      `gorm:"default:true"`
@@ -178,8 +181,8 @@ type GroupTargetSetMember struct {
 	ConsecutiveFailures int `gorm:"default:0"`
 	CreatedAt     time.Time
 
-	// 唯一约束：同一 target_set 内 URL 唯一
-	// UNIQUE(target_set_id, target_url) 由 GORM 的 uniqueIndex 处理
+	// 唯一约束：同一 target_set 内 target 唯一
+	// UNIQUE(target_set_id, target_id) 由 GORM 的 uniqueIndex 处理
 }
 
 // TargetAlert Target 告警事件（持久化存储）

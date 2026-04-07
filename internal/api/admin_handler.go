@@ -31,6 +31,7 @@ type AdminHandler struct {
 	auditRepo         *db.AuditRepo
 	tokenRepo         *db.RefreshTokenRepo           // 可选，token 吊销
 	apiKeyRepo        *db.APIKeyRepo                 // 可选，F-5 多 API Key 管理
+	llmTargetRepo     *db.LLMTargetRepo              // 可选，URL→ID 解析
 	encryptFn         func(string) (string, error)   // 可选，加密 API Key 明文
 	llmBindingRepo    *db.LLMBindingRepo             // 可选，LLM 绑定管理
 	llmHealthFn       func() []proxy.LLMTargetStatus // 可选，查询 LLM 健康状态
@@ -79,6 +80,11 @@ func NewAdminHandler(
 func (h *AdminHandler) SetAPIKeyRepo(repo *db.APIKeyRepo, encryptFn func(string) (string, error)) {
 	h.apiKeyRepo = repo
 	h.encryptFn = encryptFn
+}
+
+// SetLLMTargetRepo 设置 LLM target 仓库（可选；启用 target_url→target_id 解析）。
+func (h *AdminHandler) SetLLMTargetRepo(repo *db.LLMTargetRepo) {
+	h.llmTargetRepo = repo
 }
 
 // SetDrainFunctions 设置排水控制函数（可选；不设置则 drain 端点返回 501）。

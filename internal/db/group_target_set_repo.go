@@ -160,8 +160,8 @@ func (r *GroupTargetSetRepo) AddMember(setID string, member *GroupTargetSetMembe
 	if setID == "" {
 		return fmt.Errorf("target set ID cannot be empty")
 	}
-	if member.TargetURL == "" {
-		return fmt.Errorf("target URL cannot be empty")
+	if member.TargetID == "" {
+		return fmt.Errorf("target ID cannot be empty")
 	}
 
 	member.TargetSetID = setID
@@ -172,12 +172,12 @@ func (r *GroupTargetSetRepo) AddMember(setID string, member *GroupTargetSetMembe
 
 	// 使用原生 SQL 插入，确保 IsActive 字段被正确保存（包括 false 值）
 	if err := r.db.Exec(
-		"INSERT INTO group_target_set_members (id, target_set_id, target_url, weight, priority, is_active, health_status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-		member.ID, member.TargetSetID, member.TargetURL, member.Weight, member.Priority, member.IsActive, member.HealthStatus, member.CreatedAt,
+		"INSERT INTO group_target_set_members (id, target_set_id, target_id, weight, priority, is_active, health_status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+		member.ID, member.TargetSetID, member.TargetID, member.Weight, member.Priority, member.IsActive, member.HealthStatus, member.CreatedAt,
 	).Error; err != nil {
 		r.logger.Error("failed to add member",
 			zap.String("target_set_id", setID),
-			zap.String("target_url", member.TargetURL),
+			zap.String("target_id", member.TargetID),
 			zap.Error(err),
 		)
 		return fmt.Errorf("add member: %w", err)
@@ -185,17 +185,17 @@ func (r *GroupTargetSetRepo) AddMember(setID string, member *GroupTargetSetMembe
 
 	r.logger.Debug("member added",
 		zap.String("target_set_id", setID),
-		zap.String("target_url", member.TargetURL),
+		zap.String("target_id", member.TargetID),
 	)
 	return nil
 }
 
-// RemoveMember 从 target set 移除 member
-func (r *GroupTargetSetRepo) RemoveMember(setID string, targetURL string) error {
-	if err := r.db.Delete(&GroupTargetSetMember{}, "target_set_id = ? AND target_url = ?", setID, targetURL).Error; err != nil {
+// RemoveMember 从 target set 移除 member（按 target_id）
+func (r *GroupTargetSetRepo) RemoveMember(setID string, targetID string) error {
+	if err := r.db.Delete(&GroupTargetSetMember{}, "target_set_id = ? AND target_id = ?", setID, targetID).Error; err != nil {
 		r.logger.Error("failed to remove member",
 			zap.String("target_set_id", setID),
-			zap.String("target_url", targetURL),
+			zap.String("target_id", targetID),
 			zap.Error(err),
 		)
 		return fmt.Errorf("remove member: %w", err)
@@ -203,22 +203,22 @@ func (r *GroupTargetSetRepo) RemoveMember(setID string, targetURL string) error 
 
 	r.logger.Debug("member removed",
 		zap.String("target_set_id", setID),
-		zap.String("target_url", targetURL),
+		zap.String("target_id", targetID),
 	)
 	return nil
 }
 
-// UpdateMember 更新 member 的权重和优先级
-func (r *GroupTargetSetRepo) UpdateMember(setID string, targetURL string, weight, priority int) error {
+// UpdateMember 更新 member 的权重和优先级（按 target_id）
+func (r *GroupTargetSetRepo) UpdateMember(setID string, targetID string, weight, priority int) error {
 	if err := r.db.Model(&GroupTargetSetMember{}).
-		Where("target_set_id = ? AND target_url = ?", setID, targetURL).
+		Where("target_set_id = ? AND target_id = ?", setID, targetID).
 		Updates(map[string]interface{}{
 			"weight":   weight,
 			"priority": priority,
 		}).Error; err != nil {
 		r.logger.Error("failed to update member",
 			zap.String("target_set_id", setID),
-			zap.String("target_url", targetURL),
+			zap.String("target_id", targetID),
 			zap.Error(err),
 		)
 		return fmt.Errorf("update member: %w", err)
@@ -226,7 +226,7 @@ func (r *GroupTargetSetRepo) UpdateMember(setID string, targetURL string, weight
 
 	r.logger.Debug("member updated",
 		zap.String("target_set_id", setID),
-		zap.String("target_url", targetURL),
+		zap.String("target_id", targetID),
 		zap.Int("weight", weight),
 		zap.Int("priority", priority),
 	)
@@ -282,8 +282,14 @@ func (r *GroupTargetSetRepo) GetAvailableTargetsForGroup(groupID string) ([]Targ
 
 	targets := make([]TargetWithWeight, len(members))
 	for i, m := range members {
+		url := m.TargetID // fallback: use ID as URL if join not available
+		// 通过 JOIN 获取实际 URL
+		var lt LLMTarget
+		if err := r.db.Where("id = ?", m.TargetID).First(&lt).Error; err == nil {
+			url = lt.URL
+		}
 		targets[i] = TargetWithWeight{
-			URL:      m.TargetURL,
+			URL:      url,
 			Weight:   m.Weight,
 			Priority: m.Priority,
 			Healthy:  m.HealthStatus == "healthy",
@@ -293,8 +299,8 @@ func (r *GroupTargetSetRepo) GetAvailableTargetsForGroup(groupID string) ([]Targ
 	return targets, nil
 }
 
-// UpdateTargetHealth 更新 target 的健康状态
-func (r *GroupTargetSetRepo) UpdateTargetHealth(targetURL string, healthy bool) error {
+// UpdateTargetHealth 更新 target 的健康状态（按 target_id）
+func (r *GroupTargetSetRepo) UpdateTargetHealth(targetID string, healthy bool) error {
 	status := "healthy"
 	if !healthy {
 		status = "unhealthy"
@@ -302,10 +308,10 @@ func (r *GroupTargetSetRepo) UpdateTargetHealth(targetURL string, healthy bool) 
 
 	// 更新所有包含该 target 的 target set members
 	if err := r.db.Model(&GroupTargetSetMember{}).
-		Where("target_url = ?", targetURL).
+		Where("target_id = ?", targetID).
 		Update("health_status", status).Error; err != nil {
 		r.logger.Error("failed to update target health",
-			zap.String("target_url", targetURL),
+			zap.String("target_id", targetID),
 			zap.String("status", status),
 			zap.Error(err),
 		)
@@ -313,7 +319,7 @@ func (r *GroupTargetSetRepo) UpdateTargetHealth(targetURL string, healthy bool) 
 	}
 
 	r.logger.Debug("target health updated",
-		zap.String("target_url", targetURL),
+		zap.String("target_id", targetID),
 		zap.String("status", status),
 	)
 

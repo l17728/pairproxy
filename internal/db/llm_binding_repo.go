@@ -26,7 +26,7 @@ func NewLLMBindingRepo(db *gorm.DB, logger *zap.Logger) *LLMBindingRepo {
 // Set 创建或替换绑定。
 // 同一 userID 或 groupID 的旧绑定会先被删除，再创建新绑定。
 // userID 和 groupID 至少有一个非 nil。
-func (r *LLMBindingRepo) Set(targetURL string, userID, groupID *string) error {
+func (r *LLMBindingRepo) Set(targetID string, userID, groupID *string) error {
 	if userID == nil && groupID == nil {
 		return fmt.Errorf("llm_binding: userID and groupID cannot both be nil")
 	}
@@ -46,7 +46,7 @@ func (r *LLMBindingRepo) Set(targetURL string, userID, groupID *string) error {
 		// 创建新绑定
 		b := &LLMBinding{
 			ID:        uuid.NewString(),
-			TargetURL: targetURL,
+			TargetID:  targetID,
 			UserID:    userID,
 			GroupID:   groupID,
 			CreatedAt: time.Now(),
@@ -56,7 +56,7 @@ func (r *LLMBindingRepo) Set(targetURL string, userID, groupID *string) error {
 		}
 
 		r.logger.Info("llm binding set",
-			zap.String("target_url", targetURL),
+			zap.String("target_id", targetID),
 			zap.Any("user_id", userID),
 			zap.Any("group_id", groupID),
 		)
@@ -65,15 +65,15 @@ func (r *LLMBindingRepo) Set(targetURL string, userID, groupID *string) error {
 }
 
 // FindForUser 查找用户的 LLM target 绑定，用户级优先于分组级。
-// 返回 (targetURL, true, nil) 若找到；(", false, nil) 若无绑定；("", false, err) 若 DB 错误。
-func (r *LLMBindingRepo) FindForUser(userID, groupID string) (targetURL string, found bool, err error) {
+// 返回 (targetID, true, nil) 若找到；("", false, nil) 若无绑定；("", false, err) 若 DB 错误。
+func (r *LLMBindingRepo) FindForUser(userID, groupID string) (targetID string, found bool, err error) {
 	// 1. 先查用户级绑定
 	if userID != "" {
 		var b LLMBinding
 		err := r.db.Where("user_id = ?", userID).First(&b).Error
 		if err == nil {
-			r.logger.Debug("llm binding found (user)", zap.String("user_id", userID), zap.String("target_url", b.TargetURL))
-			return b.TargetURL, true, nil
+			r.logger.Debug("llm binding found (user)", zap.String("user_id", userID), zap.String("target_id", b.TargetID))
+			return b.TargetID, true, nil
 		}
 		if err != gorm.ErrRecordNotFound {
 			return "", false, fmt.Errorf("find user llm binding: %w", err)
@@ -85,8 +85,8 @@ func (r *LLMBindingRepo) FindForUser(userID, groupID string) (targetURL string, 
 		var b LLMBinding
 		err := r.db.Where("group_id = ?", groupID).First(&b).Error
 		if err == nil {
-			r.logger.Debug("llm binding found (group)", zap.String("group_id", groupID), zap.String("target_url", b.TargetURL))
-			return b.TargetURL, true, nil
+			r.logger.Debug("llm binding found (group)", zap.String("group_id", groupID), zap.String("target_id", b.TargetID))
+			return b.TargetID, true, nil
 		}
 		if err != gorm.ErrRecordNotFound {
 			return "", false, fmt.Errorf("find group llm binding: %w", err)
@@ -115,13 +115,13 @@ func (r *LLMBindingRepo) Delete(id string) error {
 	return nil
 }
 
-// EvenDistribute 将 userIDs 中**尚无用户级绑定**的用户轮询分配到 targetURLs。
+// EvenDistribute 将 userIDs 中**尚无用户级绑定**的用户轮询分配到 targetIDs。
 // 已有用户级绑定的用户（如直连用户手动设置的固定绑定）会被跳过，不受影响。
-// user[i] → targetURLs[i % len(targetURLs)]，在单个事务中完成。
-// targetURLs 为空时返回 error。
-func (r *LLMBindingRepo) EvenDistribute(userIDs []string, targetURLs []string) error {
-	if len(targetURLs) == 0 {
-		return fmt.Errorf("llm_binding: targetURLs must not be empty")
+// user[i] → targetIDs[i % len(targetIDs)]，在单个事务中完成。
+// targetIDs 为空时返回 error。
+func (r *LLMBindingRepo) EvenDistribute(userIDs []string, targetIDs []string) error {
+	if len(targetIDs) == 0 {
+		return fmt.Errorf("llm_binding: targetIDs must not be empty")
 	}
 	if len(userIDs) == 0 {
 		r.logger.Info("even distribute: no users to distribute")
@@ -164,11 +164,11 @@ func (r *LLMBindingRepo) EvenDistribute(userIDs []string, targetURLs []string) e
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		now := time.Now()
 		for i, uid := range toAssign {
-			targetURL := targetURLs[i%len(targetURLs)]
+			targetID := targetIDs[i%len(targetIDs)]
 			uidCopy := uid
 			b := &LLMBinding{
 				ID:        uuid.NewString(),
-				TargetURL: targetURL,
+				TargetID:  targetID,
 				UserID:    &uidCopy,
 				CreatedAt: now,
 			}
@@ -179,7 +179,7 @@ func (r *LLMBindingRepo) EvenDistribute(userIDs []string, targetURLs []string) e
 
 		r.logger.Info("even distribution completed",
 			zap.Int("assigned", len(toAssign)),
-			zap.Int("targets", len(targetURLs)),
+			zap.Int("targets", len(targetIDs)),
 		)
 		return nil
 	})

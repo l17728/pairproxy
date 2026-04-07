@@ -64,14 +64,7 @@ func TestGroupTargetSetIntegration_CompleteFlow(t *testing.T) {
 
 	// 添加 targets
 	for i := 0; i < 3; i++ {
-		member := &db.GroupTargetSetMember{
-			ID:           uuid.New().String(),
-			TargetURL:    "https://api" + string(rune('1'+i)) + ".example.com",
-			Weight:       1,
-			IsActive:     true,
-			HealthStatus: "healthy",
-		}
-		require.NoError(t, repo.AddMember(set.ID, member))
+		addTestMember(t, testDB, repo, set.ID, "https://api"+string(rune('1'+i))+".example.com", 1, true, "healthy")
 	}
 
 	// 测试选择 target
@@ -146,14 +139,7 @@ func TestGroupTargetSetIntegration_FailoverFlow(t *testing.T) {
 	url2 := "https://api2.example.com"
 
 	for _, url := range []string{url1, url2} {
-		member := &db.GroupTargetSetMember{
-			ID:           uuid.New().String(),
-			TargetURL:    url,
-			Weight:       1,
-			IsActive:     true,
-			HealthStatus: "healthy",
-		}
-		require.NoError(t, repo.AddMember(set.ID, member))
+		addTestMember(t, testDB, repo, set.ID, url, 1, true, "healthy")
 	}
 
 	// 第一次选择

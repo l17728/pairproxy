@@ -209,7 +209,7 @@ func TestTargetSetMembers(t *testing.T) {
 		member := &db.GroupTargetSetMember{
 			ID:           uuid.NewString(),
 			TargetSetID:  set.ID,
-			TargetURL:    "http://llm1.local:8080",
+			TargetID:     "llm-target-1",
 			Weight:       10,
 			Priority:     0,
 			IsActive:     true,
@@ -222,7 +222,7 @@ func TestTargetSetMembers(t *testing.T) {
 		members, err := repo.ListMembers(set.ID)
 		assert.NoError(t, err)
 		assert.Equal(t, 1, len(members))
-		assert.Equal(t, "http://llm1.local:8080", members[0].TargetURL)
+		assert.Equal(t, "llm-target-1", members[0].TargetID)
 		assert.Equal(t, 10, members[0].Weight)
 	})
 
@@ -230,7 +230,7 @@ func TestTargetSetMembers(t *testing.T) {
 		member2 := &db.GroupTargetSetMember{
 			ID:           uuid.NewString(),
 			TargetSetID:  set.ID,
-			TargetURL:    "http://llm2.local:8080",
+			TargetID:     "llm-target-2",
 			Weight:       5,
 			Priority:     1,
 			IsActive:     true,
@@ -246,30 +246,30 @@ func TestTargetSetMembers(t *testing.T) {
 	})
 
 	t.Run("update member weight", func(t *testing.T) {
-		err := repo.UpdateMember(set.ID, "http://llm1.local:8080", 20, 0)
+		err := repo.UpdateMember(set.ID, "llm-target-1", 20, 0)
 		assert.NoError(t, err)
 
 		members, err := repo.ListMembers(set.ID)
 		assert.NoError(t, err)
 		for _, m := range members {
-			if m.TargetURL == "http://llm1.local:8080" {
+			if m.TargetID == "llm-target-1" {
 				assert.Equal(t, 20, m.Weight)
 			}
 		}
 	})
 
 	t.Run("remove member from target set", func(t *testing.T) {
-		err := repo.RemoveMember(set.ID, "http://llm1.local:8080")
+		err := repo.RemoveMember(set.ID, "llm-target-1")
 		assert.NoError(t, err)
 
 		members, err := repo.ListMembers(set.ID)
 		assert.NoError(t, err)
 		assert.Equal(t, 1, len(members))
-		assert.Equal(t, "http://llm2.local:8080", members[0].TargetURL)
+		assert.Equal(t, "llm-target-2", members[0].TargetID)
 	})
 
 	t.Run("remove non-existent member", func(t *testing.T) {
-		err := repo.RemoveMember(set.ID, "http://non-existent.local:8080")
+		err := repo.RemoveMember(set.ID, "non-existent-id")
 		// RemoveMember doesn't error on non-existent URL, it just doesn't delete anything
 		assert.NoError(t, err)
 	})

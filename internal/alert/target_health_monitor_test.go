@@ -67,15 +67,22 @@ func TestTargetHealthMonitor_HealthyTarget(t *testing.T) {
 
 	testDB := setupTestDB(t)
 	repo := db.NewGroupTargetSetRepo(testDB, zap.NewNop())
+	llmTargetRepo := db.NewLLMTargetRepo(testDB, zap.NewNop())
 	alertRepo := db.NewTargetAlertRepo(testDB, zap.NewNop())
 
-	// 创建 target set 并添加 member
+	// 创建 LLMTarget 记录（TargetID → URL 映射）
+	targetID := uuid.New().String()
+	require.NoError(t, llmTargetRepo.Create(&db.LLMTarget{
+		ID: targetID, URL: server.URL, Provider: "anthropic", Source: "database",
+	}))
+
+	// 创建 target set 并添加 member（使用 TargetID）
 	set := &db.GroupTargetSet{
 		ID: uuid.New().String(), Name: "test", Strategy: "weighted_random",
 	}
 	require.NoError(t, repo.Create(set))
 	require.NoError(t, repo.AddMember(set.ID, &db.GroupTargetSetMember{
-		ID: uuid.New().String(), TargetURL: server.URL,
+		ID: uuid.New().String(), TargetID: targetID,
 		Weight: 1, IsActive: true,
 	}))
 
@@ -89,7 +96,7 @@ func TestTargetHealthMonitor_HealthyTarget(t *testing.T) {
 		FailureThreshold: 2,
 		SuccessThreshold: 1,
 		Path:             "/",
-	}, zap.NewNop())
+	}, zap.NewNop(), WithLLMTargetRepo(llmTargetRepo))
 
 	monitor.Start(context.Background())
 	time.Sleep(200 * time.Millisecond) // 等待首次检查完成
@@ -112,14 +119,20 @@ func TestTargetHealthMonitor_UnhealthyTarget(t *testing.T) {
 
 	testDB := setupTestDB(t)
 	repo := db.NewGroupTargetSetRepo(testDB, zap.NewNop())
+	llmTargetRepo := db.NewLLMTargetRepo(testDB, zap.NewNop())
 	alertRepo := db.NewTargetAlertRepo(testDB, zap.NewNop())
+
+	targetID := uuid.New().String()
+	require.NoError(t, llmTargetRepo.Create(&db.LLMTarget{
+		ID: targetID, URL: server.URL, Provider: "anthropic", Source: "database",
+	}))
 
 	set := &db.GroupTargetSet{
 		ID: uuid.New().String(), Name: "test", Strategy: "weighted_random",
 	}
 	require.NoError(t, repo.Create(set))
 	require.NoError(t, repo.AddMember(set.ID, &db.GroupTargetSetMember{
-		ID: uuid.New().String(), TargetURL: server.URL,
+		ID: uuid.New().String(), TargetID: targetID,
 		Weight: 1, IsActive: true,
 	}))
 
@@ -133,7 +146,7 @@ func TestTargetHealthMonitor_UnhealthyTarget(t *testing.T) {
 		FailureThreshold: 1, // 1次失败即标记不健康
 		SuccessThreshold: 1,
 		Path:             "/",
-	}, zap.NewNop())
+	}, zap.NewNop(), WithLLMTargetRepo(llmTargetRepo))
 
 	monitor.Start(context.Background())
 	time.Sleep(200 * time.Millisecond)
@@ -157,6 +170,7 @@ func TestTargetHealthMonitor_GetAllStatus(t *testing.T) {
 
 	testDB := setupTestDB(t)
 	repo := db.NewGroupTargetSetRepo(testDB, zap.NewNop())
+	llmTargetRepo := db.NewLLMTargetRepo(testDB, zap.NewNop())
 	alertRepo := db.NewTargetAlertRepo(testDB, zap.NewNop())
 
 	set := &db.GroupTargetSet{
@@ -164,8 +178,12 @@ func TestTargetHealthMonitor_GetAllStatus(t *testing.T) {
 	}
 	require.NoError(t, repo.Create(set))
 	for _, s := range servers {
+		targetID := uuid.New().String()
+		require.NoError(t, llmTargetRepo.Create(&db.LLMTarget{
+			ID: targetID, URL: s.URL, Provider: "anthropic", Source: "database",
+		}))
 		require.NoError(t, repo.AddMember(set.ID, &db.GroupTargetSetMember{
-			ID: uuid.New().String(), TargetURL: s.URL,
+			ID: uuid.New().String(), TargetID: targetID,
 			Weight: 1, IsActive: true,
 		}))
 	}
@@ -178,7 +196,7 @@ func TestTargetHealthMonitor_GetAllStatus(t *testing.T) {
 		Interval: 500 * time.Millisecond,
 		Timeout:  2 * time.Second,
 		Path:     "/",
-	}, zap.NewNop())
+	}, zap.NewNop(), WithLLMTargetRepo(llmTargetRepo))
 
 	monitor.Start(context.Background())
 	time.Sleep(200 * time.Millisecond)

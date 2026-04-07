@@ -188,6 +188,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	llmTargets := make([]proxy.LLMTarget, 0, len(cfg.LLM.Targets))
 	for _, t := range cfg.LLM.Targets {
 		llmTargets = append(llmTargets, proxy.LLMTarget{
+			ID:           t.ID,
 			URL:          t.URL,
 			APIKey:       t.APIKey,
 			Provider:     t.Provider,
@@ -818,7 +819,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 		SuccessThreshold: 2,
 		Path:             "/health",
 	}
-	healthMonitor := alert.NewTargetHealthMonitor(groupTargetSetRepo, alertManager, healthCheckConfig, logger)
+	healthMonitor := alert.NewTargetHealthMonitor(groupTargetSetRepo, alertManager, healthCheckConfig, logger, alert.WithLLMTargetRepo(llmTargetRepo))
 	healthMonitor.Start(context.Background())
 
 	// 创建 SSE Alert Handler
@@ -1231,6 +1232,25 @@ func auditCLI(gormDB *gorm.DB, logger *zap.Logger, action, target, detail string
 	if err := repo.Create("cli-admin", action, target, detail); err != nil {
 		logger.Warn("cli audit write failed", zap.String("action", action), zap.Error(err))
 	}
+}
+
+// resolveTargetID 将 URL 或 UUID 字符串解析为 LLM target UUID。
+// 若输入已是 UUID（可通过 DB 查到 ID），直接返回；否则按 URL 查找。
+func resolveTargetID(repo *db.LLMTargetRepo, urlOrID string) (string, error) {
+	// 先尝试按 ID 查
+	t, err := repo.GetByID(urlOrID)
+	if err == nil && t != nil {
+		return t.ID, nil
+	}
+	// 再按 URL 查
+	t, err = repo.GetByURL(urlOrID)
+	if err != nil {
+		return "", fmt.Errorf("target lookup failed: %w", err)
+	}
+	if t == nil {
+		return "", fmt.Errorf("target not found: %s", urlOrID)
+	}
+	return t.ID, nil
 }
 
 // readPassword 从终端读取密码（无回显），如果非终端则直接读取
@@ -2879,7 +2899,7 @@ var adminLLMTargetsCmd = &cobra.Command{
 		}
 		bindingCounts := make(map[string]int)
 		for _, b := range bindings {
-			bindingCounts[b.TargetURL]++
+			bindingCounts[b.TargetID]++
 		}
 
 		// 输出
@@ -2907,7 +2927,7 @@ func printTargetsTable(targets []*db.LLMTarget, bindingCounts map[string]int) er
 			active = "✗"
 		}
 
-		bindings := bindingCounts[t.URL]
+		bindings := bindingCounts[t.ID]
 
 		// 截断过长的 URL 和 Name
 		url := t.URL
@@ -2961,7 +2981,7 @@ func printTargetsJSON(targets []*db.LLMTarget, bindingCounts map[string]int) err
 			Source:          t.Source,
 			IsEditable:      t.IsEditable,
 			IsActive:        t.IsActive,
-			BindingCount:    bindingCounts[t.URL],
+			BindingCount:    bindingCounts[t.ID],
 			APIKeyID:        t.APIKeyID,
 		}
 	}
@@ -2994,6 +3014,13 @@ var adminLLMBindCmd = &cobra.Command{
 		}
 		llmBindingRepo := db.NewLLMBindingRepo(database, logger)
 
+		// 解析 target：支持 UUID 或 URL
+		llmTargetRepo := db.NewLLMTargetRepo(database, logger)
+		targetID, err := resolveTargetID(llmTargetRepo, llmBindTarget)
+		if err != nil {
+			return fmt.Errorf("resolve target %q: %w", llmBindTarget, err)
+		}
+
 		if llmBindGroup != "" {
 			// 分组绑定
 			groupRepo := db.NewGroupRepo(database, logger)
@@ -3001,10 +3028,10 @@ var adminLLMBindCmd = &cobra.Command{
 			if err != nil || g == nil {
 				return fmt.Errorf("group %q not found", llmBindGroup)
 			}
-			if err := llmBindingRepo.Set(llmBindTarget, nil, &g.ID); err != nil {
+			if err := llmBindingRepo.Set(targetID, nil, &g.ID); err != nil {
 				return fmt.Errorf("bind group: %w", err)
 			}
-			auditCLI(database, logger, "llm.bind_group", llmBindGroup, "target="+llmBindTarget)
+			auditCLI(database, logger, "llm.bind_group", llmBindGroup, "target="+targetID)
 			fmt.Printf("Group %q bound to %s\n", llmBindGroup, llmBindTarget)
 			return nil
 		}
@@ -3017,10 +3044,10 @@ var adminLLMBindCmd = &cobra.Command{
 		if err != nil || u == nil {
 			return fmt.Errorf("user %q not found", args[0])
 		}
-		if err := llmBindingRepo.Set(llmBindTarget, &u.ID, nil); err != nil {
+		if err := llmBindingRepo.Set(targetID, &u.ID, nil); err != nil {
 			return fmt.Errorf("bind user: %w", err)
 		}
-		auditCLI(database, logger, "llm.bind_user", args[0], "target="+llmBindTarget)
+		auditCLI(database, logger, "llm.bind_user", args[0], "target="+targetID)
 		fmt.Printf("User %q bound to %s\n", args[0], llmBindTarget)
 		return nil
 	},
@@ -3101,6 +3128,21 @@ var adminLLMDistributeCmd = &cobra.Command{
 			return fmt.Errorf("no LLM targets configured in %s", cfgPath)
 		}
 
+		// 解析 URL → UUID（通过 DB）
+		llmTargetRepo := db.NewLLMTargetRepo(database, logger)
+		var targetIDs []string
+		for _, url := range targetURLs {
+			t, err := llmTargetRepo.GetByURL(url)
+			if err != nil || t == nil {
+				logger.Warn("target not found in DB, skipping", zap.String("url", url))
+				continue
+			}
+			targetIDs = append(targetIDs, t.ID)
+		}
+		if len(targetIDs) == 0 {
+			return fmt.Errorf("no LLM targets found in database for configured URLs")
+		}
+
 		users, err := userRepo.ListByGroup("")
 		if err != nil {
 			return fmt.Errorf("list users: %w", err)
@@ -3113,11 +3155,11 @@ var adminLLMDistributeCmd = &cobra.Command{
 		}
 
 		llmBindingRepo := db.NewLLMBindingRepo(database, logger)
-		if err := llmBindingRepo.EvenDistribute(userIDs, targetURLs); err != nil {
+		if err := llmBindingRepo.EvenDistribute(userIDs, targetIDs); err != nil {
 			return fmt.Errorf("distribute: %w", err)
 		}
-		auditCLI(database, logger, "llm.distribute", "all", fmt.Sprintf("users=%d targets=%d", len(userIDs), len(targetURLs)))
-		fmt.Printf("Distributed %d user(s) across %d target(s)\n", len(userIDs), len(targetURLs))
+		auditCLI(database, logger, "llm.distribute", "all", fmt.Sprintf("users=%d targets=%d", len(userIDs), len(targetIDs)))
+		fmt.Printf("Distributed %d user(s) across %d target(s)\n", len(userIDs), len(targetIDs))
 		return nil
 	},
 }
@@ -3143,7 +3185,7 @@ var adminLLMListCmd = &cobra.Command{
 			fmt.Println("No LLM bindings configured.")
 			return nil
 		}
-		fmt.Printf("%-36s %-15s %-30s %s\n", "ID", "TYPE", "SUBJECT", "TARGET URL")
+		fmt.Printf("%-36s %-15s %-30s %s\n", "ID", "TYPE", "SUBJECT", "TARGET ID")
 		for _, b := range bindings {
 			bindType := "group"
 			subject := ""
@@ -3153,7 +3195,7 @@ var adminLLMListCmd = &cobra.Command{
 			} else if b.GroupID != nil {
 				subject = *b.GroupID
 			}
-			fmt.Printf("%-36s %-15s %-30s %s\n", b.ID, bindType, subject, b.TargetURL)
+			fmt.Printf("%-36s %-15s %-30s %s\n", b.ID, bindType, subject, b.TargetID)
 		}
 		return nil
 	},

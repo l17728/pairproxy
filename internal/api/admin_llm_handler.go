@@ -45,21 +45,24 @@ type llmTargetResponse struct {
 
 type llmBindingResponse struct {
 	ID        string  `json:"id"`
-	TargetURL string  `json:"target_url"`
+	TargetID  string  `json:"target_id"`
+	TargetURL string  `json:"target_url"` // 展示用（通过 JOIN 填充，可能为空）
 	UserID    *string `json:"user_id,omitempty"`
 	GroupID   *string `json:"group_id,omitempty"`
 	CreatedAt string  `json:"created_at"`
 }
 
 type createLLMBindingRequest struct {
-	TargetURL string  `json:"target_url"`
+	TargetID  string  `json:"target_id"`  // 推荐：LLM target UUID
+	TargetURL string  `json:"target_url"` // 兼容旧版：通过 URL 查找 target_id
 	UserID    *string `json:"user_id,omitempty"`
 	GroupID   *string `json:"group_id,omitempty"`
 }
 
 type llmDistributeRequest struct {
-	UserIDs    []string `json:"user_ids,omitempty"`    // 若为空则使用全体活跃用户
-	TargetURLs []string `json:"target_urls,omitempty"` // 若为空则使用全部已知 target
+	UserIDs   []string `json:"user_ids,omitempty"`   // 若为空则使用全体活跃用户
+	TargetIDs []string `json:"target_ids,omitempty"` // 推荐：target UUID 列表
+	TargetURLs []string `json:"target_urls,omitempty"` // 兼容旧版
 }
 
 // ---------------------------------------------------------------------------
@@ -104,6 +107,7 @@ func (h *AdminHandler) handleListLLMBindings(w http.ResponseWriter, r *http.Requ
 	for i, b := range bindings {
 		result[i] = llmBindingResponse{
 			ID:        b.ID,
+			TargetID:  b.TargetID,
 			TargetURL: b.TargetURL,
 			UserID:    b.UserID,
 			GroupID:   b.GroupID,
@@ -125,8 +129,8 @@ func (h *AdminHandler) handleCreateLLMBinding(w http.ResponseWriter, r *http.Req
 		writeJSONError(w, http.StatusBadRequest, "invalid_json", err.Error())
 		return
 	}
-	if req.TargetURL == "" {
-		writeJSONError(w, http.StatusBadRequest, "missing_field", "target_url is required")
+	if req.TargetID == "" && req.TargetURL == "" {
+		writeJSONError(w, http.StatusBadRequest, "missing_field", "target_id or target_url is required")
 		return
 	}
 	if req.UserID == nil && req.GroupID == nil {
@@ -137,21 +141,37 @@ func (h *AdminHandler) handleCreateLLMBinding(w http.ResponseWriter, r *http.Req
 		writeJSONError(w, http.StatusBadRequest, "invalid_request", "user_id and group_id are mutually exclusive")
 		return
 	}
-	if err := h.llmBindingRepo.Set(req.TargetURL, req.UserID, req.GroupID); err != nil {
+
+	// 解析 target_id：若未提供，则通过 URL 查找
+	targetID := req.TargetID
+	if targetID == "" && h.llmTargetRepo != nil {
+		t, err := h.llmTargetRepo.GetByURL(req.TargetURL)
+		if err != nil || t == nil {
+			writeJSONError(w, http.StatusBadRequest, "target_not_found", "LLM target not found for given target_url")
+			return
+		}
+		targetID = t.ID
+	}
+	if targetID == "" {
+		// 无 llmTargetRepo 时退化到 URL（兼容测试环境）
+		targetID = req.TargetURL
+	}
+
+	if err := h.llmBindingRepo.Set(targetID, req.UserID, req.GroupID); err != nil {
 		h.logger.Error("create LLM binding failed", zap.Error(err))
 		writeJSONError(w, http.StatusInternalServerError, "internal_error", "an internal error occurred")
 		return
 	}
 	h.logger.Info("LLM binding created",
-		zap.String("target_url", req.TargetURL),
+		zap.String("target_id", targetID),
 		zap.Any("user_id", req.UserID),
 		zap.Any("group_id", req.GroupID),
 	)
 	// 审计日志
 	if detailBytes, jerr := json.Marshal(map[string]interface{}{
-		"target_url": req.TargetURL,
-		"user_id":    req.UserID,
-		"group_id":   req.GroupID,
+		"target_id": targetID,
+		"user_id":   req.UserID,
+		"group_id":  req.GroupID,
 	}); jerr == nil {
 		target := ""
 		if req.UserID != nil {
@@ -208,14 +228,23 @@ func (h *AdminHandler) handleLLMDistribute(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	// 若 target_urls 为空，从 llmHealthFn 获取全部 target
-	if len(req.TargetURLs) == 0 && h.llmHealthFn != nil {
-		statuses := h.llmHealthFn()
-		for _, s := range statuses {
-			req.TargetURLs = append(req.TargetURLs, s.URL)
+	// 若 target_ids 为空，尝试从 target_urls 解析（兼容旧版）
+	if len(req.TargetIDs) == 0 && len(req.TargetURLs) > 0 && h.llmTargetRepo != nil {
+		for _, url := range req.TargetURLs {
+			t, err := h.llmTargetRepo.GetByURL(url)
+			if err == nil && t != nil {
+				req.TargetIDs = append(req.TargetIDs, t.ID)
+			}
 		}
 	}
-	if len(req.TargetURLs) == 0 {
+	// 若 target_ids 仍为空，从 llmHealthFn 获取全部 target
+	if len(req.TargetIDs) == 0 && h.llmHealthFn != nil {
+		statuses := h.llmHealthFn()
+		for _, s := range statuses {
+			req.TargetIDs = append(req.TargetIDs, s.ID)
+		}
+	}
+	if len(req.TargetIDs) == 0 {
 		writeJSONError(w, http.StatusBadRequest, "no_targets", "no LLM targets configured or provided")
 		return
 	}
@@ -235,7 +264,7 @@ func (h *AdminHandler) handleLLMDistribute(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	if err := h.llmBindingRepo.EvenDistribute(req.UserIDs, req.TargetURLs); err != nil {
+	if err := h.llmBindingRepo.EvenDistribute(req.UserIDs, req.TargetIDs); err != nil {
 		h.logger.Error("LLM distribute failed", zap.Error(err))
 		writeJSONError(w, http.StatusBadRequest, "distribute_error", err.Error())
 		return
@@ -243,12 +272,12 @@ func (h *AdminHandler) handleLLMDistribute(w http.ResponseWriter, r *http.Reques
 
 	h.logger.Info("LLM even distribution completed",
 		zap.Int("users", len(req.UserIDs)),
-		zap.Int("targets", len(req.TargetURLs)),
+		zap.Int("targets", len(req.TargetIDs)),
 	)
 	// 审计日志
 	if detailBytes, jerr := json.Marshal(map[string]interface{}{
-		"user_count":  len(req.UserIDs),
-		"target_count": len(req.TargetURLs),
+		"user_count":   len(req.UserIDs),
+		"target_count": len(req.TargetIDs),
 	}); jerr == nil {
 		if aerr := h.auditRepo.Create("admin", "llm.distribute", "all_users", string(detailBytes)); aerr != nil {
 			h.logger.Warn("audit write failed", zap.Error(aerr))

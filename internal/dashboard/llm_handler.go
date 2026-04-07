@@ -122,7 +122,7 @@ func (h *Handler) handleLLMPage(w http.ResponseWriter, r *http.Request) {
 		} else {
 			data.Bindings = bindings
 			for _, b := range bindings {
-				data.BoundCount[b.TargetURL]++
+				data.BoundCount[b.TargetID]++
 			}
 		}
 	}
@@ -229,6 +229,15 @@ func (h *Handler) handleLLMCreateBinding(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// 解析 target URL → target ID
+	targetID := targetURL
+	if h.llmTargetRepo != nil {
+		t, err := h.llmTargetRepo.GetByURL(targetURL)
+		if err == nil && t != nil {
+			targetID = t.ID
+		}
+	}
+
 	var userID, groupID *string
 	switch bindType {
 	case "group":
@@ -247,12 +256,13 @@ func (h *Handler) handleLLMCreateBinding(w http.ResponseWriter, r *http.Request)
 		userID = &uid
 	}
 
-	if err := h.llmBindingRepo.Set(targetURL, userID, groupID); err != nil {
+	if err := h.llmBindingRepo.Set(targetID, userID, groupID); err != nil {
 		h.logger.Error("create llm binding", zap.Error(err))
 		http.Redirect(w, r, "/dashboard/llm?error="+neturl.QueryEscape(err.Error()), http.StatusSeeOther)
 		return
 	}
 	h.logger.Info("llm binding created via dashboard",
+		zap.String("target_id", targetID),
 		zap.String("target_url", targetURL),
 		zap.Any("user_id", userID),
 		zap.Any("group_id", groupID),
@@ -288,13 +298,13 @@ func (h *Handler) handleLLMDistribute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var targetURLs []string
+	var targetIDs []string
 	if h.llmHealthFn != nil {
 		for _, s := range h.llmHealthFn() {
-			targetURLs = append(targetURLs, s.URL)
+			targetIDs = append(targetIDs, s.ID)
 		}
 	}
-	if len(targetURLs) == 0 {
+	if len(targetIDs) == 0 {
 		http.Redirect(w, r, "/dashboard/llm?error=no+LLM+targets+configured", http.StatusSeeOther)
 		return
 	}
@@ -314,7 +324,7 @@ func (h *Handler) handleLLMDistribute(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := h.llmBindingRepo.EvenDistribute(userIDs, targetURLs); err != nil {
+	if err := h.llmBindingRepo.EvenDistribute(userIDs, targetIDs); err != nil {
 		h.logger.Error("llm distribute failed", zap.Error(err))
 		http.Redirect(w, r, "/dashboard/llm?error="+neturl.QueryEscape(err.Error()), http.StatusSeeOther)
 		return
@@ -322,7 +332,7 @@ func (h *Handler) handleLLMDistribute(w http.ResponseWriter, r *http.Request) {
 
 	h.logger.Info("llm even distribution via dashboard",
 		zap.Int("users", len(userIDs)),
-		zap.Int("targets", len(targetURLs)),
+		zap.Int("targets", len(targetIDs)),
 	)
 	http.Redirect(w, r, "/dashboard/llm?flash="+neturl.QueryEscape("均分完成，共分配"+strconv.Itoa(len(userIDs))+"个用户"), http.StatusSeeOther)
 }

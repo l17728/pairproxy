@@ -17,10 +17,22 @@ import (
 )
 
 // newTestBalancer 创建只含指定 URL 列表（均健康）的 balancer，供 SyncLLMTargets 测试使用。
+// ID 与 URL 相同（旧行为）。对于 SyncLLMTargets 后需要匹配 DB UUID 的场景，
+// 请用 newTestBalancerWithIDs。
 func newTestBalancer(urls []string) *lb.WeightedRandomBalancer {
 	targets := make([]lb.Target, len(urls))
 	for i, u := range urls {
 		targets[i] = lb.Target{ID: u, Addr: u, Weight: 1, Healthy: true}
+	}
+	return lb.NewWeightedRandom(targets)
+}
+
+// newTestBalancerWithIDs 创建 balancer，ID 与 URL 分离（与 SyncLLMTargets 后行为一致）。
+// ids[i] 对应 lb.Target.ID（DB UUID），urls[i] 对应 lb.Target.Addr（实际 URL）。
+func newTestBalancerWithIDs(ids, urls []string) *lb.WeightedRandomBalancer {
+	targets := make([]lb.Target, len(ids))
+	for i := range ids {
+		targets[i] = lb.Target{ID: ids[i], Addr: urls[i], Weight: 1, Healthy: true}
 	}
 	return lb.NewWeightedRandom(targets)
 }
@@ -248,7 +260,7 @@ func TestSyncLLMTargets_NewTargetWithHealthPath_StartsUnhealthyThenRecovers(t *t
 	err = repo.Create(&db.LLMTarget{ID: "a", URL: "http://a.local", APIKeyID: &keyA, Provider: "anthropic", Weight: 1, Source: "database", IsActive: true})
 	require.NoError(t, err)
 
-	bal := newTestBalancer([]string{"http://a.local"})
+	bal := newTestBalancerWithIDs([]string{"a"}, []string{"http://a.local"})
 	hc := newTestHCWithInterval(bal, logger, 60*time.Second) // 超长 interval，排除 ticker 干扰
 	sp := &SProxy{db: gormDB, logger: logger, llmBalancer: bal, llmHC: hc}
 
@@ -269,7 +281,7 @@ func TestSyncLLMTargets_NewTargetWithHealthPath_StartsUnhealthyThenRecovers(t *t
 	deadline := time.Now().Add(500 * time.Millisecond)
 	for time.Now().Before(deadline) {
 		for _, tgt := range bal.Targets() {
-			if tgt.ID == srv.URL && tgt.Healthy {
+			if tgt.Addr == srv.URL && tgt.Healthy {
 				return // 通过：检查确认健康后变 healthy，无需等 30s
 			}
 		}
@@ -346,7 +358,7 @@ func TestSyncLLMTargets_NewTargetBecomesPickable(t *testing.T) {
 	require.NoError(t, err)
 
 	// 构建 balancer（只含 A）
-	bal := newTestBalancer([]string{"http://a.local"})
+	bal := newTestBalancerWithIDs([]string{"a"}, []string{"http://a.local"})
 	hc := newTestHC(bal, logger)
 
 	sp := &SProxy{db: gormDB, logger: logger, llmBalancer: bal, llmHC: hc}
@@ -365,7 +377,7 @@ func TestSyncLLMTargets_NewTargetBecomesPickable(t *testing.T) {
 	found := false
 	for i := 0; i < 100; i++ {
 		picked, err := bal.Pick()
-		if err == nil && picked.ID == "http://b.local" {
+		if err == nil && picked.ID == "b" {
 			found = true
 			break
 		}
@@ -393,11 +405,11 @@ func TestSyncLLMTargets_PreservesExistingHealthState(t *testing.T) {
 	err = repo.Create(&db.LLMTarget{ID: "b", URL: "http://b.local", APIKeyID: &keyB, Provider: "anthropic", Weight: 1, Source: "database", IsActive: true})
 	require.NoError(t, err)
 
-	bal := newTestBalancer([]string{"http://a.local", "http://b.local"})
+	bal := newTestBalancerWithIDs([]string{"a", "b"}, []string{"http://a.local", "http://b.local"})
 	hc := newTestHC(bal, logger)
 
 	// 手动把 A 标记为不健康（模拟被动熔断）
-	bal.MarkUnhealthy("http://a.local")
+	bal.MarkUnhealthy("a")
 
 	sp := &SProxy{db: gormDB, logger: logger, llmBalancer: bal, llmHC: hc}
 
@@ -412,7 +424,7 @@ func TestSyncLLMTargets_PreservesExistingHealthState(t *testing.T) {
 
 	// A 仍应不健康（unhealthy 状态被保留）
 	for _, tgt := range bal.Targets() {
-		if tgt.ID == "http://a.local" {
+		if tgt.ID == "a" {
 			if tgt.Healthy {
 				t.Error("SyncLLMTargets should preserve existing unhealthy state for http://a.local, but it was reset to healthy")
 			}
@@ -422,14 +434,14 @@ func TestSyncLLMTargets_PreservesExistingHealthState(t *testing.T) {
 
 	// B 仍应健康
 	for _, tgt := range bal.Targets() {
-		if tgt.ID == "http://b.local" && !tgt.Healthy {
+		if tgt.ID == "b" && !tgt.Healthy {
 			t.Error("http://b.local was healthy before Sync and should remain healthy")
 		}
 	}
 
 	// C 是新 target，应为健康（默认）
 	for _, tgt := range bal.Targets() {
-		if tgt.ID == "http://c.local" && !tgt.Healthy {
+		if tgt.ID == "c" && !tgt.Healthy {
 			t.Error("new target http://c.local should start as healthy")
 		}
 	}
@@ -453,7 +465,7 @@ func TestSyncLLMTargets_DisabledTargetRemovedFromBalancer(t *testing.T) {
 	err = repo.Create(&db.LLMTarget{ID: "b", URL: "http://b.local", APIKeyID: &keyB, Provider: "anthropic", Weight: 1, Source: "database", IsActive: true})
 	require.NoError(t, err)
 
-	bal := newTestBalancer([]string{"http://a.local", "http://b.local"})
+	bal := newTestBalancerWithIDs([]string{"a", "b"}, []string{"http://a.local", "http://b.local"})
 	hc := newTestHC(bal, logger)
 	sp := &SProxy{db: gormDB, logger: logger, llmBalancer: bal, llmHC: hc}
 
@@ -464,7 +476,7 @@ func TestSyncLLMTargets_DisabledTargetRemovedFromBalancer(t *testing.T) {
 	sp.SyncLLMTargets()
 
 	for _, tgt := range bal.Targets() {
-		if tgt.ID == "http://a.local" {
+		if tgt.ID == "a" {
 			t.Error("disabled target http://a.local should be removed from balancer after Sync")
 		}
 	}
@@ -490,7 +502,7 @@ func TestSyncLLMTargets_HealthCheckPathWiredAfterSync(t *testing.T) {
 	err = repo.Create(&db.LLMTarget{ID: "a", URL: "http://a.local", APIKeyID: &keyA, Provider: "anthropic", Weight: 1, Source: "database", IsActive: true})
 	require.NoError(t, err)
 
-	bal := newTestBalancer([]string{"http://a.local"})
+	bal := newTestBalancerWithIDs([]string{"a"}, []string{"http://a.local"})
 	// 初始 healthPaths 为空 → 使用默认路径
 	hc := newTestHCWithInterval(bal, logger, 20*time.Millisecond)
 
@@ -543,7 +555,7 @@ func TestSyncLLMTargets_BadNodeWithHealthPath_StaysUnhealthy(t *testing.T) {
 	err = repo.Create(&db.LLMTarget{ID: "a", URL: "http://a.local", APIKeyID: &keyA, Provider: "anthropic", Weight: 1, Source: "database", IsActive: true})
 	require.NoError(t, err)
 
-	bal := newTestBalancer([]string{"http://a.local"})
+	bal := newTestBalancerWithIDs([]string{"a"}, []string{"http://a.local"})
 	hc := newTestHCWithInterval(bal, logger, 60*time.Second)
 	sp := &SProxy{db: gormDB, logger: logger, llmBalancer: bal, llmHC: hc}
 
@@ -566,7 +578,7 @@ func TestSyncLLMTargets_BadNodeWithHealthPath_StaysUnhealthy(t *testing.T) {
 
 	// 坏节点应仍然 Healthy=false，不可被 Pick
 	for _, tgt := range bal.Targets() {
-		if tgt.ID == deadURL && tgt.Healthy {
+		if tgt.Addr == deadURL && tgt.Healthy {
 			t.Error("bad node with HealthCheckPath should remain Healthy=false after failed CheckTarget")
 		}
 	}
@@ -576,7 +588,7 @@ func TestSyncLLMTargets_BadNodeWithHealthPath_StaysUnhealthy(t *testing.T) {
 	if pickErr != nil {
 		t.Fatalf("Pick should succeed with target-A still healthy, got: %v", pickErr)
 	}
-	if picked.ID != "http://a.local" {
+	if picked.ID != "a" {
 		t.Errorf("expected target-A to be picked, got: %s", picked.ID)
 	}
 }
@@ -599,19 +611,19 @@ func TestSyncLLMTargets_DrainStatePreservedAfterSync(t *testing.T) {
 	err = repo.Create(&db.LLMTarget{ID: "b", URL: "http://b.local", APIKeyID: &keyB, Provider: "anthropic", Weight: 1, Source: "database", IsActive: true})
 	require.NoError(t, err)
 
-	bal := newTestBalancer([]string{"http://a.local", "http://b.local"})
+	bal := newTestBalancerWithIDs([]string{"a", "b"}, []string{"http://a.local", "http://b.local"})
 	hc := newTestHC(bal, logger)
 	sp := &SProxy{db: gormDB, logger: logger, llmBalancer: bal, llmHC: hc}
 
 	// 将 target-A 设为排水状态
-	bal.SetDraining("http://a.local", true)
+	bal.SetDraining("a", true)
 
 	// 触发 Sync（模拟编辑了 target-B）
 	sp.SyncLLMTargets()
 
 	// target-A 的排水状态应被保留
 	for _, tgt := range bal.Targets() {
-		if tgt.ID == "http://a.local" && !tgt.Draining {
+		if tgt.ID == "a" && !tgt.Draining {
 			t.Error("target-A Draining=true should be preserved after SyncLLMTargets")
 		}
 	}
@@ -622,7 +634,7 @@ func TestSyncLLMTargets_DrainStatePreservedAfterSync(t *testing.T) {
 		if pickErr != nil {
 			t.Fatalf("Pick failed: %v", pickErr)
 		}
-		if picked.ID == "http://a.local" {
+		if picked.ID == "a" {
 			t.Error("draining target-A should not be picked after SyncLLMTargets")
 		}
 	}
@@ -641,18 +653,18 @@ func TestSyncLLMTargets_FailureCountPreservedAfterSync(t *testing.T) {
 	err = repo.Create(&db.LLMTarget{ID: "a", URL: "http://a.local", APIKeyID: &keyA, Provider: "anthropic", Weight: 1, Source: "database", IsActive: true})
 	require.NoError(t, err)
 
-	bal := newTestBalancer([]string{"http://a.local"})
+	bal := newTestBalancerWithIDs([]string{"a"}, []string{"http://a.local"})
 	hc := newTestHC(bal, logger)
 	sp := &SProxy{db: gormDB, logger: logger, llmBalancer: bal, llmHC: hc}
 
 	// 模拟 target-A 失败 2 次（默认阈值 3，再失败一次就熔断）
-	hc.RecordFailure("http://a.local")
-	hc.RecordFailure("http://a.local")
+	hc.RecordFailure("a")
+	hc.RecordFailure("a")
 
 	// target-A 此时仍健康（未达阈值）
 	picked, pickErr := bal.Pick()
 	require.NoError(t, pickErr)
-	assert.Equal(t, "http://a.local", picked.ID)
+	assert.Equal(t, "a", picked.ID)
 
 	// 触发 Sync（模拟添加了一个不相关的 target-B）
 	keyB := "keyB"
@@ -665,16 +677,16 @@ func TestSyncLLMTargets_FailureCountPreservedAfterSync(t *testing.T) {
 	// Sync 后 target-A 仍健康（Sync 不重置健康状态）
 	var aHealthy bool
 	for _, tgt := range bal.Targets() {
-		if tgt.ID == "http://a.local" {
+		if tgt.ID == "a" {
 			aHealthy = tgt.Healthy
 		}
 	}
 	assert.True(t, aHealthy, "target-A should still be healthy after Sync (failure count not yet at threshold)")
 
 	// 再失败一次 → 熔断（失败计数未被 Sync 重置）
-	hc.RecordFailure("http://a.local")
+	hc.RecordFailure("a")
 	for _, tgt := range bal.Targets() {
-		if tgt.ID == "http://a.local" {
+		if tgt.ID == "a" {
 			assert.False(t, tgt.Healthy, "target-A should be marked unhealthy after 3rd failure")
 		}
 	}
@@ -693,7 +705,7 @@ func TestSyncLLMTargets_EmptyTargetList(t *testing.T) {
 	err = repo.Create(&db.LLMTarget{ID: "a", URL: "http://a.local", APIKeyID: &keyA, Provider: "anthropic", Weight: 1, Source: "database", IsActive: true})
 	require.NoError(t, err)
 
-	bal := newTestBalancer([]string{"http://a.local"})
+	bal := newTestBalancerWithIDs([]string{"a"}, []string{"http://a.local"})
 	hc := newTestHC(bal, logger)
 	sp := &SProxy{db: gormDB, logger: logger, llmBalancer: bal, llmHC: hc}
 

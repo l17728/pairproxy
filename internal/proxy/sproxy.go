@@ -49,6 +49,7 @@ var ErrBoundTargetUnavailable = errors.New("assigned LLM target is currently una
 
 // LLMTarget 代表一个 LLM 后端（含 API Key 和 provider 类型）。
 type LLMTarget struct {
+	ID           string            // UUID（来自 DB，运行时路由标识）
 	URL          string
 	APIKey       string
 	Provider     string            // "anthropic"（默认）| "openai" | "ollama"
@@ -59,6 +60,7 @@ type LLMTarget struct {
 
 // LLMTargetStatus 向 Admin/Dashboard 暴露的 LLM 目标运行时状态。
 type LLMTargetStatus struct {
+	ID       string
 	URL      string
 	Name     string
 	Provider string
@@ -407,6 +409,7 @@ func (sp *SProxy) loadAllTargets(repo *db.LLMTargetRepo) ([]config.LLMTarget, er
 		}
 
 		targets = append(targets, config.LLMTarget{
+			ID:              dt.ID,
 			URL:             dt.URL,
 			APIKey:          apiKey,
 			Provider:        dt.Provider,
@@ -538,10 +541,15 @@ func (sp *SProxy) SyncLLMTargets() {
 		isNew := false
 		healthy := true
 		draining := false
-		if h, exists := existingHealth[t.URL]; exists {
+		targetID := t.ID
+		if targetID == "" {
+			// config-sourced targets without DB ID: fall back to URL as key
+			targetID = t.URL
+		}
+		if h, exists := existingHealth[targetID]; exists {
 			// 存量 target：保留当前健康/排水状态
 			healthy = h
-			draining = existingDrain[t.URL]
+			draining = existingDrain[targetID]
 		} else {
 			// 新 target
 			isNew = true
@@ -554,21 +562,27 @@ func (sp *SProxy) SyncLLMTargets() {
 		}
 
 		lbTargets = append(lbTargets, lb.Target{
-			ID:       t.URL,
+			ID:       targetID,
 			Addr:     t.URL,
 			Weight:   w,
 			Healthy:  healthy,
 			Draining: draining,
 		})
+		sp.logger.Debug("SyncLLMTargets: adding target",
+			zap.String("id", targetID),
+			zap.String("url", t.URL),
+			zap.String("name", t.Name),
+			zap.Bool("is_new", isNew),
+		)
 		if t.HealthCheckPath != "" {
-			healthPaths[t.URL] = t.HealthCheckPath
+			healthPaths[targetID] = t.HealthCheckPath
 			if isNew {
-				newTargetsWithPath = append(newTargetsWithPath, t.URL)
+				newTargetsWithPath = append(newTargetsWithPath, targetID)
 			}
 		}
 		// 构建认证凭证（用于主动健康检查认证）
 		if t.APIKey != "" {
-			credentials[t.URL] = lb.TargetCredential{
+			credentials[targetID] = lb.TargetCredential{
 				APIKey:   t.APIKey,
 				Provider: t.Provider,
 			}
@@ -754,7 +768,12 @@ func (sp *SProxy) LLMTargetStatuses() []LLMTargetStatus {
 			if w <= 0 {
 				w = 1
 			}
+			id := t.ID
+			if id == "" {
+				id = t.URL
+			}
 			result[i] = LLMTargetStatus{
+				ID:       id,
 				URL:      t.URL,
 				Name:     t.Name,
 				Provider: t.Provider,
@@ -770,15 +789,21 @@ func (sp *SProxy) LLMTargetStatuses() []LLMTargetStatus {
 	result := make([]LLMTargetStatus, 0, len(lbTargets))
 	for _, t := range lbTargets {
 		st := LLMTargetStatus{
-			URL:      t.ID,
+			ID:       t.ID,
+			URL:      t.Addr, // t.Addr is the actual network URL
 			Weight:   t.Weight,
 			Healthy:  t.Healthy,
 			Draining: t.Draining,
 		}
 		for _, lt := range sp.targets {
-			if lt.URL == t.ID {
+			ltID := lt.ID
+			if ltID == "" {
+				ltID = lt.URL
+			}
+			if ltID == t.ID {
 				st.Name = lt.Name
 				st.Provider = lt.Provider
+				st.URL = lt.URL // ensure URL from target, not lb.Target.Addr
 				break
 			}
 		}
@@ -908,7 +933,7 @@ func (sp *SProxy) pickLLMTarget(path, userID, groupID string, tried []string, ca
 
 	// 1. 用户/分组绑定优先（当 bindingResolver 已设置时必须有绑定，否则拒绝）
 	if sp.bindingResolver != nil {
-		boundURL, found := sp.bindingResolver(userID, groupID)
+		boundID, found := sp.bindingResolver(userID, groupID)
 		if !found {
 			// 无绑定 → 直接拒绝，不 fall through 到负载均衡
 			sp.logger.Warn("request rejected: no LLM binding configured for user/group",
@@ -919,30 +944,32 @@ func (sp *SProxy) pickLLMTarget(path, userID, groupID string, tried []string, ca
 		}
 
 		// 有绑定 → 必须使用该 target，不允许 fall through
-		if !triedSet[boundURL] {
+		if !triedSet[boundID] {
 			healthy := true
 			if sp.llmBalancer != nil {
 				healthy = false
 				for _, t := range sp.llmBalancer.Targets() {
-					if t.ID == boundURL {
+					if t.ID == boundID {
 						healthy = t.Healthy
 						break
 					}
 				}
 			}
 			if healthy {
+				info := sp.llmTargetInfoForID(boundID)
 				sp.logger.Debug("using bound LLM target",
 					zap.String("user_id", userID),
 					zap.String("group_id", groupID),
-					zap.String("url", boundURL),
+					zap.String("target_id", boundID),
+					zap.String("url", info.URL),
 				)
-				return sp.llmTargetInfoForURL(boundURL), nil
+				return info, nil
 			}
 		}
 
 		// 绑定 target 不健康或已试过 → 报错，不 fall through
 		sp.logger.Warn("assigned LLM target is unhealthy or already tried, request rejected",
-			zap.String("bound_url", boundURL),
+			zap.String("bound_id", boundID),
 			zap.String("user_id", userID),
 		)
 		return nil, ErrBoundTargetUnavailable
@@ -972,10 +999,14 @@ func (sp *SProxy) pickLLMTarget(path, userID, groupID string, tried []string, ca
 	// 过滤已尝试目标 + candidateFilter（若非空则只保留在 filter 内的）
 	var available []LLMTarget
 	for _, t := range candidates {
-		if triedSet[t.URL] {
+		tid := t.ID
+		if tid == "" {
+			tid = t.URL
+		}
+		if triedSet[tid] {
 			continue
 		}
-		if len(filterSet) > 0 && !filterSet[t.URL] {
+		if len(filterSet) > 0 && !filterSet[tid] {
 			continue
 		}
 		available = append(available, t)
@@ -1008,7 +1039,7 @@ func (sp *SProxy) weightedPickExcluding(path string, tried map[string]bool, cand
 				continue
 			}
 			if providerFilter != nil {
-				prov := sp.providerForURL(t.ID)
+				prov := sp.providerForID(t.ID)
 				if !providerFilter[prov] {
 					continue
 				}
@@ -1052,18 +1083,37 @@ func (sp *SProxy) weightedPickExcluding(path string, tried map[string]bool, cand
 			sp.logger.Debug("picked LLM target (weighted random)",
 				zap.String("url", candidates[i].ID),
 				zap.String("path", path),
-				zap.String("provider", sp.providerForURL(candidates[i].ID)),
+				zap.String("id", candidates[i].ID),
+					zap.String("provider", sp.providerForID(candidates[i].ID)),
 				zap.Int("candidates", len(candidates)),
 				zap.Bool("path_preference_applied", preferred != nil && !usedFallback),
 			)
-			return sp.llmTargetInfoForURL(candidates[i].ID), nil
+			return sp.llmTargetInfoForID(candidates[i].ID), nil
 		}
 	}
 	// 理论上不会到达
-	return sp.llmTargetInfoForURL(candidates[0].ID), nil
+	return sp.llmTargetInfoForID(candidates[0].ID), nil
+}
+
+// llmTargetInfoForID 根据 UUID 查找对应的 LLMTargetInfo（含 APIKey 和实际 URL）。
+func (sp *SProxy) llmTargetInfoForID(targetID string) *lb.LLMTargetInfo {
+	for _, t := range sp.targets {
+		id := t.ID
+		if id == "" {
+			id = t.URL
+		}
+		if id == targetID {
+			return &lb.LLMTargetInfo{URL: t.URL, APIKey: t.APIKey}
+		}
+	}
+	sp.logger.Warn("llmTargetInfoForID: target not found in sp.targets",
+		zap.String("target_id", targetID),
+	)
+	return &lb.LLMTargetInfo{URL: targetID}
 }
 
 // llmTargetInfoForURL 根据 URL 查找对应的 LLMTargetInfo（含 APIKey）。
+// Deprecated: prefer llmTargetInfoForID; kept for fallback (no-balancer path).
 func (sp *SProxy) llmTargetInfoForURL(targetURL string) *lb.LLMTargetInfo {
 	for _, t := range sp.targets {
 		if t.URL == targetURL {
@@ -1073,7 +1123,22 @@ func (sp *SProxy) llmTargetInfoForURL(targetURL string) *lb.LLMTargetInfo {
 	return &lb.LLMTargetInfo{URL: targetURL}
 }
 
+// providerForID 根据 UUID 查找对应 target 的 Provider。
+func (sp *SProxy) providerForID(targetID string) string {
+	for _, t := range sp.targets {
+		id := t.ID
+		if id == "" {
+			id = t.URL
+		}
+		if id == targetID {
+			return t.Provider
+		}
+	}
+	return ""
+}
+
 // providerForURL 根据 URL 查找对应 target 的 Provider。
+// Deprecated: prefer providerForID; kept for fallback path.
 func (sp *SProxy) providerForURL(targetURL string) string {
 	for _, t := range sp.targets {
 		if t.URL == targetURL {

@@ -24,6 +24,7 @@ type HealthCheckConfig struct {
 // TargetHealthMonitor 后台健康检查
 type TargetHealthMonitor struct {
 	repo              *db.GroupTargetSetRepo
+	llmTargetRepo     *db.LLMTargetRepo // 可选，用于将 TargetID 解析为 URL
 	alertManager      *TargetAlertManager
 	config            HealthCheckConfig
 	logger            *zap.Logger
@@ -55,6 +56,7 @@ func NewTargetHealthMonitor(
 	alertManager *TargetAlertManager,
 	config HealthCheckConfig,
 	logger *zap.Logger,
+	opts ...func(*TargetHealthMonitor),
 ) *TargetHealthMonitor {
 	if config.Interval == 0 {
 		config.Interval = 30 * time.Second
@@ -74,7 +76,7 @@ func NewTargetHealthMonitor(
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	return &TargetHealthMonitor{
+	m := &TargetHealthMonitor{
 		repo:         repo,
 		alertManager: alertManager,
 		config:       config,
@@ -86,6 +88,17 @@ func NewTargetHealthMonitor(
 		ctx:          ctx,
 		cancel:       cancel,
 		done:         make(chan struct{}),
+	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
+}
+
+// WithLLMTargetRepo 选项函数，注入 LLMTargetRepo 以将 TargetID 解析为 URL
+func WithLLMTargetRepo(r *db.LLMTargetRepo) func(*TargetHealthMonitor) {
+	return func(m *TargetHealthMonitor) {
+		m.llmTargetRepo = r
 	}
 }
 
@@ -146,8 +159,23 @@ func (m *TargetHealthMonitor) checkAllTargets() {
 		}
 
 		for _, member := range members {
-			if member.IsActive {
-				targetURLs[member.TargetURL] = true
+			if !member.IsActive {
+				continue
+			}
+			// TargetURL 是 gorm:"-" 字段（不存储），需通过 TargetID 解析实际 URL
+			targetURL := member.TargetURL
+			if targetURL == "" && m.llmTargetRepo != nil && member.TargetID != "" {
+				if t, err2 := m.llmTargetRepo.GetByID(member.TargetID); err2 == nil && t != nil {
+					targetURL = t.URL
+				} else {
+					m.logger.Warn("failed to resolve target URL from ID",
+						zap.String("target_id", member.TargetID),
+						zap.Error(err2),
+					)
+				}
+			}
+			if targetURL != "" {
+				targetURLs[targetURL] = true
 			}
 		}
 	}

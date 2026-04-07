@@ -16,19 +16,20 @@ func TestLLMBindingRepo_SetUser(t *testing.T) {
 	repo := NewLLMBindingRepo(db, logger)
 
 	userID := "user-1"
-	if err := repo.Set("https://api.anthropic.com", &userID, nil); err != nil {
+	targetID := "target-uuid-anthropic"
+	if err := repo.Set(targetID, &userID, nil); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
 
-	url, found, err := repo.FindForUser(userID, "")
+	gotTargetID, found, err := repo.FindForUser(userID, "")
 	if err != nil {
 		t.Fatalf("FindForUser: %v", err)
 	}
 	if !found {
 		t.Fatal("expected binding to be found")
 	}
-	if url != "https://api.anthropic.com" {
-		t.Errorf("url = %q, want %q", url, "https://api.anthropic.com")
+	if gotTargetID != targetID {
+		t.Errorf("targetID = %q, want %q", gotTargetID, targetID)
 	}
 }
 
@@ -38,20 +39,21 @@ func TestLLMBindingRepo_SetGroup(t *testing.T) {
 	repo := NewLLMBindingRepo(db, logger)
 
 	groupID := "group-1"
-	if err := repo.Set("https://api.openai.com", nil, &groupID); err != nil {
+	targetID := "target-uuid-openai"
+	if err := repo.Set(targetID, nil, &groupID); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
 
 	// user ID 不匹配 → 走分组绑定
-	url, found, err := repo.FindForUser("", groupID)
+	gotTargetID, found, err := repo.FindForUser("", groupID)
 	if err != nil {
 		t.Fatalf("FindForUser: %v", err)
 	}
 	if !found {
 		t.Fatal("expected group binding to be found")
 	}
-	if url != "https://api.openai.com" {
-		t.Errorf("url = %q, want %q", url, "https://api.openai.com")
+	if gotTargetID != targetID {
+		t.Errorf("targetID = %q, want %q", gotTargetID, targetID)
 	}
 }
 
@@ -62,25 +64,27 @@ func TestLLMBindingRepo_UserPriorityOverGroup(t *testing.T) {
 
 	userID := "user-2"
 	groupID := "group-2"
+	targetOpenAI := "target-uuid-openai-g"
+	targetAnthropic := "target-uuid-anthropic-u"
 
 	// 分组绑定 A
-	if err := repo.Set("https://api.openai.com", nil, &groupID); err != nil {
+	if err := repo.Set(targetOpenAI, nil, &groupID); err != nil {
 		t.Fatalf("Set group: %v", err)
 	}
 	// 用户绑定 B（应优先）
-	if err := repo.Set("https://api.anthropic.com", &userID, nil); err != nil {
+	if err := repo.Set(targetAnthropic, &userID, nil); err != nil {
 		t.Fatalf("Set user: %v", err)
 	}
 
-	url, found, err := repo.FindForUser(userID, groupID)
+	gotTargetID, found, err := repo.FindForUser(userID, groupID)
 	if err != nil {
 		t.Fatalf("FindForUser: %v", err)
 	}
 	if !found {
 		t.Fatal("expected binding found")
 	}
-	if url != "https://api.anthropic.com" {
-		t.Errorf("expected user-level binding (anthropic), got %q", url)
+	if gotTargetID != targetAnthropic {
+		t.Errorf("expected user-level binding, got %q", gotTargetID)
 	}
 }
 
@@ -90,22 +94,24 @@ func TestLLMBindingRepo_SetReplace(t *testing.T) {
 	repo := NewLLMBindingRepo(db, logger)
 
 	userID := "user-3"
-	if err := repo.Set("https://api.anthropic.com", &userID, nil); err != nil {
+	targetA := "target-uuid-a"
+	targetB := "target-uuid-b"
+	if err := repo.Set(targetA, &userID, nil); err != nil {
 		t.Fatalf("Set first: %v", err)
 	}
-	if err := repo.Set("https://api.openai.com", &userID, nil); err != nil {
+	if err := repo.Set(targetB, &userID, nil); err != nil {
 		t.Fatalf("Set second: %v", err)
 	}
 
-	url, found, err := repo.FindForUser(userID, "")
+	gotTargetID, found, err := repo.FindForUser(userID, "")
 	if err != nil {
 		t.Fatalf("FindForUser: %v", err)
 	}
 	if !found {
 		t.Fatal("expected binding found after replace")
 	}
-	if url != "https://api.openai.com" {
-		t.Errorf("expected openai after replace, got %q", url)
+	if gotTargetID != targetB {
+		t.Errorf("expected targetB after replace, got %q", gotTargetID)
 	}
 
 	// 只应有一条绑定
@@ -124,7 +130,7 @@ func TestLLMBindingRepo_Delete(t *testing.T) {
 	repo := NewLLMBindingRepo(db, logger)
 
 	userID := "user-4"
-	if err := repo.Set("https://api.anthropic.com", &userID, nil); err != nil {
+	if err := repo.Set("target-uuid-del", &userID, nil); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
 
@@ -151,7 +157,7 @@ func TestLLMBindingRepo_List(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	repo := NewLLMBindingRepo(db, logger)
 
-	targets := []string{"https://api.anthropic.com", "https://api.openai.com"}
+	targets := []string{"target-uuid-list-1", "target-uuid-list-2"}
 	for i, tgt := range targets {
 		uid := "user-list-" + itoa(i)
 		if err := repo.Set(tgt, &uid, nil); err != nil {
@@ -174,9 +180,10 @@ func TestLLMBindingRepo_EvenDistribute_RoundRobin(t *testing.T) {
 	repo := NewLLMBindingRepo(db, logger)
 
 	userIDs := []string{"u1", "u2", "u3", "u4", "u5", "u6"}
-	targets := []string{"https://a.com", "https://b.com", "https://c.com"}
+	// 使用 UUID 风格的 targetID（与新的 LLMBinding.TargetID 字段对应）
+	targetIDs := []string{"tid-a", "tid-b", "tid-c"}
 
-	if err := repo.EvenDistribute(userIDs, targets); err != nil {
+	if err := repo.EvenDistribute(userIDs, targetIDs); err != nil {
 		t.Fatalf("EvenDistribute: %v", err)
 	}
 
@@ -191,11 +198,11 @@ func TestLLMBindingRepo_EvenDistribute_RoundRobin(t *testing.T) {
 
 	counts := map[string]int{}
 	for _, b := range bindings {
-		counts[b.TargetURL]++
+		counts[b.TargetID]++ // 按 TargetID（UUID）统计
 	}
-	for _, tgt := range targets {
-		if counts[tgt] != 2 {
-			t.Errorf("target %q: expected 2 users, got %d", tgt, counts[tgt])
+	for _, tid := range targetIDs {
+		if counts[tid] != 2 {
+			t.Errorf("target %q: expected 2 users, got %d", tid, counts[tid])
 		}
 	}
 }
@@ -224,35 +231,36 @@ func TestLLMBindingRepo_EvenDistribute_SkipsExistingBindings(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	repo := NewLLMBindingRepo(db, logger)
 
-	targets := []string{"https://a.com", "https://b.com"}
+	targetIDs := []string{"tid-skip-a", "tid-skip-b"}
+	fixedTargetID := "tid-fixed"
 
 	// u1 已有绑定（模拟直连用户手动设置）
 	u1 := "u1"
-	if err := repo.Set("https://fixed.com", &u1, nil); err != nil {
+	if err := repo.Set(fixedTargetID, &u1, nil); err != nil {
 		t.Fatalf("Set u1: %v", err)
 	}
 
 	// u2, u3 无绑定，应被 distribute 分配
 	userIDs := []string{"u1", "u2", "u3"}
-	if err := repo.EvenDistribute(userIDs, targets); err != nil {
+	if err := repo.EvenDistribute(userIDs, targetIDs); err != nil {
 		t.Fatalf("EvenDistribute: %v", err)
 	}
 
 	// u1 的绑定必须保持不变
-	url, found, err := repo.FindForUser("u1", "")
+	gotTargetID, found, err := repo.FindForUser("u1", "")
 	if err != nil {
 		t.Fatalf("FindForUser u1: %v", err)
 	}
 	if !found {
 		t.Fatal("u1 binding should still exist after distribute")
 	}
-	if url != "https://fixed.com" {
-		t.Errorf("u1 binding = %q, want https://fixed.com (distribute must not overwrite existing bindings)", url)
+	if gotTargetID != fixedTargetID {
+		t.Errorf("u1 binding = %q, want %q (distribute must not overwrite existing bindings)", gotTargetID, fixedTargetID)
 	}
 
 	// u2, u3 应被分配到 targets 中
 	for _, uid := range []string{"u2", "u3"} {
-		url, found, err := repo.FindForUser(uid, "")
+		gotID, found, err := repo.FindForUser(uid, "")
 		if err != nil {
 			t.Fatalf("FindForUser %s: %v", uid, err)
 		}
@@ -260,8 +268,8 @@ func TestLLMBindingRepo_EvenDistribute_SkipsExistingBindings(t *testing.T) {
 			t.Errorf("%s should have been assigned a binding by distribute", uid)
 			continue
 		}
-		if url != "https://a.com" && url != "https://b.com" {
-			t.Errorf("%s binding = %q, want one of the distribute targets", uid, url)
+		if gotID != "tid-skip-a" && gotID != "tid-skip-b" {
+			t.Errorf("%s binding = %q, want one of the distribute targets", uid, gotID)
 		}
 	}
 }

@@ -50,22 +50,44 @@ func TestLLMTargetRepo_Create_DuplicateURL(t *testing.T) {
 
 	repo := NewLLMTargetRepo(gormDB, logger)
 
+	// 先创建一个 API key
+	keyID := "test-key-1"
+	require.NoError(t, gormDB.Create(&APIKey{
+		ID: keyID, Name: "test-key", EncryptedValue: "sk-test", Provider: "anthropic",
+	}).Error)
+
 	target1 := &LLMTarget{
-		ID:  uuid.NewString(),
-		URL: "http://test.local:8080",
-		Source: "database",
+		ID:       uuid.NewString(),
+		URL:      "http://test.local:8080",
+		APIKeyID: &keyID,
+		Source:   "database",
 	}
 	err = repo.Create(target1)
 	require.NoError(t, err)
 
-	// 尝试创建相同 URL
+	// 尝试创建相同 URL + 相同 APIKeyID → 应失败（复合唯一约束）
 	target2 := &LLMTarget{
-		ID:  uuid.NewString(),
-		URL: "http://test.local:8080",
-		Source: "database",
+		ID:       uuid.NewString(),
+		URL:      "http://test.local:8080",
+		APIKeyID: &keyID,
+		Source:   "database",
 	}
 	err = repo.Create(target2)
 	assert.Error(t, err) // 应该失败（唯一性约束）
+
+	// 相同 URL + 不同 APIKeyID → 应成功（允许多 key 共用同一 URL）
+	keyID2 := "test-key-2"
+	require.NoError(t, gormDB.Create(&APIKey{
+		ID: keyID2, Name: "test-key-2", EncryptedValue: "sk-test-2", Provider: "anthropic",
+	}).Error)
+	target3 := &LLMTarget{
+		ID:       uuid.NewString(),
+		URL:      "http://test.local:8080",
+		APIKeyID: &keyID2,
+		Source:   "database",
+	}
+	err = repo.Create(target3)
+	assert.NoError(t, err) // 允许不同 API key 共用同一 URL
 }
 
 func TestLLMTargetRepo_GetByURL(t *testing.T) {

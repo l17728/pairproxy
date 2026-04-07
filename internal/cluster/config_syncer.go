@@ -310,7 +310,7 @@ func (s *ConfigSyncer) upsertSnapshot(snap ConfigSnapshot) error {
 			if err := tx.Select("*").Clauses(clause.OnConflict{
 				Columns: []clause.Column{{Name: "id"}},
 				DoUpdates: clause.AssignmentColumns([]string{
-					"target_url", "user_id", "group_id",
+					"target_id", "user_id", "group_id",
 				}),
 			}).CreateInBatches(snap.LLMBindings, 200).Error; err != nil {
 				return fmt.Errorf("upsert llm bindings: %w", err)

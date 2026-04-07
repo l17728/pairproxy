@@ -74,7 +74,7 @@ func TestGroupTargetSetRepo_AddMember(t *testing.T) {
 
 	member := &GroupTargetSetMember{
 		ID:        uuid.New().String(),
-		TargetURL: "https://api.example.com",
+		TargetID: "test-target-uuid",
 		Weight:    2,
 		Priority:  1,
 		IsActive:  true,
@@ -87,7 +87,7 @@ func TestGroupTargetSetRepo_AddMember(t *testing.T) {
 	members, err := repo.ListMembers(set.ID)
 	require.NoError(t, err)
 	assert.Len(t, members, 1)
-	assert.Equal(t, member.TargetURL, members[0].TargetURL)
+	assert.Equal(t, member.TargetID, members[0].TargetID)
 }
 
 // TestGroupTargetSetRepo_RemoveMember 测试删除 member
@@ -104,14 +104,14 @@ func TestGroupTargetSetRepo_RemoveMember(t *testing.T) {
 
 	member := &GroupTargetSetMember{
 		ID:        uuid.New().String(),
-		TargetURL: "https://api.example.com",
+		TargetID: "test-target-uuid",
 		Weight:    1,
 		IsActive:  true,
 	}
 	require.NoError(t, repo.AddMember(set.ID, member))
 
 	// 删除 member
-	err := repo.RemoveMember(set.ID, member.TargetURL)
+	err := repo.RemoveMember(set.ID, member.TargetID)
 	require.NoError(t, err)
 
 	// 验证删除成功
@@ -134,7 +134,7 @@ func TestGroupTargetSetRepo_UpdateMember(t *testing.T) {
 
 	member := &GroupTargetSetMember{
 		ID:        uuid.New().String(),
-		TargetURL: "https://api.example.com",
+		TargetID: "test-target-uuid",
 		Weight:    1,
 		Priority:  0,
 		IsActive:  true,
@@ -142,7 +142,7 @@ func TestGroupTargetSetRepo_UpdateMember(t *testing.T) {
 	require.NoError(t, repo.AddMember(set.ID, member))
 
 	// 更新权重
-	err := repo.UpdateMember(set.ID, member.TargetURL, 3, 2)
+	err := repo.UpdateMember(set.ID, member.TargetID, 3, 2)
 	require.NoError(t, err)
 
 	// 验证更新成功
@@ -160,7 +160,7 @@ func TestTargetAlertRepo_Create(t *testing.T) {
 
 	alert := &TargetAlert{
 		ID:           uuid.New().String(),
-		TargetURL:    "https://api.example.com",
+		TargetURL:    "test-target-uuid",
 		AlertType:    "error",
 		Severity:     "error",
 		ErrorMessage: "connection timeout",
@@ -184,7 +184,7 @@ func TestTargetAlertRepo_ListActive(t *testing.T) {
 	// 创建活跃告警
 	alert := &TargetAlert{
 		ID:           uuid.New().String(),
-		TargetURL:    "https://api.example.com",
+		TargetURL:    "test-target-uuid",
 		AlertType:    "error",
 		Severity:     "error",
 		ErrorMessage: "connection timeout",
@@ -208,7 +208,7 @@ func TestTargetAlertRepo_Resolve(t *testing.T) {
 
 	alert := &TargetAlert{
 		ID:           uuid.New().String(),
-		TargetURL:    "https://api.example.com",
+		TargetURL:    "test-target-uuid",
 		AlertType:    "error",
 		Severity:     "error",
 		ErrorMessage: "connection timeout",
@@ -232,7 +232,7 @@ func TestTargetAlertRepo_GetOrCreateAlert(t *testing.T) {
 
 	alert1 := &TargetAlert{
 		ID:           uuid.New().String(),
-		TargetURL:    "https://api.example.com",
+		TargetURL:    "test-target-uuid",
 		AlertType:    "error",
 		Severity:     "error",
 		ErrorMessage: "connection timeout",
@@ -247,7 +247,7 @@ func TestTargetAlertRepo_GetOrCreateAlert(t *testing.T) {
 	// 第二次创建相同的告警（应该更新计数）
 	alert2 := &TargetAlert{
 		ID:           uuid.New().String(),
-		TargetURL:    "https://api.example.com",
+		TargetURL:    "test-target-uuid",
 		AlertType:    "error",
 		Severity:     "error",
 		ErrorMessage: "connection timeout",
@@ -401,17 +401,17 @@ func TestGroupTargetSetRepo_GetAvailableTargetsForGroup(t *testing.T) {
 
 	// 添加健康 target
 	require.NoError(t, repo.AddMember(set.ID, &GroupTargetSetMember{
-		ID: uuid.New().String(), TargetURL: "https://api1.example.com",
+		ID: uuid.New().String(), TargetID: "test-target-1",
 		Weight: 2, IsActive: true, HealthStatus: "healthy",
 	}))
 	// 添加不健康 target
 	require.NoError(t, repo.AddMember(set.ID, &GroupTargetSetMember{
-		ID: uuid.New().String(), TargetURL: "https://api2.example.com",
+		ID: uuid.New().String(), TargetID: "test-target-2",
 		Weight: 1, IsActive: true, HealthStatus: "unhealthy",
 	}))
 	// 添加非活跃 target
 	require.NoError(t, repo.AddMember(set.ID, &GroupTargetSetMember{
-		ID: uuid.New().String(), TargetURL: "https://api3.example.com",
+		ID: uuid.New().String(), TargetID: "test-target-3",
 		Weight: 1, IsActive: false, HealthStatus: "healthy",
 	}))
 
@@ -440,19 +440,19 @@ func TestGroupTargetSetRepo_UpdateTargetHealth(t *testing.T) {
 	}
 	require.NoError(t, repo.Create(set))
 	require.NoError(t, repo.AddMember(set.ID, &GroupTargetSetMember{
-		ID: uuid.New().String(), TargetURL: "https://api.example.com",
+		ID: uuid.New().String(), TargetID: "test-target-uuid",
 		Weight: 1, IsActive: true,
 	}))
 
-	// 标记为不健康
-	require.NoError(t, repo.UpdateTargetHealth("https://api.example.com", false))
+	// 标记为不健康（使用 targetID，不是 URL）
+	require.NoError(t, repo.UpdateTargetHealth("test-target-uuid", false))
 
 	members, err := repo.ListMembers(set.ID)
 	require.NoError(t, err)
 	assert.Equal(t, "unhealthy", members[0].HealthStatus)
 
 	// 标记为健康
-	require.NoError(t, repo.UpdateTargetHealth("https://api.example.com", true))
+	require.NoError(t, repo.UpdateTargetHealth("test-target-uuid", true))
 	members, err = repo.ListMembers(set.ID)
 	require.NoError(t, err)
 	assert.Equal(t, "healthy", members[0].HealthStatus)

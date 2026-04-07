@@ -447,7 +447,7 @@ func TestGroupTargetSetMember_AddMember_IsActiveFalse_Persisted(t *testing.T) {
 	// 关键：IsActive 显式设为 false
 	member := &GroupTargetSetMember{
 		ID:           "bug7-member",
-		TargetURL:    "https://bug7.example.com",
+		TargetID:     "bug7-target-uuid",
 		Weight:       1,
 		IsActive:     false,
 		HealthStatus: "healthy",
@@ -482,7 +482,7 @@ func TestGroupTargetSetMember_AddMember_IsActiveTrue_Persisted(t *testing.T) {
 
 	member := &GroupTargetSetMember{
 		ID:           "bug7-member-true",
-		TargetURL:    "https://bug7-true.example.com",
+		TargetID:     "bug7-true-uuid",
 		Weight:       1,
 		IsActive:     true,
 		HealthStatus: "healthy",
@@ -506,6 +506,19 @@ func TestGroupTargetSetMember_AddMember_IsActiveTrue_Persisted(t *testing.T) {
 func TestGetAvailableTargetsForGroup_FiltersInactiveMember(t *testing.T) {
 	gormDB := openTestDB(t)
 	repo := NewGroupTargetSetRepo(gormDB, zaptest.NewLogger(t))
+	llmTargetRepo := NewLLMTargetRepo(gormDB, zaptest.NewLogger(t))
+
+	// 先创建 LLMTarget 记录（TargetID → URL 映射）
+	if err := llmTargetRepo.Create(&LLMTarget{
+		ID: "active-uuid", URL: "https://active.example.com", Provider: "anthropic", Source: "database",
+	}); err != nil {
+		t.Fatalf("Create active LLMTarget: %v", err)
+	}
+	if err := llmTargetRepo.Create(&LLMTarget{
+		ID: "inactive-uuid", URL: "https://inactive.example.com", Provider: "anthropic", Source: "database",
+	}); err != nil {
+		t.Fatalf("Create inactive LLMTarget: %v", err)
+	}
 
 	set := &GroupTargetSet{
 		ID:        "bug7-filter-set",
@@ -519,14 +532,14 @@ func TestGetAvailableTargetsForGroup_FiltersInactiveMember(t *testing.T) {
 
 	// active + healthy → 应出现
 	if err := repo.AddMember(set.ID, &GroupTargetSetMember{
-		ID: "bug7-m1", TargetURL: "https://active.example.com",
+		ID: "bug7-m1", TargetID: "active-uuid",
 		Weight: 1, IsActive: true, HealthStatus: "healthy",
 	}); err != nil {
 		t.Fatalf("AddMember active: %v", err)
 	}
 	// inactive + healthy → 应被过滤
 	if err := repo.AddMember(set.ID, &GroupTargetSetMember{
-		ID: "bug7-m2", TargetURL: "https://inactive.example.com",
+		ID: "bug7-m2", TargetID: "inactive-uuid",
 		Weight: 1, IsActive: false, HealthStatus: "healthy",
 	}); err != nil {
 		t.Fatalf("AddMember inactive: %v", err)

@@ -148,6 +148,7 @@ type LLMConfig struct {
 
 // LLMTarget 单个 LLM 上游节点
 type LLMTarget struct {
+	ID              string            `yaml:"-"`                 // 运行时 UUID（来自 DB，不在 YAML 中）
 	URL             string            `yaml:"url"`               // e.g. "https://api.anthropic.com"
 	APIKey          string            `yaml:"api_key"`           // 支持 ${ENV_VAR} 替换
 	Weight          int               `yaml:"weight"`            // 默认 1

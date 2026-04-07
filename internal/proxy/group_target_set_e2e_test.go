@@ -70,14 +70,7 @@ func TestGroupTargetSetIntegration_E2E_CompleteWorkflow(t *testing.T) {
 	}
 
 	for i, url := range targetURLs {
-		member := &db.GroupTargetSetMember{
-			ID:           uuid.New().String(),
-			TargetURL:    url,
-			Weight:       i + 1,
-			IsActive:     true,
-			HealthStatus: "healthy",
-		}
-		require.NoError(t, repo.AddMember(set.ID, member))
+		addTestMember(t, testDB, repo, set.ID, url, i+1, true, "healthy")
 	}
 
 	// 4. 测试选择 target（多次）
@@ -184,14 +177,7 @@ func TestGroupTargetSetIntegration_E2E_MultipleGroups(t *testing.T) {
 		require.NoError(t, repo.Create(set))
 
 		for _, url := range s.targets {
-			member := &db.GroupTargetSetMember{
-				ID:           uuid.New().String(),
-				TargetURL:    url,
-				Weight:       1,
-				IsActive:     true,
-				HealthStatus: "healthy",
-			}
-			require.NoError(t, repo.AddMember(set.ID, member))
+			addTestMember(t, testDB, repo, set.ID, url, 1, true, "healthy")
 		}
 	}
 
@@ -313,13 +299,7 @@ func TestGroupTargetSetIntegration_E2E_HealthStatus(t *testing.T) {
 		"https://api3.example.com",
 	}
 	for _, url := range targetURLs {
-		member := &db.GroupTargetSetMember{
-			ID:       uuid.New().String(),
-			TargetURL: url,
-			Weight:   1,
-			IsActive: true,
-		}
-		require.NoError(t, repo.AddMember(set.ID, member))
+		addTestMember(t, testDB, repo, set.ID, url, 1, true, "unknown")
 	}
 
 	// 通过 RecordError 触发 alertManager 记录错误

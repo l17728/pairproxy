@@ -24,10 +24,15 @@ func NewGroupTargetSetIntegration(
 	alertConfig alert.TargetAlertConfig,
 	healthCheckConfig alert.HealthCheckConfig,
 	logger *zap.Logger,
+	llmTargetRepo ...*db.LLMTargetRepo,
 ) *GroupTargetSetIntegration {
 	selector := NewGroupTargetSelector(repo, logger)
 	alertManager := alert.NewTargetAlertManager(alertRepo, alertConfig, logger)
-	healthMonitor := alert.NewTargetHealthMonitor(repo, alertManager, healthCheckConfig, logger)
+	var opts []func(*alert.TargetHealthMonitor)
+	if len(llmTargetRepo) > 0 && llmTargetRepo[0] != nil {
+		opts = append(opts, alert.WithLLMTargetRepo(llmTargetRepo[0]))
+	}
+	healthMonitor := alert.NewTargetHealthMonitor(repo, alertManager, healthCheckConfig, logger, opts...)
 
 	return &GroupTargetSetIntegration{
 		selector:      selector,

@@ -268,6 +268,136 @@ func Migrate(logger *zap.Logger, db *gorm.DB) error {
 		}
 	}
 
+	// 数据迁移：llm_bindings.target_url → target_id
+	// 若存在 target_url 列但 target_id 列值为空，则通过 JOIN 填充；无法匹配的行（孤儿）删除。
+	if err := migrateBindingTargetID(logger, db); err != nil {
+		logger.Warn("llm_bindings target_id migration failed (non-fatal)", zap.Error(err))
+	}
+
+	// 数据迁移：group_target_set_members TargetURL → TargetID
+	if err := migrateGroupTargetSetMemberTargetID(logger, db); err != nil {
+		logger.Warn("group_target_set_members target_id migration failed (non-fatal)", zap.Error(err))
+	}
+
 	logger.Info("database migrations completed")
+	return nil
+}
+
+// migrateBindingTargetID 将 llm_bindings 表中的 target_url（旧列）迁移到 target_id（新列）。
+// 通过 JOIN llm_targets ON url = target_url 填充 target_id；
+// 无法匹配的孤儿行（target 已删除）直接删除。
+func migrateBindingTargetID(logger *zap.Logger, db *gorm.DB) error {
+	// 检查旧列 target_url 是否存在（仅在 SQLite 下可用 PRAGMA，PG 用 information_schema）
+	// 若不存在则直接跳过（已迁移完毕或全新安装）
+	var hasTargetURL bool
+	switch DriverName(db) {
+	case "sqlite":
+		var cols []struct{ Name string }
+		if err := db.Raw("PRAGMA table_info(llm_bindings)").Scan(&cols).Error; err != nil {
+			return fmt.Errorf("check llm_bindings columns: %w", err)
+		}
+		for _, c := range cols {
+			if c.Name == "target_url" {
+				hasTargetURL = true
+				break
+			}
+		}
+	case "postgres":
+		var count int64
+		q := `SELECT COUNT(*) FROM information_schema.columns
+			WHERE table_name='llm_bindings' AND column_name='target_url'`
+		if err := db.Raw(q).Scan(&count).Error; err != nil {
+			return fmt.Errorf("check llm_bindings columns (pg): %w", err)
+		}
+		hasTargetURL = count > 0
+	}
+	if !hasTargetURL {
+		logger.Debug("llm_bindings: no target_url column, migration skipped")
+		return nil
+	}
+
+	// 填充 target_id（仅 target_id 为空时）
+	updateSQL := `UPDATE llm_bindings
+		SET target_id = (SELECT id FROM llm_targets WHERE url = llm_bindings.target_url LIMIT 1)
+		WHERE (target_id IS NULL OR target_id = '') AND target_url != ''`
+	if DriverName(db) == "postgres" {
+		updateSQL = `UPDATE llm_bindings
+		SET target_id = lt.id
+		FROM llm_targets lt
+		WHERE lt.url = llm_bindings.target_url
+		  AND (llm_bindings.target_id IS NULL OR llm_bindings.target_id = '')`
+	}
+	if err := db.Exec(updateSQL).Error; err != nil {
+		return fmt.Errorf("populate llm_bindings.target_id: %w", err)
+	}
+
+	// 删除孤儿行（target_url 无对应 llm_targets 记录）
+	deleteSQL := `DELETE FROM llm_bindings WHERE target_id IS NULL OR target_id = ''`
+	if res := db.Exec(deleteSQL); res.Error != nil {
+		return fmt.Errorf("delete orphan llm_bindings: %w", res.Error)
+	} else if res.RowsAffected > 0 {
+		logger.Warn("deleted orphan llm_bindings (no matching target)",
+			zap.Int64("count", res.RowsAffected),
+		)
+	}
+
+	logger.Info("llm_bindings target_id migration completed")
+	return nil
+}
+
+// migrateGroupTargetSetMemberTargetID 将 group_target_set_members 中的 target_url 迁移到 target_id。
+func migrateGroupTargetSetMemberTargetID(logger *zap.Logger, db *gorm.DB) error {
+	// 检查旧列 target_url 是否存在
+	var hasTargetURL bool
+	switch DriverName(db) {
+	case "sqlite":
+		var cols []struct{ Name string }
+		if err := db.Raw("PRAGMA table_info(group_target_set_members)").Scan(&cols).Error; err != nil {
+			return fmt.Errorf("check group_target_set_members columns: %w", err)
+		}
+		for _, c := range cols {
+			if c.Name == "target_url" {
+				hasTargetURL = true
+				break
+			}
+		}
+	case "postgres":
+		var count int64
+		q := `SELECT COUNT(*) FROM information_schema.columns
+			WHERE table_name='group_target_set_members' AND column_name='target_url'`
+		if err := db.Raw(q).Scan(&count).Error; err != nil {
+			return fmt.Errorf("check group_target_set_members columns (pg): %w", err)
+		}
+		hasTargetURL = count > 0
+	}
+	if !hasTargetURL {
+		logger.Debug("group_target_set_members: no target_url column, migration skipped")
+		return nil
+	}
+
+	updateSQL := `UPDATE group_target_set_members
+		SET target_id = (SELECT id FROM llm_targets WHERE url = group_target_set_members.target_url LIMIT 1)
+		WHERE (target_id IS NULL OR target_id = '') AND target_url != ''`
+	if DriverName(db) == "postgres" {
+		updateSQL = `UPDATE group_target_set_members
+		SET target_id = lt.id
+		FROM llm_targets lt
+		WHERE lt.url = group_target_set_members.target_url
+		  AND (group_target_set_members.target_id IS NULL OR group_target_set_members.target_id = '')`
+	}
+	if err := db.Exec(updateSQL).Error; err != nil {
+		return fmt.Errorf("populate group_target_set_members.target_id: %w", err)
+	}
+
+	deleteSQL := `DELETE FROM group_target_set_members WHERE target_id IS NULL OR target_id = ''`
+	if res := db.Exec(deleteSQL); res.Error != nil {
+		return fmt.Errorf("delete orphan group_target_set_members: %w", res.Error)
+	} else if res.RowsAffected > 0 {
+		logger.Warn("deleted orphan group_target_set_members (no matching target)",
+			zap.Int64("count", res.RowsAffected),
+		)
+	}
+
+	logger.Info("group_target_set_members target_id migration completed")
 	return nil
 }
