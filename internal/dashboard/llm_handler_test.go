@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"go.uber.org/zap/zaptest"
 	"golang.org/x/crypto/bcrypt"
 
@@ -782,5 +783,105 @@ func TestHandleLLMCreateTarget_SameURLSameKey_IsRejected(t *testing.T) {
 	loc2 := rr2.Header().Get("Location")
 	if !strings.Contains(loc2, "error=") {
 		t.Errorf("duplicate (url, keyA) should be rejected; redirect location: %q", loc2)
+	}
+}
+
+// TestHandleLLMUpdateTarget_ChangeAPIKeyID_CheckCombo verifies that when updating an LLM
+// target's API key (but keeping URL the same), the ComboExists check is performed.
+// This is the regression test for Fix #23: previously only URL changes triggered the check,
+// allowing APIKeyID changes to bypass the uniqueness constraint.
+func TestHandleLLMUpdateTarget_ChangeAPIKeyID_CheckCombo(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	gdb, err := db.Open(logger, ":memory:")
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	if err := db.Migrate(logger, gdb); err != nil {
+		t.Fatalf("db.Migrate: %v", err)
+	}
+
+	userRepo := db.NewUserRepo(gdb, logger)
+	groupRepo := db.NewGroupRepo(gdb, logger)
+	usageRepo := db.NewUsageRepo(gdb, logger)
+	auditRepo := db.NewAuditRepo(logger, gdb)
+	llmTargetRepo := db.NewLLMTargetRepo(gdb, logger)
+	apiKeyRepo := db.NewAPIKeyRepo(gdb, logger)
+
+	jwtMgr, err := auth.NewManager(logger, "test-secret")
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	hash, _ := bcrypt.GenerateFromPassword([]byte("pw"), bcrypt.MinCost)
+	h := dashboard.NewHandler(logger, jwtMgr, userRepo, groupRepo, usageRepo, auditRepo, string(hash), time.Hour)
+	h.SetLLMTargetRepo(llmTargetRepo)
+	h.SetLLMDeps(db.NewLLMBindingRepo(gdb, logger), func() []proxy.LLMTargetStatus { return nil })
+	h.SetDrainFunctions(func() error { return nil }, func() error { return nil }, func() proxy.DrainStatus { return proxy.DrainStatus{} })
+
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	tok, _ := jwtMgr.Sign(auth.JWTClaims{UserID: "__admin__", Username: "admin", Role: "admin"}, time.Hour)
+	cookie := &http.Cookie{Name: api.AdminCookieName, Value: tok}
+
+	// Create two API keys
+	keyA, err := apiKeyRepo.Create("keyA", "enc-A", "anthropic")
+	if err != nil {
+		t.Fatalf("create keyA: %v", err)
+	}
+	keyB, err := apiKeyRepo.Create("keyB", "enc-B", "openai")
+	if err != nil {
+		t.Fatalf("create keyB: %v", err)
+	}
+
+	const targetURL = "https://api.llm.example.com"
+
+	// Create target1: (url, keyA)
+	target1 := &db.LLMTarget{
+		ID:       uuid.New().String(),
+		URL:      targetURL,
+		Provider: "anthropic",
+		APIKeyID: &keyA.ID,
+	}
+	if err := llmTargetRepo.Create(target1); err != nil {
+		t.Fatalf("create target1: %v", err)
+	}
+
+	// Create target2: (url, keyB)
+	target2 := &db.LLMTarget{
+		ID:       uuid.New().String(),
+		URL:      targetURL,
+		Provider: "openai",
+		APIKeyID: &keyB.ID,
+	}
+	if err := llmTargetRepo.Create(target2); err != nil {
+		t.Fatalf("create target2: %v", err)
+	}
+
+	// Now try to update target2's APIKeyID from keyB to keyA
+	// This should be rejected because (url, keyA) already exists (target1)
+	updateForm := url.Values{
+		"url":        {targetURL},
+		"provider":   {"openai"},
+		"api_key_id": {keyA.ID}, // Changing from keyB to keyA — should conflict
+	}
+	req := httptest.NewRequest(http.MethodPost, "/dashboard/llm/targets/"+target2.ID+"/update", strings.NewReader(updateForm.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+
+	loc := rr.Header().Get("Location")
+	if !strings.Contains(loc, "error=") {
+		t.Errorf("update to change APIKeyID from keyB to keyA should be rejected (combo conflict); "+
+			"redirect to %q (expected error in redirect)", loc)
+	}
+
+	// Verify target2 still has keyB
+	updated, err := llmTargetRepo.GetByID(target2.ID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if updated.APIKeyID == nil || *updated.APIKeyID != keyB.ID {
+		t.Errorf("target2 APIKeyID should remain %q, got %v", keyB.ID, updated.APIKeyID)
 	}
 }
