@@ -5,30 +5,49 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"time"
 
+	_ "github.com/lib/pq"
 	_ "modernc.org/sqlite"
 )
 
 // Querier wraps a database connection and provides all report query methods.
 type Querier struct {
 	db           *sql.DB
+	driver       string // "sqlite" | "postgres"
 	userMap      map[string]string // user_id -> username
 	userGroupMap map[string]string // user_id -> group_id
 	groupNameMap map[string]string // group_id -> group_name
 }
 
-// NewQuerier opens the SQLite database and loads user/group lookup maps.
-func NewQuerier(dbPath string) (*Querier, error) {
-	db, err := sql.Open("sqlite", dbPath)
+// NewQuerier opens the database (SQLite or PostgreSQL) and loads user/group lookup maps.
+// For SQLite, dsn is the file path. For PostgreSQL, dsn is the connection string.
+func NewQuerier(driver, dsn string) (*Querier, error) {
+	if driver == "" {
+		driver = "sqlite"
+	}
+
+	var driverName string
+	switch driver {
+	case "postgres":
+		driverName = "postgres"
+	default:
+		driverName = "sqlite"
+		driver = "sqlite"
+	}
+
+	db, err := sql.Open(driverName, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
 
-	// Enable WAL mode for better read performance
-	_, _ = db.Exec("PRAGMA journal_mode=WAL")
+	// SQLite only: Enable WAL mode for better read performance
+	if driver == "sqlite" {
+		_, _ = db.Exec("PRAGMA journal_mode=WAL")
+	}
 
-	q := &Querier{db: db}
+	q := &Querier{db: db, driver: driver}
 	if err := q.loadMaps(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("load maps: %w", err)
@@ -36,9 +55,94 @@ func NewQuerier(dbPath string) (*Querier, error) {
 	return q, nil
 }
 
+// rebind replaces ? placeholders with $1, $2, … for PostgreSQL.
+// For SQLite, returns the query unchanged.
+func (q *Querier) rebind(query string) string {
+	if q.driver != "postgres" {
+		return query
+	}
+	n := 0
+	var b strings.Builder
+	for i := 0; i < len(query); i++ {
+		if query[i] == '?' {
+			n++
+			fmt.Fprintf(&b, "$%d", n)
+		} else {
+			b.WriteByte(query[i])
+		}
+	}
+	return b.String()
+}
+
+// sqlDate returns a SQL expression that casts created_at to a date string 'YYYY-MM-DD'.
+func (q *Querier) sqlDate(col string) string {
+	if q.driver == "postgres" {
+		return "TO_CHAR(" + col + ", 'YYYY-MM-DD')"
+	}
+	return "DATE(" + col + ")"
+}
+
+// sqlHour returns a SQL expression extracting the hour (0-23) from a timestamp column.
+func (q *Querier) sqlHour(col string) string {
+	if q.driver == "postgres" {
+		return "EXTRACT(HOUR FROM " + col + ")::INTEGER"
+	}
+	return "CAST(strftime('%H', " + col + ") AS INTEGER)"
+}
+
+// sqlDow returns a SQL expression extracting the day-of-week (0=Sunday … 6=Saturday).
+func (q *Querier) sqlDow(col string) string {
+	if q.driver == "postgres" {
+		return "EXTRACT(DOW FROM " + col + ")::INTEGER"
+	}
+	return "CAST(strftime('%w', " + col + ") AS INTEGER)"
+}
+
+// sqlYearMonth returns a SQL expression returning 'YYYY-MM' for a timestamp column.
+func (q *Querier) sqlYearMonth(col string) string {
+	if q.driver == "postgres" {
+		return "TO_CHAR(" + col + ", 'YYYY-MM')"
+	}
+	return "strftime('%Y-%m', " + col + ")"
+}
+
+// sqlCurrentDate returns a SQL expression for the current date (driver-specific).
+func (q *Querier) sqlCurrentDate() string {
+	if q.driver == "postgres" {
+		return "CURRENT_DATE"
+	}
+	return "DATE('now')"
+}
+
+// sqlCurrentYearMonth returns a SQL expression for the current year-month string.
+func (q *Querier) sqlCurrentYearMonth() string {
+	if q.driver == "postgres" {
+		return "TO_CHAR(NOW(), 'YYYY-MM')"
+	}
+	return "strftime('%Y-%m', 'now')"
+}
+
+// sqlMinuteGroup returns a SQL expression grouping a timestamp by minute ('YYYY-MM-DD HH:MM').
+func (q *Querier) sqlMinuteGroup(col string) string {
+	if q.driver == "postgres" {
+		return "TO_CHAR(DATE_TRUNC('minute', " + col + "), 'YYYY-MM-DD HH24:MI')"
+	}
+	return "strftime('%Y-%m-%d %H:%M', " + col + ")"
+}
+
 // Close closes the underlying database connection.
 func (q *Querier) Close() error {
 	return q.db.Close()
+}
+
+// query is a convenience wrapper that rebbinds ? placeholders before executing.
+func (q *Querier) query(sql string, args ...interface{}) (*sql.Rows, error) {
+	return q.db.Query(q.rebind(sql), args...)
+}
+
+// queryRow is a convenience wrapper that rebinds ? placeholders before executing.
+func (q *Querier) queryRow(sql string, args ...interface{}) *sql.Row {
+	return q.db.QueryRow(q.rebind(sql), args...)
 }
 
 func (q *Querier) loadMaps() error {
@@ -112,7 +216,7 @@ func (q *Querier) CountRegisteredUsers() int {
 func (q *Querier) QueryKPI(from, to time.Time) (KPIData, error) {
 	var k KPIData
 
-	row := q.db.QueryRow(`
+	row := q.queryRow(`
 		SELECT
 			COUNT(*)                                    AS total_requests,
 			COALESCE(SUM(input_tokens), 0)               AS total_input,
@@ -152,7 +256,7 @@ func (q *Querier) QueryKPI(from, to time.Time) (KPIData, error) {
 	var prevErrors int64
 	var prevLatency float64
 
-	prow := q.db.QueryRow(`
+	prow := q.queryRow(`
 		SELECT COUNT(*),
 			COALESCE(SUM(total_tokens),0),
 			COALESCE(SUM(cost_usd),0),
@@ -177,7 +281,7 @@ func (q *Querier) QueryKPI(from, to time.Time) (KPIData, error) {
 }
 
 func (q *Querier) queryDurations(from, to time.Time) []int64 {
-	rows, err := q.db.Query(
+	rows, err := q.query(
 		"SELECT duration_ms FROM usage_logs WHERE created_at >= ? AND created_at < ? AND status_code IN (200,201,204)",
 		from, to)
 	if err != nil {
@@ -200,9 +304,9 @@ func (q *Querier) queryDurations(from, to time.Time) []int64 {
 
 // QueryDailyTrend returns per-day aggregates.
 func (q *Querier) QueryDailyTrend(from, to time.Time) ([]DailyRow, error) {
-	rows, err := q.db.Query(`
+	query := q.rebind(fmt.Sprintf(`
 		SELECT
-			DATE(created_at) AS day,
+			%s AS day,
 			COALESCE(SUM(input_tokens),0),
 			COALESCE(SUM(output_tokens),0),
 			COALESCE(SUM(total_tokens),0),
@@ -213,7 +317,8 @@ func (q *Querier) QueryDailyTrend(from, to time.Time) ([]DailyRow, error) {
 			COALESCE(AVG(CASE WHEN status_code IN (200,201,204) THEN duration_ms END),0)
 		FROM usage_logs
 		WHERE created_at >= ? AND created_at < ?
-		GROUP BY day ORDER BY day`, from, to)
+		GROUP BY day ORDER BY day`, q.sqlDate("created_at")))
+	rows, err := q.db.Query(query, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("query daily trend: %w", err)
 	}
@@ -237,14 +342,15 @@ func (q *Querier) QueryDailyTrend(from, to time.Time) ([]DailyRow, error) {
 
 // QueryHeatmap returns request counts grouped by hour (0-23) and day-of-week (0-6).
 func (q *Querier) QueryHeatmap(from, to time.Time) ([]HeatmapCell, error) {
-	rows, err := q.db.Query(`
+	query := q.rebind(fmt.Sprintf(`
 		SELECT
-			CAST(strftime('%H', created_at) AS INTEGER) AS hour,
-			CAST(strftime('%w', created_at) AS INTEGER) AS dow,
+			%s AS hour,
+			%s AS dow,
 			COUNT(*) AS cnt
 		FROM usage_logs
 		WHERE created_at >= ? AND created_at < ?
-		GROUP BY hour, dow`, from, to)
+		GROUP BY hour, dow`, q.sqlHour("created_at"), q.sqlDow("created_at")))
+	rows, err := q.db.Query(query, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("query heatmap: %w", err)
 	}
@@ -313,7 +419,7 @@ func (q *Querier) QueryTopUsers(from, to time.Time, orderBy string, limit int) (
 
 	// Fix: re-query with correct column mapping
 	result = nil
-	rows2, err := q.db.Query(fmt.Sprintf(`
+	rows2, err := q.db.Query(q.rebind(fmt.Sprintf(`
 		SELECT
 			ul.user_id,
 			COALESCE(SUM(ul.total_tokens),0),
@@ -325,7 +431,7 @@ func (q *Querier) QueryTopUsers(from, to time.Time, orderBy string, limit int) (
 		WHERE ul.created_at >= ? AND ul.created_at < ?
 		GROUP BY ul.user_id
 		ORDER BY %s
-		LIMIT ?`, orderExpr), from, to, limit)
+		LIMIT ?`, orderExpr)), from, to, limit)
 	if err != nil {
 		return nil, fmt.Errorf("query top users: %w", err)
 	}
@@ -356,7 +462,7 @@ func (q *Querier) QueryTopUsers(from, to time.Time, orderBy string, limit int) (
 
 // QueryModelDistribution returns per-model aggregates.
 func (q *Querier) QueryModelDistribution(from, to time.Time) ([]ModelRow, error) {
-	rows, err := q.db.Query(`
+	rows, err := q.query(`
 		SELECT
 			model,
 			COUNT(*)                                 AS cnt,
@@ -397,7 +503,7 @@ func (q *Querier) QueryModelDistribution(from, to time.Time) ([]ModelRow, error)
 
 // QueryGroupComparison returns per-group aggregates by joining users and groups.
 func (q *Querier) QueryGroupComparison(from, to time.Time) ([]GroupRow, error) {
-	rows, err := q.db.Query(`
+	rows, err := q.query(`
 		SELECT
 			u.group_id,
 			COALESCE(SUM(ul.total_tokens),0)  AS total_t,
@@ -425,7 +531,7 @@ func (q *Querier) QueryGroupComparison(from, to time.Time) ([]GroupRow, error) {
 		r.GroupName = q.groupNameMap[r.GroupID]
 		// Count total users in group
 		var cnt int
-		_ = q.db.QueryRow("SELECT COUNT(*) FROM users WHERE group_id = ? AND is_active = 1", r.GroupID).Scan(&cnt)
+		_ = q.queryRow("SELECT COUNT(*) FROM users WHERE group_id = ? AND is_active = 1", r.GroupID).Scan(&cnt)
 		r.Users = cnt
 		result = append(result, r)
 	}
@@ -438,7 +544,7 @@ func (q *Querier) QueryGroupComparison(from, to time.Time) ([]GroupRow, error) {
 
 // QueryUpstreamStats returns per-upstream aggregates.
 func (q *Querier) QueryUpstreamStats(from, to time.Time) ([]UpstreamRow, error) {
-	rows, err := q.db.Query(`
+	rows, err := q.query(`
 		SELECT
 			upstream_url,
 			COUNT(*)                                 AS cnt,
@@ -476,7 +582,7 @@ func (q *Querier) QueryUpstreamStats(from, to time.Time) ([]UpstreamRow, error) 
 
 // QueryStatusCodeDist returns request counts per HTTP status code.
 func (q *Querier) QueryStatusCodeDist(from, to time.Time) ([]StatusCodeRow, error) {
-	rows, err := q.db.Query(`
+	rows, err := q.query(`
 		SELECT status_code, COUNT(*) AS cnt
 		FROM usage_logs
 		WHERE created_at >= ? AND created_at < ?
@@ -504,7 +610,7 @@ func (q *Querier) QueryStatusCodeDist(from, to time.Time) ([]StatusCodeRow, erro
 
 // QuerySlowRequests returns the slowest N requests.
 func (q *Querier) QuerySlowRequests(from, to time.Time, limit int) ([]SlowRequestRow, error) {
-	rows, err := q.db.Query(`
+	rows, err := q.query(`
 		SELECT
 			created_at, user_id, model,
 			input_tokens, output_tokens, duration_ms, status_code,
@@ -541,7 +647,7 @@ func (q *Querier) QuerySlowRequests(from, to time.Time, limit int) ([]SlowReques
 // QueryStreamingRatio compares streaming vs non-streaming request counts and latencies.
 func (q *Querier) QueryStreamingRatio(from, to time.Time) (StreamingRatioData, error) {
 	var s StreamingRatioData
-	row := q.db.QueryRow(`
+	row := q.queryRow(`
 		SELECT
 			SUM(CASE WHEN is_streaming = 1 THEN 1 ELSE 0 END),
 			SUM(CASE WHEN is_streaming = 0 OR is_streaming IS NULL THEN 1 ELSE 0 END),
@@ -571,11 +677,11 @@ func (q *Querier) QueryEngagement(from, to time.Time, registeredUsers int) (Enga
 	var e EngagementData
 
 	// DAU: average daily distinct users
-	rows, err := q.db.Query(`
-		SELECT DATE(created_at), COUNT(DISTINCT user_id)
+	rows, err := q.db.Query(q.rebind(fmt.Sprintf(`
+		SELECT %s, COUNT(DISTINCT user_id)
 		FROM usage_logs
 		WHERE created_at >= ? AND created_at < ?
-		GROUP BY DATE(created_at)`, from, to)
+		GROUP BY 1`, q.sqlDate("created_at"))), from, to)
 	if err != nil {
 		return e, fmt.Errorf("query engagement dau: %w", err)
 	}
@@ -597,7 +703,7 @@ func (q *Querier) QueryEngagement(from, to time.Time, registeredUsers int) (Enga
 	}
 
 	// WAU / MAU = distinct users in period
-	_ = q.db.QueryRow(`
+	_ = q.queryRow(`
 		SELECT COUNT(DISTINCT user_id) FROM usage_logs
 		WHERE created_at >= ? AND created_at < ?`, from, to).Scan(&e.WAU)
 	e.MAU = e.WAU
@@ -615,7 +721,7 @@ func (q *Querier) QueryEngagement(from, to time.Time, registeredUsers int) (Enga
 	}
 
 	// Power users: top 5% by request count
-	prows, err := q.db.Query(`
+	prows, err := q.query(`
 		SELECT user_id, COUNT(*) AS cnt
 		FROM usage_logs
 		WHERE created_at >= ? AND created_at < ?
@@ -650,7 +756,7 @@ func (q *Querier) QueryEngagement(from, to time.Time, registeredUsers int) (Enga
 	}
 
 	// New users this period
-	_ = q.db.QueryRow(`
+	_ = q.queryRow(`
 		SELECT COUNT(*) FROM users
 		WHERE created_at >= ? AND created_at < ? AND is_active = 1`, from, to).Scan(&e.NewUsersThisPeriod)
 
@@ -663,7 +769,7 @@ func (q *Querier) QueryEngagement(from, to time.Time, registeredUsers int) (Enga
 
 // QueryUserFreqBuckets buckets users by their request count.
 func (q *Querier) QueryUserFreqBuckets(from, to time.Time) ([]HistogramBucket, error) {
-	rows, err := q.db.Query(`
+	rows, err := q.query(`
 		SELECT user_id, COUNT(*) AS cnt
 		FROM usage_logs
 		WHERE created_at >= ? AND created_at < ?
@@ -723,7 +829,7 @@ func (q *Querier) QueryUserFreqBuckets(from, to time.Time) ([]HistogramBucket, e
 
 // QueryIORatioBuckets buckets requests by their input/output token ratio.
 func (q *Querier) QueryIORatioBuckets(from, to time.Time) ([]HistogramBucket, error) {
-	rows, err := q.db.Query(`
+	rows, err := q.query(`
 		SELECT input_tokens, output_tokens
 		FROM usage_logs
 		WHERE created_at >= ? AND created_at < ?
@@ -769,7 +875,7 @@ func (q *Querier) QueryIORatioBuckets(from, to time.Time) ([]HistogramBucket, er
 
 // QueryParetoData returns cumulative token contribution per user.
 func (q *Querier) QueryParetoData(from, to time.Time) ([]ParetoRow, error) {
-	rows, err := q.db.Query(`
+	rows, err := q.query(`
 		SELECT user_id, SUM(total_tokens) AS total
 		FROM usage_logs
 		WHERE created_at >= ? AND created_at < ?
@@ -841,12 +947,12 @@ func changeRate(curr, prev float64) float64 {
 
 // QueryLatencyBoxPlotByModel returns latency distribution by model (Q1, Median, Q3, etc.)
 func (q *Querier) QueryLatencyBoxPlotByModel(from, to time.Time) ([]LatencyBoxPlotRow, error) {
-	rows, err := q.db.Query(`
+	rows, err := q.db.Query(q.rebind(fmt.Sprintf(`
 		SELECT model, duration_ms FROM usage_logs
 		WHERE created_at >= ? AND created_at < ?
 		  AND status_code IN (200, 201, 204)
 		ORDER BY model, duration_ms
-	`, from, to)
+	`)), from, to)
 	if err != nil {
 		return nil, fmt.Errorf("query latency boxplot: %w", err)
 	}
@@ -900,13 +1006,13 @@ func (q *Querier) QueryLatencyBoxPlotByModel(from, to time.Time) ([]LatencyBoxPl
 
 // QueryLatencyPercentileTrend returns P50/P95/P99 latency per day.
 func (q *Querier) QueryLatencyPercentileTrend(from, to time.Time) ([]LatencyPercentileRow, error) {
-	rows, err := q.db.Query(`
-		SELECT DATE(created_at) AS day, duration_ms
+	rows, err := q.db.Query(q.rebind(fmt.Sprintf(`
+		SELECT %s AS day, duration_ms
 		FROM usage_logs
 		WHERE created_at >= ? AND created_at < ?
 		  AND status_code IN (200, 201, 204)
 		ORDER BY day, duration_ms
-	`, from, to)
+	`, q.sqlDate("created_at"))), from, to)
 	if err != nil {
 		return nil, fmt.Errorf("query latency percentile: %w", err)
 	}
@@ -959,9 +1065,9 @@ func (q *Querier) QueryLatencyPercentileTrend(from, to time.Time) ([]LatencyPerc
 
 // QueryDailyLatencyTrend returns average latency per day (for trend chart).
 func (q *Querier) QueryDailyLatencyTrend(from, to time.Time) ([]DailyLatencyRow, error) {
-	rows, err := q.db.Query(`
+	rows, err := q.db.Query(q.rebind(fmt.Sprintf(`
 		SELECT
-			DATE(created_at) AS day,
+			%s AS day,
 			COALESCE(AVG(CASE WHEN status_code IN (200,201,204) THEN duration_ms END), 0) AS avg_lat,
 			COALESCE(MAX(duration_ms), 0) AS max_lat,
 			COALESCE(SUM(cost_usd), 0) AS cost
@@ -969,7 +1075,7 @@ func (q *Querier) QueryDailyLatencyTrend(from, to time.Time) ([]DailyLatencyRow,
 		WHERE created_at >= ? AND created_at < ?
 		GROUP BY day
 		ORDER BY day
-	`, from, to)
+	`, q.sqlDate("created_at"))), from, to)
 	if err != nil {
 		return nil, fmt.Errorf("query daily latency trend: %w", err)
 	}
@@ -1003,7 +1109,7 @@ func (q *Querier) QueryDailyLatencyTrend(from, to time.Time) ([]DailyLatencyRow,
 func (q *Querier) QueryUserRequestBoxPlot(from, to time.Time) (UserRequestBoxPlotData, error) {
 	var result UserRequestBoxPlotData
 
-	rows, err := q.db.Query(`
+	rows, err := q.query(`
 		SELECT user_id, COUNT(*) AS cnt
 		FROM usage_logs
 		WHERE created_at >= ? AND created_at < ?
@@ -1051,7 +1157,7 @@ func (q *Querier) QueryUserRequestBoxPlot(from, to time.Time) (UserRequestBoxPlo
 
 // QueryErrorRequests returns all non-2xx requests in the period (capped at 500).
 func (q *Querier) QueryErrorRequests(from, to time.Time) ([]ErrorRequestRow, error) {
-	rows, err := q.db.Query(`
+	rows, err := q.query(`
 		SELECT
 			created_at, user_id, model, status_code,
 			duration_ms, input_tokens,

@@ -9,9 +9,22 @@ import (
 )
 
 func main() {
-	var dbPath, fromStr, toStr, outputPath, templatePath string
+	var dbPath, pgDSN, pgHost, pgUser, pgPassword, pgDBName, pgSSLMode string
+	var pgPort int
+	var fromStr, toStr, outputPath, templatePath string
 
-	flag.StringVar(&dbPath, "db", "", "SQLite 数据库文件路径（必填）")
+	// SQLite
+	flag.StringVar(&dbPath, "db", "", "SQLite 数据库文件路径（使用 SQLite 时必填）")
+	// PostgreSQL — 方案一：完整 DSN
+	flag.StringVar(&pgDSN, "pg-dsn", "", "PostgreSQL 完整 DSN，如 postgres://user:pass@host:5432/dbname")
+	// PostgreSQL — 方案二：独立字段
+	flag.StringVar(&pgHost, "pg-host", "localhost", "PostgreSQL 主机名")
+	flag.IntVar(&pgPort, "pg-port", 5432, "PostgreSQL 端口")
+	flag.StringVar(&pgUser, "pg-user", "", "PostgreSQL 用户名")
+	flag.StringVar(&pgPassword, "pg-password", "", "PostgreSQL 密码")
+	flag.StringVar(&pgDBName, "pg-dbname", "", "PostgreSQL 数据库名")
+	flag.StringVar(&pgSSLMode, "pg-sslmode", "disable", "PostgreSQL SSL 模式（disable|require|verify-full）")
+
 	flag.StringVar(&fromStr, "from", "", "开始日期，格式 YYYY-MM-DD（必填）")
 	flag.StringVar(&toStr, "to", "", "结束日期，格式 YYYY-MM-DD（必填）")
 	flag.StringVar(&outputPath, "output", "report.html", "输出 HTML 文件路径")
@@ -19,25 +32,43 @@ func main() {
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "PairProxy 报告生成器 — 从数据库生成可视化分析报告\n\n")
-		fmt.Fprintf(os.Stderr, "用法: reportgen -db <数据库路径> -from <开始日期> -to <结束日期> [选项]\n\n")
+		fmt.Fprintf(os.Stderr, "用法（SQLite）:\n")
+		fmt.Fprintf(os.Stderr, "  reportgen -db pairproxy.db -from 2026-04-01 -to 2026-04-07 -output weekly.html\n\n")
+		fmt.Fprintf(os.Stderr, "用法（PostgreSQL DSN）:\n")
+		fmt.Fprintf(os.Stderr, "  reportgen -pg-dsn \"postgres://user:pass@host:5432/dbname\" -from 2026-04-01 -to 2026-04-07\n\n")
+		fmt.Fprintf(os.Stderr, "用法（PostgreSQL 独立字段）:\n")
+		fmt.Fprintf(os.Stderr, "  reportgen -pg-host localhost -pg-user app -pg-password secret -pg-dbname pairproxy -from 2026-04-01 -to 2026-04-07\n\n")
 		fmt.Fprintf(os.Stderr, "选项:\n")
 		flag.PrintDefaults()
-		fmt.Fprintf(os.Stderr, "\n示例:\n")
-		fmt.Fprintf(os.Stderr, "  reportgen -db pairproxy.db -from 2026-04-01 -to 2026-04-07 -output weekly.html\n")
 	}
 
 	flag.Parse()
 
+	// 确定驱动与数据源
+	driver := "sqlite"
+	dsn := ""
+	if pgDSN != "" || pgUser != "" || pgDBName != "" {
+		driver = "postgres"
+		if pgDSN != "" {
+			dsn = pgDSN
+		} else {
+			dsn = fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+				pgHost, pgPort, pgUser, pgPassword, pgDBName, pgSSLMode)
+		}
+	} else {
+		dsn = dbPath
+	}
+
 	// Validate required flags
-	if dbPath == "" || fromStr == "" || toStr == "" {
-		fmt.Fprintf(os.Stderr, "错误：-db、-from、-to 为必填参数\n\n")
+	if dsn == "" || fromStr == "" || toStr == "" {
+		fmt.Fprintf(os.Stderr, "错误：必须指定数据库（-db 或 -pg-dsn 或 -pg-user/-pg-dbname），以及 -from、-to\n\n")
 		flag.Usage()
 		os.Exit(1)
 	}
 
-	// Validate db file exists
-	if !fileExists(dbPath) {
-		fmt.Fprintf(os.Stderr, "错误：数据库文件不存在: %s\n", dbPath)
+	// SQLite: validate file exists
+	if driver == "sqlite" && !fileExists(dsn) {
+		fmt.Fprintf(os.Stderr, "错误：数据库文件不存在: %s\n", dsn)
 		os.Exit(1)
 	}
 
@@ -72,7 +103,9 @@ func main() {
 	}
 
 	params := QueryParams{
-		DBPath: dbPath,
+		DBPath: dsn,
+		DSN:    dsn,
+		Driver: driver,
 		From:   from,
 		To:     to,
 	}

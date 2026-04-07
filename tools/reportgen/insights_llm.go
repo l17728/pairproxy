@@ -26,13 +26,27 @@ type llmTarget struct {
 
 // QueryLLMTarget reads the first active LLM target from the DB and decrypts its API key.
 // KEK (key encryption key) is read from the KEY_ENCRYPTION_KEY environment variable.
-func QueryLLMTarget(dbPath string) (*llmTarget, error) {
+// Supports both SQLite and PostgreSQL databases.
+func QueryLLMTarget(driver, dsn string) (*llmTarget, error) {
 	kek := os.Getenv("KEY_ENCRYPTION_KEY")
 	if kek == "" {
 		return nil, errors.New("KEY_ENCRYPTION_KEY env var not set; skipping LLM insights")
 	}
 
-	db, err := sql.Open("sqlite", dbPath)
+	if driver == "" {
+		driver = "sqlite"
+	}
+
+	var driverName string
+	switch driver {
+	case "postgres":
+		driverName = "postgres"
+	default:
+		driverName = "sqlite"
+		driver = "sqlite"
+	}
+
+	db, err := sql.Open(driverName, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
@@ -101,8 +115,8 @@ func aesGCMDecrypt(ciphertext64, key string) (string, error) {
 // GenerateLLMInsights calls the upstream LLM with the full report data.
 // On context-too-long errors it retries with error_requests and slow_requests stripped.
 // Returns a single Insight of type "llm_analysis", or nil if LLM is unavailable.
-func GenerateLLMInsights(data *ReportData, dbPath string) *Insight {
-	target, err := QueryLLMTarget(dbPath)
+func GenerateLLMInsights(data *ReportData, driver, dsn string) *Insight {
+	target, err := QueryLLMTarget(driver, dsn)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "⚠️  LLM insights skipped: %v\n", err)
 		return nil

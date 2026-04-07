@@ -428,7 +428,9 @@ type StreamingBoxPlotRow struct {
 
 // QueryParams holds query parameters.
 type QueryParams struct {
-	DBPath string
+	DBPath string // SQLite file path（Driver=sqlite 时使用）
+	DSN    string // PostgreSQL DSN（Driver=postgres 时使用）
+	Driver string // "sqlite"（默认）| "postgres"
 	From   time.Time
 	To     time.Time
 }

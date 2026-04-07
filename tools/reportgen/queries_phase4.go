@@ -15,12 +15,12 @@ import (
 // QueryEngagementTrend returns daily active users, weekly, and monthly active users per day.
 func (q *Querier) QueryEngagementTrend(from, to time.Time) ([]EngagementTrendRow, error) {
 	// Get all usage logs in date range
-	rows, err := q.db.Query(`
-		SELECT DISTINCT DATE(created_at) AS day, user_id
+	rows, err := q.query(fmt.Sprintf(`
+		SELECT DISTINCT %s AS day, user_id
 		FROM usage_logs
 		WHERE created_at >= ? AND created_at < ?
 		ORDER BY day, user_id
-	`, from, to)
+	`, q.sqlDate("created_at")), from, to)
 	if err != nil {
 		return nil, fmt.Errorf("query engagement trend: %w", err)
 	}
@@ -95,20 +95,21 @@ func (q *Querier) QueryEngagementTrend(from, to time.Time) ([]EngagementTrendRow
 func (q *Querier) QueryQuotaUsage(from, to time.Time) ([]QuotaUsageRow, error) {
 	// Check if users table has daily_limit and monthly_limit columns
 	// If not, this query will fail gracefully (best-effort)
-	rows, err := q.db.Query(`
+	rows, err := q.query(fmt.Sprintf(`
 		SELECT
 			u.id,
 			u.username,
 			COALESCE(u.daily_limit, 0) AS daily_limit,
 			COALESCE(u.monthly_limit, 0) AS monthly_limit,
-			COALESCE(SUM(CASE WHEN DATE(ul.created_at) = DATE('now') THEN ul.total_tokens ELSE 0 END), 0) AS daily_used,
-			COALESCE(SUM(CASE WHEN strftime('%Y-%m', ul.created_at) = strftime('%Y-%m', 'now') THEN ul.total_tokens ELSE 0 END), 0) AS monthly_used
+			COALESCE(SUM(CASE WHEN %s = %s THEN ul.total_tokens ELSE 0 END), 0) AS daily_used,
+			COALESCE(SUM(CASE WHEN %s = %s THEN ul.total_tokens ELSE 0 END), 0) AS monthly_used
 		FROM users u
 		LEFT JOIN usage_logs ul ON u.id = ul.user_id AND ul.created_at >= ? AND ul.created_at < ?
 		WHERE u.is_active = 1
 		GROUP BY u.id
 		ORDER BY monthly_used DESC
-	`, from, to)
+	`, q.sqlDate("ul.created_at"), q.sqlCurrentDate(),
+		q.sqlYearMonth("ul.created_at"), q.sqlCurrentYearMonth()), from, to)
 	if err != nil {
 		// If columns don't exist, return empty (graceful degradation)
 		return nil, nil
@@ -153,7 +154,7 @@ func (q *Querier) QueryQuotaUsage(from, to time.Time) ([]QuotaUsageRow, error) {
 
 // QueryLatencyBoxPlotByUpstream returns latency distribution by upstream endpoint.
 func (q *Querier) QueryLatencyBoxPlotByUpstream(from, to time.Time) ([]LatencyBoxPlotRow, error) {
-	rows, err := q.db.Query(`
+	rows, err := q.query(`
 		SELECT upstream_url, duration_ms FROM usage_logs
 		WHERE created_at >= ? AND created_at < ?
 		  AND status_code IN (200, 201, 204)
@@ -221,7 +222,7 @@ type GroupTokenDistribution struct {
 
 func (q *Querier) QueryGroupTokenDistribution(from, to time.Time) ([]GroupTokenDistribution, error) {
 	// Get total tokens per user per group
-	rows, err := q.db.Query(`
+	rows, err := q.query(`
 		SELECT g.id, g.name, u.id, SUM(ul.total_tokens) as total
 		FROM users u
 		LEFT JOIN groups g ON u.group_id = g.id

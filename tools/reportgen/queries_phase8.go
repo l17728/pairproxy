@@ -11,7 +11,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func (q *Querier) QueryLatencyHistogram(from, to time.Time) ([]LatencyHistogramBucket, error) {
-	rows, err := q.db.Query(`
+	rows, err := q.query(`
 		SELECT
 		  CASE
 		    WHEN duration_ms < 500   THEN '0-500ms'
@@ -55,7 +55,7 @@ func (q *Querier) QueryLatencyHistogram(from, to time.Time) ([]LatencyHistogramB
 // ---------------------------------------------------------------------------
 
 func (q *Querier) QueryLatencyScatter(from, to time.Time, limit int) ([]LatencyScatterPoint, error) {
-	rows, err := q.db.Query(`
+	rows, err := q.query(`
 		SELECT total_tokens, duration_ms
 		FROM usage_logs
 		WHERE created_at >= ? AND created_at < ?
@@ -85,15 +85,15 @@ func (q *Querier) QueryLatencyScatter(from, to time.Time, limit int) ([]LatencyS
 // ---------------------------------------------------------------------------
 
 func (q *Querier) QueryTokenThroughputHeatmap(from, to time.Time) ([]TokenThroughputCell, error) {
-	rows, err := q.db.Query(`
+	rows, err := q.query(fmt.Sprintf(`
 		SELECT
-		  CAST(strftime('%H', created_at) AS INTEGER) AS hour,
-		  CAST(strftime('%w', created_at) AS INTEGER) AS dow,
+		  %s AS hour,
+		  %s AS dow,
 		  COALESCE(SUM(total_tokens), 0) AS total_tok
 		FROM usage_logs
 		WHERE created_at >= ? AND created_at < ?
 		GROUP BY hour, dow
-	`, from, to)
+	`, q.sqlHour("created_at"), q.sqlDow("created_at")), from, to)
 	if err != nil {
 		return nil, fmt.Errorf("query token throughput heatmap: %w", err)
 	}
@@ -115,7 +115,7 @@ func (q *Querier) QueryTokenThroughputHeatmap(from, to time.Time) ([]TokenThroug
 // ---------------------------------------------------------------------------
 
 func (q *Querier) QueryUpstreamShare(from, to time.Time) ([]UpstreamShareRow, error) {
-	rows, err := q.db.Query(`
+	rows, err := q.query(`
 		SELECT upstream_url, COUNT(*) AS cnt
 		FROM usage_logs
 		WHERE created_at >= ? AND created_at < ?
@@ -144,15 +144,15 @@ func (q *Querier) QueryUpstreamShare(from, to time.Time) ([]UpstreamShareRow, er
 // ---------------------------------------------------------------------------
 
 func (q *Querier) QueryUpstreamLatencyTrend(from, to time.Time) ([]UpstreamLatencyTrendRow, error) {
-	rows, err := q.db.Query(`
-		SELECT upstream_url, DATE(created_at) AS day, AVG(duration_ms) AS avg_lat
+	rows, err := q.query(fmt.Sprintf(`
+		SELECT upstream_url, %s AS day, AVG(duration_ms) AS avg_lat
 		FROM usage_logs
 		WHERE created_at >= ? AND created_at < ?
 		  AND upstream_url IS NOT NULL AND upstream_url != ''
 		  AND duration_ms IS NOT NULL
 		GROUP BY upstream_url, day
 		ORDER BY day, upstream_url
-	`, from, to)
+	`, q.sqlDate("created_at")), from, to)
 	if err != nil {
 		return nil, fmt.Errorf("query upstream latency trend: %w", err)
 	}
@@ -202,8 +202,8 @@ func (q *Querier) QueryUpstreamLatencyTrend(from, to time.Time) ([]UpstreamLaten
 // ---------------------------------------------------------------------------
 
 func (q *Querier) QueryCostPerTokenTrend(from, to time.Time) ([]CostPerTokenRow, error) {
-	rows, err := q.db.Query(`
-		SELECT DATE(created_at) AS day,
+	rows, err := q.query(fmt.Sprintf(`
+		SELECT %s AS day,
 		       CASE WHEN SUM(total_tokens) > 0
 		            THEN SUM(cost_usd) / SUM(total_tokens)
 		            ELSE 0 END AS cpt
@@ -211,7 +211,7 @@ func (q *Querier) QueryCostPerTokenTrend(from, to time.Time) ([]CostPerTokenRow,
 		WHERE created_at >= ? AND created_at < ?
 		GROUP BY day
 		ORDER BY day
-	`, from, to)
+	`, q.sqlDate("created_at")), from, to)
 	if err != nil {
 		return nil, fmt.Errorf("query cost per token trend: %w", err)
 	}
@@ -233,15 +233,15 @@ func (q *Querier) QueryCostPerTokenTrend(from, to time.Time) ([]CostPerTokenRow,
 // ---------------------------------------------------------------------------
 
 func (q *Querier) QueryIORatioTrend(from, to time.Time) ([]IORatioTrendRow, error) {
-	rows, err := q.db.Query(`
-		SELECT DATE(created_at) AS day,
+	rows, err := q.query(fmt.Sprintf(`
+		SELECT %s AS day,
 		       AVG(CAST(input_tokens AS REAL) / NULLIF(output_tokens, 0)) AS io_ratio
 		FROM usage_logs
 		WHERE created_at >= ? AND created_at < ?
 		  AND output_tokens > 0
 		GROUP BY day
 		ORDER BY day
-	`, from, to)
+	`, q.sqlDate("created_at")), from, to)
 	if err != nil {
 		return nil, fmt.Errorf("query io ratio trend: %w", err)
 	}
@@ -264,14 +264,14 @@ func (q *Querier) QueryIORatioTrend(from, to time.Time) ([]IORatioTrendRow, erro
 
 // QueryPeakRPM returns the maximum requests-per-minute in the period.
 func (q *Querier) QueryPeakRPM(from, to time.Time) (int64, error) {
-	row := q.db.QueryRow(`
+	row := q.queryRow(fmt.Sprintf(`
 		SELECT COALESCE(MAX(cnt), 0) FROM (
 		  SELECT COUNT(*) AS cnt
 		  FROM usage_logs
 		  WHERE created_at >= ? AND created_at < ?
-		  GROUP BY strftime('%Y-%m-%d %H:%M', created_at)
+		  GROUP BY %s
 		)
-	`, from, to)
+	`, q.sqlMinuteGroup("created_at")), from, to)
 	var v int64
 	if err := row.Scan(&v); err != nil {
 		return 0, fmt.Errorf("query peak rpm: %w", err)
@@ -285,14 +285,14 @@ func (q *Querier) QueryPeakRPM(from, to time.Time) (int64, error) {
 
 // QueryModelDailyTrend returns per-model daily request counts and tokens.
 func (q *Querier) QueryModelDailyTrend(from, to time.Time) ([]ModelDailyRow, error) {
-	rows, err := q.db.Query(`
-		SELECT DATE(created_at) AS day, model, COUNT(*) AS cnt, COALESCE(SUM(total_tokens),0) AS tok
+	rows, err := q.query(fmt.Sprintf(`
+		SELECT %s AS day, model, COUNT(*) AS cnt, COALESCE(SUM(total_tokens),0) AS tok
 		FROM usage_logs
 		WHERE created_at >= ? AND created_at < ?
 		  AND model IS NOT NULL AND model != ''
 		GROUP BY day, model
 		ORDER BY day, model
-	`, from, to)
+	`, q.sqlDate("created_at")), from, to)
 	if err != nil {
 		return nil, fmt.Errorf("query model daily trend: %w", err)
 	}
@@ -384,7 +384,7 @@ func (q *Querier) QueryModelTokenBoxPlots(from, to time.Time, column string) ([]
 // ---------------------------------------------------------------------------
 
 func (q *Querier) QuerySourceNodeDist(from, to time.Time) ([]SourceNodeRow, error) {
-	rows, err := q.db.Query(`
+	rows, err := q.query(`
 		SELECT COALESCE(source_node, 'unknown'), COUNT(*) AS cnt
 		FROM usage_logs
 		WHERE created_at >= ? AND created_at < ?
@@ -413,7 +413,7 @@ func (q *Querier) QuerySourceNodeDist(from, to time.Time) ([]SourceNodeRow, erro
 // ---------------------------------------------------------------------------
 
 func (q *Querier) QueryStreamingBoxPlot(from, to time.Time) ([]StreamingBoxPlotRow, error) {
-	rows, err := q.db.Query(`
+	rows, err := q.query(`
 		SELECT is_streaming, duration_ms
 		FROM usage_logs
 		WHERE created_at >= ? AND created_at < ?
@@ -472,7 +472,7 @@ func (q *Querier) QueryStreamingBoxPlot(from, to time.Time) ([]StreamingBoxPlotR
 
 func (q *Querier) QueryUserTierDist(from, to time.Time) ([]UserTierRow, error) {
 	// Get per-user request counts and token totals in period
-	rows, err := q.db.Query(`
+	rows, err := q.query(`
 		SELECT user_id, COUNT(*) AS reqs, COALESCE(SUM(total_tokens),0) AS tok
 		FROM usage_logs
 		WHERE created_at >= ? AND created_at < ?
@@ -566,7 +566,7 @@ func max1(a, b int) int {
 // ---------------------------------------------------------------------------
 
 func (q *Querier) QueryUserTokenPercentiles(from, to time.Time) ([]UserTokenPercentileRow, error) {
-	rows, err := q.db.Query(`
+	rows, err := q.query(`
 		SELECT COALESCE(SUM(total_tokens),0) AS tok
 		FROM usage_logs
 		WHERE created_at >= ? AND created_at < ?

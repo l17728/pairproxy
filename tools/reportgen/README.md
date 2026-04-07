@@ -2,10 +2,11 @@
 
 ## 概述
 
-reportgen 是 PairProxy 的可视化分析报告生成工具，能够从 SQLite 数据库中提取使用数据，生成交互式 HTML 报告。报告包含 16+ 个可视化卡片，覆盖用户、运维和管理三个视角的分析需求。
+reportgen 是 PairProxy 的可视化分析报告生成工具，能够从 SQLite 或 PostgreSQL 数据库中提取使用数据，生成交互式 HTML 报告。报告包含 16+ 个可视化卡片，覆盖用户、运维和管理三个视角的分析需求。
 
 **最新版本**: v2.24.1
 **发布日期**: 2026-04-05
+**数据库支持**: SQLite（默认）| PostgreSQL
 
 ---
 
@@ -46,6 +47,7 @@ go build -o reportgen
 
 ### 完整命令参数
 
+#### SQLite 模式
 ```bash
 ./reportgen -db <数据库> -from <开始日期> -to <结束日期> [选项]
 
@@ -59,16 +61,69 @@ go build -o reportgen
   -template <path>  HTML 模板文件路径 (默认: templates/report.html)
 ```
 
+#### PostgreSQL 模式（方案一：完整 DSN）
+```bash
+./reportgen -pg-dsn "postgres://user:password@host:5432/dbname" -from <开始日期> -to <结束日期> [选项]
+
+必填参数:
+  -pg-dsn <DSN>     PostgreSQL 连接字符串，格式: postgres://user:password@host:port/dbname
+  -from <YYYY-MM-DD> 分析的开始日期 (包含)
+  -to <YYYY-MM-DD>   分析的结束日期 (包含)
+
+可选参数:
+  -output <path>    输出 HTML 文件路径 (默认: report.html)
+  -template <path>  HTML 模板文件路径 (默认: templates/report.html)
+```
+
+#### PostgreSQL 模式（方案二：独立字段）
+```bash
+./reportgen -pg-host <host> -pg-user <user> -pg-password <password> -pg-dbname <dbname> \
+  -from <开始日期> -to <结束日期> [选项]
+
+必填参数:
+  -pg-host <host>       PostgreSQL 主机名 (默认: localhost)
+  -pg-port <port>       PostgreSQL 端口 (默认: 5432)
+  -pg-user <user>       PostgreSQL 用户名
+  -pg-password <pass>   PostgreSQL 密码
+  -pg-dbname <dbname>   PostgreSQL 数据库名
+  -from <YYYY-MM-DD>    分析的开始日期 (包含)
+  -to <YYYY-MM-DD>      分析的结束日期 (包含)
+
+可选参数:
+  -pg-sslmode <mode>    SSL 模式: disable|require|verify-full (默认: disable)
+  -output <path>        输出 HTML 文件路径 (默认: report.html)
+  -template <path>      HTML 模板文件路径 (默认: templates/report.html)
+```
+
 ### 常见示例
 
-#### 生成周报 (过去7天)
+#### SQLite: 生成周报 (过去7天)
 ```bash
 ./reportgen -db pairproxy.db -from 2026-03-28 -to 2026-04-04 -output weekly-report.html
 ```
 
-#### 生成月报 (整个三月)
+#### SQLite: 生成月报 (整个三月)
 ```bash
 ./reportgen -db pairproxy.db -from 2026-03-01 -to 2026-03-31 -output march-report.html
+```
+
+#### PostgreSQL: 使用完整 DSN
+```bash
+./reportgen -pg-dsn "postgres://app:secret@db.example.com:5432/pairproxy" \
+  -from 2026-03-28 -to 2026-04-04 -output weekly-report.html
+```
+
+#### PostgreSQL: 使用独立字段
+```bash
+./reportgen -pg-host db.example.com -pg-user app -pg-password secret \
+  -pg-dbname pairproxy -from 2026-03-28 -to 2026-04-04 -output weekly-report.html
+```
+
+#### PostgreSQL: 启用 SSL 验证
+```bash
+./reportgen -pg-host db.example.com -pg-user app -pg-password secret \
+  -pg-dbname pairproxy -pg-sslmode verify-full \
+  -from 2026-03-28 -to 2026-04-04 -output weekly-report.html
 ```
 
 #### 指定自定义模板

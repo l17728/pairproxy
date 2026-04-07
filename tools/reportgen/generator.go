@@ -10,7 +10,7 @@ import (
 
 // GenerateReport orchestrates the full report generation pipeline.
 func GenerateReport(params QueryParams, templatePath, outputPath string) error {
-	q, err := NewQuerier(params.DBPath)
+	q, err := NewQuerier(params.Driver, params.DSN)
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
 	}
@@ -101,7 +101,7 @@ func GenerateReport(params QueryParams, templatePath, outputPath string) error {
 	data.Insights = GenerateInsights(&data)
 
 	// Generate LLM insights (best-effort: requires KEY_ENCRYPTION_KEY env var)
-	if llmInsight := GenerateLLMInsights(&data, params.DBPath); llmInsight != nil {
+	if llmInsight := GenerateLLMInsights(&data, params.Driver, params.DSN); llmInsight != nil {
 		data.Insights = append(data.Insights, *llmInsight)
 	}
 

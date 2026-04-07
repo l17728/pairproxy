@@ -14,12 +14,12 @@ import (
 // QueryRetentionData returns retention cohort analysis (simplified: daily active by first-use week).
 func (q *Querier) QueryRetentionData(from, to time.Time) ([]RetentionRow, error) {
 	// Get first use date for each user in the period
-	userFirstUseRows, err := q.db.Query(`
-		SELECT user_id, DATE(MIN(created_at)) AS first_date
+	userFirstUseRows, err := q.query(fmt.Sprintf(`
+		SELECT user_id, %s AS first_date
 		FROM usage_logs
 		WHERE created_at < ?
 		GROUP BY user_id
-	`, to)
+	`, q.sqlDate("MIN(created_at)")), to)
 	if err != nil {
 		return nil, fmt.Errorf("query user first use: %w", err)
 	}
@@ -46,10 +46,10 @@ func (q *Querier) QueryRetentionData(from, to time.Time) ([]RetentionRow, error)
 		}
 
 		// Count active days for this user within the period
-		activeRows, _ := q.db.Query(`
-			SELECT DISTINCT DATE(created_at) FROM usage_logs
+		activeRows, _ := q.query(fmt.Sprintf(`
+			SELECT DISTINCT %s FROM usage_logs
 			WHERE user_id = ? AND created_at >= ? AND created_at < ?
-		`, uc.userID, from, to)
+		`, q.sqlDate("created_at")), uc.userID, from, to)
 		if activeRows != nil {
 			for activeRows.Next() {
 				var dateStr string
@@ -108,7 +108,7 @@ func (q *Querier) QueryRetentionData(from, to time.Time) ([]RetentionRow, error)
 
 // QueryIOScatterPlot returns sampled input/output token pairs (limit to 1000 to avoid huge JSON).
 func (q *Querier) QueryIOScatterPlot(from, to time.Time, limit int) ([]IOScatterPoint, error) {
-	rows, err := q.db.Query(`
+	rows, err := q.query(`
 		SELECT input_tokens, output_tokens FROM usage_logs
 		WHERE created_at >= ? AND created_at < ?
 		ORDER BY RANDOM()
@@ -136,7 +136,7 @@ func (q *Querier) QueryIOScatterPlot(from, to time.Time, limit int) ([]IOScatter
 
 // QueryModelCostBreakdown returns cost distribution by model.
 func (q *Querier) QueryModelCostBreakdown(from, to time.Time) ([]ModelCostRow, error) {
-	rows, err := q.db.Query(`
+	rows, err := q.query(`
 		SELECT model, COALESCE(SUM(cost_usd), 0), COUNT(*), COALESCE(SUM(total_tokens), 0)
 		FROM usage_logs
 		WHERE created_at >= ? AND created_at < ?

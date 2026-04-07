@@ -13,7 +13,7 @@ import (
 // QueryModelRadarData returns multi-dimensional performance metrics for models.
 func (q *Querier) QueryModelRadarData(from, to time.Time) ([]ModelRadarData, error) {
 	// Get base stats per model
-	rows, err := q.db.Query(`
+	rows, err := q.query(`
 		SELECT
 			model,
 			COUNT(*) as cnt,
@@ -129,7 +129,7 @@ func (q *Querier) QueryModelRadarData(from, to time.Time) ([]ModelRadarData, err
 // QueryActiveUsersInPeriod returns count of users with activity in period.
 func (q *Querier) QueryActiveUsersInPeriod(from, to time.Time) (int, error) {
 	var count int
-	row := q.db.QueryRow(`
+	row := q.queryRow(`
 		SELECT COUNT(DISTINCT user_id) FROM usage_logs
 		WHERE created_at >= ? AND created_at < ?
 	`, from, to)
