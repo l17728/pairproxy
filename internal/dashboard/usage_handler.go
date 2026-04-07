@@ -71,11 +71,16 @@ func (h *Handler) handleDashboardUserQuota(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	user, err := h.userRepo.GetByUsername(username)
-	if err != nil || user == nil {
+	users, err := h.userRepo.ListByUsername(username)
+	if err != nil || len(users) == 0 {
 		writeDashJSONError(w, http.StatusNotFound, "user not found")
 		return
 	}
+	if len(users) > 1 {
+		writeDashJSONError(w, http.StatusConflict, "username matches multiple users; use user_id instead")
+		return
+	}
+	user := &users[0]
 
 	now := time.Now()
 	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
@@ -135,11 +140,16 @@ func (h *Handler) handleDashboardUserHistory(w http.ResponseWriter, r *http.Requ
 		days = d
 	}
 
-	user, err := h.userRepo.GetByUsername(username)
-	if err != nil || user == nil {
+	users2, err2 := h.userRepo.ListByUsername(username)
+	if err2 != nil || len(users2) == 0 {
 		writeDashJSONError(w, http.StatusNotFound, "user not found")
 		return
 	}
+	if len(users2) > 1 {
+		writeDashJSONError(w, http.StatusConflict, "username matches multiple users; use user_id instead")
+		return
+	}
+	user := &users2[0]
 
 	now := time.Now()
 	from := now.AddDate(0, 0, -days)

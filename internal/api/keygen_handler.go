@@ -111,8 +111,8 @@ func (h *KeygenHandler) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 查询用户
-	user, err := h.userRepo.GetByUsername(req.Username)
+	// 查询用户（仅本地账户）
+	user, err := h.userRepo.GetByUsernameAndProvider(req.Username, "local")
 	if err != nil {
 		h.logger.Error("keygen login: db error", zap.String("username", req.Username), zap.Error(err))
 		writeKeygenError(w, http.StatusInternalServerError, "internal_error", "user lookup failed")

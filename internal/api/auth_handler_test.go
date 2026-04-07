@@ -255,3 +255,73 @@ func TestLogout(t *testing.T) {
 		t.Error("access_token JTI should be blacklisted after logout")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// TestLogin_MixedAuth_LocalAndLDAP_SameUsername_LocalOnly
+// 混合认证场景：本地用户"alice"和LDAP用户"alice"同时存在时，
+// 本地密码登录应只匹配本地账户，不受LDAP同名账户干扰。
+// ---------------------------------------------------------------------------
+
+func TestLogin_MixedAuth_LocalAndLDAP_SameUsername_LocalOnly(t *testing.T) {
+	_, mux, gormDB := setupTest(t)
+	logger := zaptest.NewLogger(t)
+	userRepo := db.NewUserRepo(gormDB, logger)
+
+	// 创建本地账户 "alice"（有效密码 "localpass"）
+	localHash, _ := auth.HashPassword(logger, "localpass")
+	if err := userRepo.Create(&db.User{
+		Username:     "alice",
+		PasswordHash: localHash,
+		AuthProvider: "local",
+		IsActive:     true,
+	}); err != nil {
+		t.Fatalf("create local alice: %v", err)
+	}
+
+	// 创建同名 LDAP 账户 "alice"（无有效密码，空哈希）
+	if err := userRepo.Create(&db.User{
+		Username:     "alice",
+		PasswordHash: "",
+		AuthProvider: "ldap",
+		ExternalID: func(s string) *string { return &s }("ldap-uid-12345"),
+		IsActive:     true,
+	}); err != nil {
+		t.Fatalf("create ldap alice: %v", err)
+	}
+
+	// 用本地密码登录，应成功
+	rr := doRequest(t, mux, http.MethodPost, "/auth/login", map[string]string{
+		"username": "alice",
+		"password": "localpass",
+	})
+	if rr.Code != http.StatusOK {
+		t.Errorf("mixed-auth local login: got %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestLogin_MixedAuth_LDAPUser_LocalLoginFails 验证 LDAP 用户无法通过本地密码登录
+func TestLogin_MixedAuth_LDAPUser_LocalLoginFails(t *testing.T) {
+	_, mux, gormDB := setupTest(t)
+	logger := zaptest.NewLogger(t)
+	userRepo := db.NewUserRepo(gormDB, logger)
+
+	// 只创建 LDAP 账户 "bob"（无密码哈希）
+	if err := userRepo.Create(&db.User{
+		Username:     "bob",
+		PasswordHash: "",
+		AuthProvider: "ldap",
+		ExternalID: func(s string) *string { return &s }("ldap-uid-bob"),
+		IsActive:     true,
+	}); err != nil {
+		t.Fatalf("create ldap bob: %v", err)
+	}
+
+	// 尝试用任意密码做本地登录，应返回 401（找不到本地账户）
+	rr := doRequest(t, mux, http.MethodPost, "/auth/login", map[string]string{
+		"username": "bob",
+		"password": "anypassword",
+	})
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("ldap user local login: got %d, want 401; body: %s", rr.Code, rr.Body.String())
+	}
+}

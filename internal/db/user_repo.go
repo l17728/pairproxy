@@ -3,6 +3,7 @@ package db
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -30,6 +31,14 @@ func (r *UserRepo) Create(u *User) error {
 		u.CreatedAt = time.Now()
 	}
 	if err := r.db.Create(u).Error; err != nil {
+		// 检查是否为唯一约束冲突
+		if isDuplicateKeyError(err) {
+			r.logger.Warn("user already exists",
+				zap.String("username", u.Username),
+				zap.String("auth_provider", u.AuthProvider),
+			)
+			return fmt.Errorf("user already exists: username=%q, provider=%q", u.Username, u.AuthProvider)
+		}
 		r.logger.Error("failed to create user",
 			zap.String("username", u.Username),
 			zap.Error(err),
@@ -65,6 +74,16 @@ func (r *UserRepo) GetByUsername(username string) (*User, error) {
 		return nil, fmt.Errorf("get user %q: %w", username, err)
 	}
 	return &u, nil
+}
+
+// ListByUsername 返回所有拥有该用户名的用户（可能来自不同认证提供商）。
+// 在混合认证场景中，若 len > 1 则存在歧义，调用方应要求提供 provider 进行区分。
+func (r *UserRepo) ListByUsername(username string) ([]User, error) {
+	var users []User
+	if err := r.db.Preload("Group").Where("username = ?", username).Find(&users).Error; err != nil {
+		return nil, fmt.Errorf("list users by username %q: %w", username, err)
+	}
+	return users, nil
 }
 
 // GetByUsernameAndProvider 按用户名和认证提供商查询（复合唯一约束）。
@@ -384,4 +403,15 @@ func (r *GroupRepo) List() ([]Group, error) {
 		return nil, fmt.Errorf("list groups: %w", err)
 	}
 	return groups, nil
+}
+
+// isDuplicateKeyError 检查是否为数据库唯一约束冲突错误
+func isDuplicateKeyError(err error) bool {
+	// SQLite error code: 1555 = SQLITE_CONSTRAINT_UNIQUE
+	// MySQL error code: 1062 = ER_DUP_ENTRY
+	// PostgreSQL: "duplicate key" in error message
+	errStr := err.Error()
+	return strings.Contains(errStr, "UNIQUE constraint failed") ||
+		strings.Contains(errStr, "Duplicate entry") ||
+		strings.Contains(errStr, "duplicate key")
 }

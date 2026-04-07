@@ -88,41 +88,44 @@ func (r *APIKeyRepo) List() ([]APIKey, error) {
 // userID 和 groupID 至少一个非空；若同时提供，优先级由 FindForUser 的查询顺序决定。
 // 重复调用视为 upsert（先删除旧分配，再创建新分配）。
 func (r *APIKeyRepo) Assign(keyID string, userID, groupID *string) error {
-	// 删除同 user/group 的旧分配
-	q := r.db.Where("api_key_id = ?", keyID)
-	if userID != nil {
-		q = q.Where("user_id = ?", *userID)
-	} else {
-		q = q.Where("user_id IS NULL")
-	}
-	if groupID != nil {
-		q = q.Where("group_id = ?", *groupID)
-	} else {
-		q = q.Where("group_id IS NULL")
-	}
-	if err := q.Delete(&APIKeyAssignment{}).Error; err != nil {
-		r.logger.Warn("assign: failed to remove old assignment", zap.Error(err))
-	}
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		// 删除同 user/group 的旧分配
+		q := tx.Where("api_key_id = ?", keyID)
+		if userID != nil {
+			q = q.Where("user_id = ?", *userID)
+		} else {
+			q = q.Where("user_id IS NULL")
+		}
+		if groupID != nil {
+			q = q.Where("group_id = ?", *groupID)
+		} else {
+			q = q.Where("group_id IS NULL")
+		}
+		if err := q.Delete(&APIKeyAssignment{}).Error; err != nil {
+			r.logger.Error("assign: failed to remove old assignment", zap.Error(err))
+			return fmt.Errorf("remove old assignment: %w", err)
+		}
 
-	assign := &APIKeyAssignment{
-		ID:       uuid.New().String(),
-		APIKeyID: keyID,
-		UserID:   userID,
-		GroupID:  groupID,
-	}
-	if err := r.db.Create(assign).Error; err != nil {
-		r.logger.Error("failed to assign api key",
+		assign := &APIKeyAssignment{
+			ID:       uuid.New().String(),
+			APIKeyID: keyID,
+			UserID:   userID,
+			GroupID:  groupID,
+		}
+		if err := tx.Create(assign).Error; err != nil {
+			r.logger.Error("failed to assign api key",
+				zap.String("key_id", keyID),
+				zap.Error(err),
+			)
+			return fmt.Errorf("assign api key: %w", err)
+		}
+		r.logger.Info("api key assigned",
 			zap.String("key_id", keyID),
-			zap.Error(err),
+			zap.Any("user_id", userID),
+			zap.Any("group_id", groupID),
 		)
-		return fmt.Errorf("assign api key: %w", err)
-	}
-	r.logger.Info("api key assigned",
-		zap.String("key_id", keyID),
-		zap.Any("user_id", userID),
-		zap.Any("group_id", groupID),
-	)
-	return nil
+		return nil
+	})
 }
 
 // Revoke 停用指定 API Key（软删除，不影响历史记录）。

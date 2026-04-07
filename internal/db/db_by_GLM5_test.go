@@ -342,7 +342,7 @@ func TestUserRepo_GetByExternalID(t *testing.T) {
 		Username:     "ldap-user",
 		PasswordHash: "",
 		AuthProvider: "ldap",
-		ExternalID:   "cn=zhangsan,ou=users,dc=company,dc=com",
+		ExternalID: func(s string) *string { return &s }("cn=zhangsan,ou=users,dc=company,dc=com"),
 		IsActive:     true,
 	}
 	if err := userRepo.Create(u); err != nil {

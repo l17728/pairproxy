@@ -197,7 +197,7 @@ func TestUser_AuthProviderUsernameComposite(t *testing.T) {
 	require.NoError(t, gormDB.Create(u1).Error)
 
 	// ldap 用户 "alice" → 允许（不同 provider）
-	u2 := &User{ID: uuid.NewString(), Username: "alice", PasswordHash: "h2", AuthProvider: "ldap", ExternalID: "uid=alice,cn=users"}
+	u2 := &User{ID: uuid.NewString(), Username: "alice", PasswordHash: "h2", AuthProvider: "ldap", ExternalID: func(s string) *string { return &s }("uid=alice,cn=users")}
 	require.NoError(t, gormDB.Create(u2).Error)
 
 	// 再次创建 local 用户 "alice" → 失败（相同 provider + username）
@@ -216,7 +216,7 @@ func TestUser_GetByUsernameAndProvider(t *testing.T) {
 
 	// 创建两个同名但不同 provider 的用户
 	require.NoError(t, gormDB.Create(&User{ID: uuid.NewString(), Username: "bob", PasswordHash: "h1", AuthProvider: "local"}).Error)
-	require.NoError(t, gormDB.Create(&User{ID: uuid.NewString(), Username: "bob", PasswordHash: "h2", AuthProvider: "ldap", ExternalID: "uid=bob"}).Error)
+	require.NoError(t, gormDB.Create(&User{ID: uuid.NewString(), Username: "bob", PasswordHash: "h2", AuthProvider: "ldap", ExternalID: func(s string) *string { return &s }("uid=bob")}).Error)
 
 	// 精确查找 local/bob
 	localBob, err := repo.GetByUsernameAndProvider("bob", "local")
@@ -246,20 +246,20 @@ func TestUser_AuthProviderExternalIDComposite(t *testing.T) {
 	// ldap 用户 uid=u1
 	require.NoError(t, gormDB.Create(&User{
 		ID: uuid.NewString(), Username: "user1", PasswordHash: "h1",
-		AuthProvider: "ldap", ExternalID: "uid=u1,cn=users",
+		AuthProvider: "ldap", ExternalID: func(s string) *string { return &s }("uid=u1,cn=users"),
 	}).Error)
 
 	// 再次用相同 (auth_provider, external_id) 创建 → 失败
 	err = gormDB.Create(&User{
 		ID: uuid.NewString(), Username: "user1-dup", PasswordHash: "h2",
-		AuthProvider: "ldap", ExternalID: "uid=u1,cn=users",
+		AuthProvider: "ldap", ExternalID: func(s string) *string { return &s }("uid=u1,cn=users"),
 	}).Error
 	assert.Error(t, err, "duplicate (auth_provider, external_id) must fail")
 
 	// 不同 provider 相同 external_id → 允许
 	err = gormDB.Create(&User{
 		ID: uuid.NewString(), Username: "user1-oauth", PasswordHash: "h3",
-		AuthProvider: "oauth", ExternalID: "uid=u1,cn=users",
+		AuthProvider: "oauth", ExternalID: func(s string) *string { return &s }("uid=u1,cn=users"),
 	}).Error
 	assert.NoError(t, err, "same external_id with different provider must be allowed")
 }

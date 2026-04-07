@@ -402,8 +402,12 @@ func (h *Handler) handleLLMCreateTarget(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// 检查 URL 冲突
-	exists, err := h.llmTargetRepo.URLExists(targetURL)
+	// 检查 URL 冲突（考虑 api_key_id 组合）
+	var apiKeyIDPtr *string
+	if apiKeyID != "" {
+		apiKeyIDPtr = &apiKeyID
+	}
+	exists, err := h.llmTargetRepo.ComboExists(targetURL, apiKeyIDPtr)
 	if err != nil {
 		h.logger.Error("check url exists", zap.Error(err))
 		http.Redirect(w, r, "/dashboard/llm?error=internal+error", http.StatusSeeOther)
@@ -419,11 +423,6 @@ func (h *Handler) handleLLMCreateTarget(w http.ResponseWriter, r *http.Request) 
 		if w, err := strconv.Atoi(weightStr); err == nil && w > 0 {
 			weight = w
 		}
-	}
-
-	var apiKeyIDPtr *string
-	if apiKeyID != "" {
-		apiKeyIDPtr = &apiKeyID
 	}
 
 	target := &db.LLMTarget{
@@ -501,9 +500,13 @@ func (h *Handler) handleLLMUpdateTarget(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// 如果 URL 变更，检查冲突
+	// 如果 URL 变更，检查冲突（考虑 api_key_id 组合）
 	if targetURL != existing.URL {
-		exists, err := h.llmTargetRepo.URLExists(targetURL)
+		var apiKeyIDPtr *string
+		if apiKeyID != "" {
+			apiKeyIDPtr = &apiKeyID
+		}
+		exists, err := h.llmTargetRepo.ComboExists(targetURL, apiKeyIDPtr)
 		if err != nil {
 			h.logger.Error("check url exists", zap.Error(err))
 			http.Redirect(w, r, "/dashboard/llm?error=internal+error", http.StatusSeeOther)

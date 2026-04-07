@@ -106,20 +106,24 @@ func (h *UserHandler) handleQuotaStatus(w http.ResponseWriter, r *http.Request) 
 	targetUserID := claims.UserID
 	queryUsername := r.URL.Query().Get("username")
 	if queryUsername != "" && claims.Role == "admin" {
-		targetUser, err := h.userRepo.GetByUsername(queryUsername)
+		targetUsers, err := h.userRepo.ListByUsername(queryUsername)
 		if err != nil {
 			h.logger.Error("failed to get target user by username",
 				zap.String("username", queryUsername),
 				zap.Error(err),
 			)
+			writeJSONError(w, http.StatusInternalServerError, "internal_error", "user lookup failed")
+			return
+		}
+		if len(targetUsers) == 0 {
 			writeJSONError(w, http.StatusNotFound, "not_found", "user not found")
 			return
 		}
-		if targetUser == nil {
-			writeJSONError(w, http.StatusNotFound, "not_found", "user not found")
+		if len(targetUsers) > 1 {
+			writeJSONError(w, http.StatusConflict, "username_ambiguous", "username matches multiple users; use user_id instead")
 			return
 		}
-		targetUserID = targetUser.ID
+		targetUserID = targetUsers[0].ID
 		h.logger.Info("admin querying user quota status",
 			zap.String("admin", claims.Username),
 			zap.String("target_user", queryUsername),
@@ -188,20 +192,24 @@ func (h *UserHandler) handleUsageHistory(w http.ResponseWriter, r *http.Request)
 	targetUserID := claims.UserID
 	queryUsername := r.URL.Query().Get("username")
 	if queryUsername != "" && claims.Role == "admin" {
-		targetUser, err := h.userRepo.GetByUsername(queryUsername)
+		targetUsers, err := h.userRepo.ListByUsername(queryUsername)
 		if err != nil {
 			h.logger.Error("failed to get target user by username",
 				zap.String("username", queryUsername),
 				zap.Error(err),
 			)
+			writeJSONError(w, http.StatusInternalServerError, "internal_error", "user lookup failed")
+			return
+		}
+		if len(targetUsers) == 0 {
 			writeJSONError(w, http.StatusNotFound, "not_found", "user not found")
 			return
 		}
-		if targetUser == nil {
-			writeJSONError(w, http.StatusNotFound, "not_found", "user not found")
+		if len(targetUsers) > 1 {
+			writeJSONError(w, http.StatusConflict, "username_ambiguous", "username matches multiple users; use user_id instead")
 			return
 		}
-		targetUserID = targetUser.ID
+		targetUserID = targetUsers[0].ID
 		h.logger.Info("admin querying user usage history",
 			zap.String("admin", claims.Username),
 			zap.String("target_user", queryUsername),

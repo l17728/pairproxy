@@ -67,7 +67,7 @@ func setupProviderTest(t *testing.T, p auth.Provider) (*AuthHandler, *http.Serve
 func TestJITProvisioning(t *testing.T) {
 	provider := &mockProvider{
 		user: &auth.ProviderUser{
-			ExternalID:   "ldap-uid-alice",
+			ExternalID: "ldap-uid-alice",
 			Username:     "alice",
 			Email:        "alice@example.com",
 			AuthProvider: "ldap",
@@ -99,8 +99,8 @@ func TestJITProvisioning(t *testing.T) {
 	if user.AuthProvider != "ldap" {
 		t.Errorf("AuthProvider = %q, want ldap", user.AuthProvider)
 	}
-	if user.ExternalID != "ldap-uid-alice" {
-		t.Errorf("ExternalID = %q, want ldap-uid-alice", user.ExternalID)
+	if *user.ExternalID != "ldap-uid-alice" {
+		t.Errorf("ExternalID = %q, want ldap-uid-alice", *user.ExternalID)
 	}
 	if !user.IsActive {
 		t.Error("JIT-created user should be active")
@@ -114,7 +114,7 @@ func TestJITProvisioning(t *testing.T) {
 func TestJITProvisioning_Idempotent(t *testing.T) {
 	provider := &mockProvider{
 		user: &auth.ProviderUser{
-			ExternalID:   "ldap-uid-bob",
+			ExternalID: "ldap-uid-bob",
 			Username:     "bob",
 			AuthProvider: "ldap",
 		},
@@ -146,7 +146,7 @@ func TestJITProvisioning_Idempotent(t *testing.T) {
 	}
 	count := 0
 	for _, u := range users {
-		if u.ExternalID == "ldap-uid-bob" {
+		if u.ExternalID != nil && *u.ExternalID == "ldap-uid-bob" {
 			count++
 		}
 	}
@@ -193,7 +193,7 @@ func TestJITProvisioning_DisabledUser(t *testing.T) {
 		Username:     "disabled-ldap",
 		PasswordHash: "",
 		AuthProvider: "ldap",
-		ExternalID:   "ldap-uid-disabled",
+		ExternalID: func(s string) *string { return &s }("ldap-uid-disabled"),
 	}
 	if err := userRepo.Create(disabledUser); err != nil {
 		t.Fatalf("Create disabled user: %v", err)
@@ -204,7 +204,7 @@ func TestJITProvisioning_DisabledUser(t *testing.T) {
 
 	provider := &mockProvider{
 		user: &auth.ProviderUser{
-			ExternalID:   "ldap-uid-disabled",
+			ExternalID: "ldap-uid-disabled",
 			Username:     "disabled-ldap",
 			AuthProvider: "ldap",
 		},

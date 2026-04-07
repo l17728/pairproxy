@@ -1162,16 +1162,21 @@ func (h *AdminHandler) handleQuotaStatus(w http.ResponseWriter, r *http.Request)
 		writeJSONError(w, http.StatusBadRequest, "invalid_request", "user query parameter is required")
 		return
 	}
-	u, err := h.userRepo.GetByUsername(username)
+	users, err := h.userRepo.ListByUsername(username)
 	if err != nil {
 		h.logger.Error("quota status: get user failed", zap.String("username", username), zap.Error(err))
 		writeJSONError(w, http.StatusInternalServerError, "internal_error", "failed to look up user")
 		return
 	}
-	if u == nil {
+	if len(users) == 0 {
 		writeJSONError(w, http.StatusNotFound, "not_found", "user not found")
 		return
 	}
+	if len(users) > 1 {
+		writeJSONError(w, http.StatusConflict, "username_ambiguous", "username matches multiple users with different providers; use user_id instead")
+		return
+	}
+	u := &users[0]
 
 	now := time.Now()
 	todayStart := now.Truncate(24 * time.Hour)

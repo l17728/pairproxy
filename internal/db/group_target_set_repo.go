@@ -203,39 +203,42 @@ func (r *GroupTargetSetRepo) AddMember(setID string, member *GroupTargetSetMembe
 		return fmt.Errorf("target ID cannot be empty")
 	}
 
-	// 检查是否已存在（复合唯一约束：target_set_id + target_id）
-	existing, err := r.GetMember(setID, member.TargetID)
-	if err != nil {
-		return fmt.Errorf("check duplicate member: %w", err)
-	}
-	if existing != nil {
-		return fmt.Errorf("target already in set: set_id=%s, target_id=%s", setID, member.TargetID)
-	}
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		// 检查是否已存在（复合唯一约束：target_set_id + target_id）
+		var existing GroupTargetSetMember
+		if err := tx.Where("target_set_id = ? AND target_id = ?", setID, member.TargetID).First(&existing).Error; err != nil {
+			if !errors.Is(err, gorm.ErrRecordNotFound) {
+				return fmt.Errorf("check duplicate member: %w", err)
+			}
+		} else {
+			return fmt.Errorf("target already in set: set_id=%s, target_id=%s", setID, member.TargetID)
+		}
 
-	member.TargetSetID = setID
-	member.CreatedAt = time.Now()
-	if member.HealthStatus == "" {
-		member.HealthStatus = "unknown"
-	}
+		member.TargetSetID = setID
+		member.CreatedAt = time.Now()
+		if member.HealthStatus == "" {
+			member.HealthStatus = "unknown"
+		}
 
-	// 使用原生 SQL 插入，确保 IsActive 字段被正确保存（包括 false 值）
-	if err := r.db.Exec(
-		"INSERT INTO group_target_set_members (id, target_set_id, target_id, weight, priority, is_active, health_status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-		member.ID, member.TargetSetID, member.TargetID, member.Weight, member.Priority, member.IsActive, member.HealthStatus, member.CreatedAt,
-	).Error; err != nil {
-		r.logger.Error("failed to add member",
+		// 使用原生 SQL 插入，确保 IsActive 字段被正确保存（包括 false 值）
+		if err := tx.Exec(
+			"INSERT INTO group_target_set_members (id, target_set_id, target_id, weight, priority, is_active, health_status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+			member.ID, member.TargetSetID, member.TargetID, member.Weight, member.Priority, member.IsActive, member.HealthStatus, member.CreatedAt,
+		).Error; err != nil {
+			r.logger.Error("failed to add member",
+				zap.String("target_set_id", setID),
+				zap.String("target_id", member.TargetID),
+				zap.Error(err),
+			)
+			return fmt.Errorf("add member: %w", err)
+		}
+
+		r.logger.Debug("member added",
 			zap.String("target_set_id", setID),
 			zap.String("target_id", member.TargetID),
-			zap.Error(err),
 		)
-		return fmt.Errorf("add member: %w", err)
-	}
-
-	r.logger.Debug("member added",
-		zap.String("target_set_id", setID),
-		zap.String("target_id", member.TargetID),
-	)
-	return nil
+		return nil
+	})
 }
 
 // RemoveMember 从 target set 移除 member（按 target_id）

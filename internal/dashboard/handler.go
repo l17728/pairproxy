@@ -702,10 +702,10 @@ func (h *Handler) handleLogsPage(w http.ResponseWriter, r *http.Request) {
 	// 优先使用 username 参数，将其解析为 user_id 用于数据库查询
 	displayUsername := username
 	if username != "" && userID == "" {
-		if u, err := h.userRepo.GetByUsername(username); err == nil && u != nil {
-			userID = u.ID
+		if users, err := h.userRepo.ListByUsername(username); err == nil && len(users) == 1 {
+			userID = users[0].ID
 		} else {
-			// 用户名不存在，返回空结果（不报错）
+			// 用户名不存在或有歧义，返回空结果（不报错）
 			userID = "__not_found__"
 		}
 	}
@@ -1224,11 +1224,11 @@ func (h *Handler) handleImportSubmit(w http.ResponseWriter, r *http.Request) {
 		}
 
 		for _, u := range sec.Users {
-			existing, err := h.userRepo.GetByUsername(u.Username)
+			existingUsers, err := h.userRepo.ListByUsername(u.Username)
 			if err != nil {
 				h.logger.Warn("import: lookup user failed", zap.String("user", u.Username), zap.Error(err))
 			}
-			if existing != nil {
+			if len(existingUsers) > 0 {
 				result.UsersSkipped++
 				result.SkipDetails = append(result.SkipDetails, fmt.Sprintf("用户 %q 已存在，跳过", u.Username))
 				continue

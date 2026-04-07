@@ -22,8 +22,8 @@ type User struct {
 	GroupID      *string    `gorm:"index"` // NULL 表示未分配分组
 	Group        Group      `gorm:"foreignKey:GroupID"`
 	IsActive     bool       `gorm:"default:true"`
-	AuthProvider string     `gorm:"default:'local';uniqueIndex:idx_user_authprovider_username;uniqueIndex:idx_user_authprovider_externalid"` // "local" | "ldap"；与 Username 和 ExternalID 各自组合唯一
-	ExternalID   string     `gorm:"index;uniqueIndex:idx_user_authprovider_externalid"`            // 外部系统唯一 ID（LDAP: uid）；与 AuthProvider 组合唯一
+	AuthProvider string  `gorm:"default:'local';uniqueIndex:idx_user_authprovider_username;uniqueIndex:idx_user_authprovider_externalid"` // "local" | "ldap"；与 Username 和 ExternalID 各自组合唯一
+	ExternalID   *string `gorm:"index;uniqueIndex:idx_user_authprovider_externalid"`            // 外部系统唯一 ID（LDAP: uid）；与 AuthProvider 组合唯一；NULL 表示无外部 ID（本地用户）
 	CreatedAt    time.Time
 	LastLoginAt  *time.Time
 }

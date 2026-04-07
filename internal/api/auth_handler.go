@@ -175,11 +175,12 @@ func (h *AuthHandler) handleLogin(w http.ResponseWriter, r *http.Request) {
 				g := h.cfg.DefaultGroup
 				defaultGroupID = &g
 			}
+			externalID := providerUser.ExternalID
 			newUser := &db.User{
 				Username:     req.Username,
 				PasswordHash: "", // Provider 认证不使用本地密码
 				AuthProvider: providerUser.AuthProvider,
-				ExternalID:   providerUser.ExternalID,
+				ExternalID:   &externalID,
 				IsActive:     true,
 				GroupID:      defaultGroupID,
 			}
@@ -198,7 +199,7 @@ func (h *AuthHandler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// 本地认证路径（默认）：查询数据库并验证 bcrypt 密码
 		var dbErr error
-		user, dbErr = h.userRepo.GetByUsername(req.Username)
+		user, dbErr = h.userRepo.GetByUsernameAndProvider(req.Username, "local")
 		if dbErr != nil {
 			h.logger.Error("login: DB error", zap.String("username", req.Username), zap.Error(dbErr))
 			writeJSONError(w, http.StatusInternalServerError, "internal_error", "database error")
