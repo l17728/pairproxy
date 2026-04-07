@@ -1,6 +1,6 @@
 ﻿# PairProxy 用户手册
 
-**版本 v2.24.0**
+**版本 v2.24.3**
 
 ---
 
@@ -57,6 +57,7 @@
 - [§41 WebUI Phase 3：快速操作面板（v2.22.0）](#41-webui-phase-3快速操作面板v2220)
 - [§42 v2.23.0 更新说明：APIKey 号池 + 健康检查认证 + 文档修正](#42-v2230-更新说明)
 - [§43 v2.24.0 更新说明：Model-Aware Routing（模型感知路由）](#43-v2240-更新说明)
+- [§44 v2.24.3 更新说明：多 API Key 共用同一 URL（Issue #6）](#44-v2243-更新说明)
 
 ---
 
@@ -6208,3 +6209,179 @@ WARN auto mode: target has no auto_model configured
 - 未配置 `supported_models` 的 target 行为不变（接受所有请求）
 - 未配置 `auto_model` 时，`"auto"` 模式透传（保持原行为）
 - 现有配置文件无需修改即可升级
+
+## 44. v2.24.3 更新说明
+
+**版本**：v2.24.3  
+**发布日期**：2026-04-07
+
+### 概述
+
+v2.24.3 实现 **Issue #6：多 API Key 共用同一 URL**，是 v2.7.0（动态 LLM Target 管理）以来最重要的功能升级。允许在一个端点 URL 配置多个不同的 API Key，每个 Key 为一个独立的 target，实现多号池共存和负载均衡。
+
+**核心能力**
+- ✅ 同一 URL、不同 API Key → 两个独立 target（号池拆分）
+- ✅ 全套路由兼容：UUID-as-ID 精确匹配，避免 URL 碰撞
+- ✅ 全数据库隔离：(url, api_key_id) 复合唯一约束
+- ✅ Cleanup 精确性：删除指定 (url, key) 对，保留其他
+- ✅ 向后兼容：默认一 URL 一 Key，多 Key 是可选
+- ✅ 生产稳定性：380+ 测试覆盖
+
+### 使用场景
+
+**场景 1：多账户号池**
+```yaml
+llm:
+  targets:
+    - url: "https://api.anthropic.com"
+      api_key: "${ANTHROPIC_KEY_ACCOUNT_A}"  # 账户 A
+      name: "Anthropic Account A"
+      weight: 2
+    - url: "https://api.anthropic.com"
+      api_key: "${ANTHROPIC_KEY_ACCOUNT_B}"  # 账户 B（同 URL）
+      name: "Anthropic Account B"
+      weight: 1
+```
+
+结果：两个 target 均指向同一 URL，但用不同 API Key，轮流执行请求。
+
+**场景 2：OpenAI 兼容商线路聚合**
+```yaml
+llm:
+  targets:
+    # 国内线路
+    - url: "https://dashscope.aliyuncs.com/api"
+      api_key: "${BAILIAN_KEY}"
+      provider: "openai"
+      name: "Alibaba Bailian"
+    # 国外线路（同 URL 也可，不同 provider）
+    - url: "https://api.openai.com"
+      api_key: "${OPENAI_ACCOUNT_1}"
+      provider: "openai"
+      name: "OpenAI Account 1"
+    - url: "https://api.openai.com"
+      api_key: "${OPENAI_ACCOUNT_2}"
+      provider: "openai"
+      name: "OpenAI Account 2"
+```
+
+### 内部实现
+
+#### DB Schema 变更
+
+`llm_targets` 表：
+- **新增** `api_key_id` 列（FK → `api_keys.id`）
+- **变更** 唯一约束从 `UNIQUE(url)` → `UNIQUE(url, api_key_id)`
+
+示意：
+```
+| id (PK) | url                     | api_key_id      | source  |
+|---------|-------------------------|-----------------|---------|
+| uuid-1  | https://api.anthropic   | key-account-a   | config  |
+| uuid-2  | https://api.anthropic   | key-account-b   | config  |  ← 同 URL，不同 Key
+| uuid-3  | https://api.openai.com  | key-openai-1    | config  |
+```
+
+#### API & CLI
+
+同 v2.7.0+，支持 POST `/api/admin/llm/targets` 和 `sproxy admin llm target add`，自动处理 API Key 创建与 `api_key_id` 关联。
+
+```bash
+# 添加第二个 Key 到同一 URL
+sproxy admin llm target add \
+  --url "https://api.anthropic.com" \
+  --api-key "sk-ant-key-account-B" \
+  --name "Anthropic Account B" \
+  --weight 1
+```
+
+#### 配置同步（Config → DB）
+
+`syncConfigTargetsToDatabase()` 流程：
+1. 逐条遍历 config 中的 target
+2. 调用 `resolveAPIKeyID()` 创建/查找 APIKey 记录
+3. 调用 `Upsert()` 按 **(url, api_key_id)** 复合键查重
+   - 存在 → 更新其他字段
+   - 不存在 → 创建新 target（新 UUID）
+4. 清理：`DeleteConfigTargetsNotInList()` 按 **(url, api_key_id)** 精确删除不在新配置中的条目
+
+**关键点**：即使两个 target URL 相同，因为 `api_key_id` 不同，也会产生两条独立记录。
+
+#### 运行时路由
+
+`lb.Target.ID` = `llm_targets.id`（UUID，不是 URL）  
+`lb.Target.Addr` = 实际 URL
+
+两个 account target 在 balancer 中：
+```go
+Target{ID: "uuid-1", Addr: "https://api.anthropic.com", Weight: 2, ...}
+Target{ID: "uuid-2", Addr: "https://api.anthropic.com", Weight: 1, ...}
+```
+
+选路时：`Pick()` 按权重随机选 uuid-1 或 uuid-2 → 解析该 UUID 对应的 API Key → 转发请求。
+
+### 测试覆盖
+
+新增 4 个端到端测试（内部/proxy 和 internal/db）：
+
+1. **TestSyncConfigTargets_SameURL_TwoKeys**（内核）  
+   验证配置同步：同 URL 两个 Key → DB 中两个独立 target
+
+2. **TestSyncConfigTargets_SameURL_TwoKeys_Cleanup**（精确性）  
+   验证 cleanup：从两个 Key 缩减为一个，精确删除已移除的那个
+
+3. **TestSyncLLMTargets_SameURL_TwoKeys_BothInBalancer**（运行时）  
+   验证端到端：同 URL 两个 Key → balancer 有两个独立条目
+
+4. **TestLLMTargetRepo_Upsert_SameURL_TwoAPIKeys**（仓库层）  
+   验证 Upsert 按 (url, api_key_id) 复合键操作
+
+全覆盖链路：配置文件 → DB 同步 → 内存 balancer → 请求路由
+
+### 升级指南
+
+1. 替换二进制
+   ```bash
+   ./sproxy version  # 应输出：sproxy v2.24.3
+   ```
+
+2. 重启 sproxy（Schema 自动迁移）
+
+3. **（可选）** 添加多 Key 配置
+   ```yaml
+   llm:
+     targets:
+       - url: "https://api.anthropic.com"
+         api_key: "${KEY_A}"
+         weight: 2
+       - url: "https://api.anthropic.com"
+         api_key: "${KEY_B}"
+         weight: 1
+   ```
+
+4. 验证：
+   - 日志中确认迁移完成
+   - 调用 `/api/admin/llm/targets` 查看两个 target 已创建
+   - 多个请求分配到两个 Key（观察日志或 token 使用统计）
+
+### 不兼容变更
+
+**无**。完全向后兼容：
+
+- 单 Key 配置行为完全相同（内部自动生成 UUID）
+- 数据库 migration 是增量（新列，无删除或重命名）
+- API 同 v2.7.0+，无新增必需字段
+
+### FAQ
+
+**Q: 如果 config 中的两个 target 都是同一 URL 和 Key，会怎样？**  
+A: 第一条创建 target，第二条 Upsert 时发现 (url, key_id) 相同 → 更新其他字段（如 weight、name）。只产生一条 DB 记录。
+
+**Q: 能否从 WebUI 添加多个 Key？**  
+A: 是的。进入"LLM 管理"→"动态 Target"，按"添加"，输入 URL（同一个） → 系统自动创建新 target。
+
+**Q: 能否在 target 级禁用其中一个 Key？**  
+A: 是的。在 WebUI 或 CLI 上进行 disable，该 target 从 balancer 移除，其他 Key 仍可用。
+
+**Q: 多个 Key 的配额/速率限制如何处理？**  
+A: 每个 Key 独立走配额系统，互不影响。系统会分别统计每个 target 的 token 使用。
