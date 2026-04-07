@@ -122,6 +122,24 @@ func (r *GroupTargetSetRepo) GetByGroupID(groupID string) (*GroupTargetSet, erro
 	return &set, nil
 }
 
+// ListByGroupID 根据 group ID 获取所有 target set（一对多关系）
+// ⚠️ 一个 group 可能关联多个 target set，此方法返回所有匹配记录
+func (r *GroupTargetSetRepo) ListByGroupID(groupID string) ([]GroupTargetSet, error) {
+	var sets []GroupTargetSet
+	if err := r.db.Where("group_id = ?", groupID).Find(&sets).Error; err != nil {
+		r.logger.Error("failed to list target sets by group ID",
+			zap.String("group_id", groupID),
+			zap.Error(err),
+		)
+		return nil, fmt.Errorf("list target sets by group ID: %w", err)
+	}
+	r.logger.Debug("target sets listed by group ID",
+		zap.String("group_id", groupID),
+		zap.Int("count", len(sets)),
+	)
+	return sets, nil
+}
+
 // GetDefault 获取默认 target set
 func (r *GroupTargetSetRepo) GetDefault() (*GroupTargetSet, error) {
 	var set GroupTargetSet

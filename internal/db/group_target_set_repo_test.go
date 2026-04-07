@@ -527,6 +527,79 @@ func TestGroupTargetSetRepo_GetByGroupID_AmbiguousMultipleSets(t *testing.T) {
 	// 应该使用列表方法或明确哪个 Name 的 set
 }
 
+// TestGroupTargetSetRepo_ListByGroupID 测试返回一个 group 的所有 target set
+// 这是问题 #28/#35 的修复：确保一对多关系正确处理
+func TestGroupTargetSetRepo_ListByGroupID_MultipleResults(t *testing.T) {
+	testDB := setupTestDB(t)
+	repo := NewGroupTargetSetRepo(testDB, zap.NewNop())
+
+	groupID := uuid.New().String()
+
+	// 创建三个不同 Name 但相同 GroupID 的 target set
+	set1 := &GroupTargetSet{
+		ID:        uuid.New().String(),
+		Name:      "set-1",
+		GroupID:   &groupID,
+		Strategy:  "weighted_random",
+		IsDefault: true,
+	}
+	set2 := &GroupTargetSet{
+		ID:        uuid.New().String(),
+		Name:      "set-2",
+		GroupID:   &groupID,
+		Strategy:  "round_robin",
+		IsDefault: false,
+	}
+	set3 := &GroupTargetSet{
+		ID:        uuid.New().String(),
+		Name:      "set-3",
+		GroupID:   &groupID,
+		Strategy:  "priority",
+		IsDefault: false,
+	}
+
+	require.NoError(t, repo.Create(set1))
+	require.NoError(t, repo.Create(set2))
+	require.NoError(t, repo.Create(set3))
+
+	// ListByGroupID 应该返回所有 3 个 set
+	sets, err := repo.ListByGroupID(groupID)
+	require.NoError(t, err)
+	assert.Len(t, sets, 3)
+
+	// 验证全部存在
+	ids := make(map[string]bool)
+	for _, s := range sets {
+		ids[s.ID] = true
+	}
+	assert.True(t, ids[set1.ID])
+	assert.True(t, ids[set2.ID])
+	assert.True(t, ids[set3.ID])
+
+	// 验证策略正确
+	defaultSet := &GroupTargetSet{}
+	for i := range sets {
+		if sets[i].IsDefault {
+			defaultSet = &sets[i]
+			break
+		}
+	}
+	assert.True(t, defaultSet.IsDefault)
+	assert.Equal(t, "set-1", defaultSet.Name)
+}
+
+// TestGroupTargetSetRepo_ListByGroupID_EmptyResult 测试无 set 的 group
+func TestGroupTargetSetRepo_ListByGroupID_EmptyResult(t *testing.T) {
+	testDB := setupTestDB(t)
+	repo := NewGroupTargetSetRepo(testDB, zap.NewNop())
+
+	groupID := uuid.New().String()
+
+	sets, err := repo.ListByGroupID(groupID)
+	require.NoError(t, err)
+	assert.Len(t, sets, 0)
+}
+
 // TestGroupTargetSetRepo_GetByGroupIDAndName_UniqueComposite 测试复合约束正确查询
 // GetByGroupIDAndName 正确利用复合唯一约束，应该返回唯一结果
 func TestGroupTargetSetRepo_GetByGroupIDAndName_UniqueComposite(t *testing.T) {

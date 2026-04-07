@@ -228,17 +228,40 @@ func (s *GroupTargetSelector) SelectTarget(
 	// 获取 target set 以确定选择策略
 	var targetSet *db.GroupTargetSet
 	if groupID == "" {
-		targetSet, err = s.repo.GetDefault()
+		ts, err := s.repo.GetDefault()
+		if err != nil {
+			s.logger.Error("failed to get default target set",
+				zap.Error(err),
+			)
+			return nil, false, fmt.Errorf("get default target set: %w", err)
+		}
+		targetSet = ts
 	} else {
-		targetSet, err = s.repo.GetByGroupID(groupID)
-	}
+		// 获取该 group 的所有 target set，选择默认的或第一个
+		sets, err := s.repo.ListByGroupID(groupID)
+		if err != nil {
+			s.logger.Error("failed to list target sets",
+				zap.String("group_id", groupID),
+				zap.Error(err),
+			)
+			return nil, false, fmt.Errorf("list target sets: %w", err)
+		}
 
-	if err != nil {
-		s.logger.Error("failed to get target set",
-			zap.String("group_id", groupID),
-			zap.Error(err),
-		)
-		return nil, false, fmt.Errorf("get target set: %w", err)
+		if len(sets) == 0 {
+			s.logger.Warn("no target sets found for group",
+				zap.String("group_id", groupID),
+			)
+			return nil, false, fmt.Errorf("no target sets found for group %s", groupID)
+		}
+
+		// 策略: 优先选择 is_default=true 的，其次选择第一个
+		targetSet = &sets[0]
+		for i := range sets {
+			if sets[i].IsDefault {
+				targetSet = &sets[i]
+				break
+			}
+		}
 	}
 
 	if targetSet == nil {
