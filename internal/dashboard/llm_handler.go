@@ -507,8 +507,13 @@ func (h *Handler) handleLLMUpdateTarget(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// 如果 URL 变更，检查冲突（考虑 api_key_id 组合）
-	if targetURL != existing.URL {
+	// 检查URL或APIKeyID变更时的冲突（考虑完整的(url, api_key_id)组合）
+	if targetURL != existing.URL || apiKeyID != (func() string {
+		if existing.APIKeyID == nil {
+			return ""
+		}
+		return *existing.APIKeyID
+	}()) {
 		var apiKeyIDPtr *string
 		if apiKeyID != "" {
 			apiKeyIDPtr = &apiKeyID
