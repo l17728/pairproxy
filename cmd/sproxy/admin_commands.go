@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 
 	"github.com/l17728/pairproxy/internal/db"
 )
@@ -48,7 +50,11 @@ var targetsetListCmd = &cobra.Command{
 			if set.GroupID != nil {
 				groupName = *set.GroupID
 			}
-			members, _ := repo.ListMembers(set.ID)
+			members, err := repo.ListMembers(set.ID)
+			if err != nil {
+				logger.Warn("failed to list members", zap.Error(err))
+				members = []db.GroupTargetSetMember{}
+			}
 			fmt.Printf("%-36s  %-20s  %-20s  %-15s  %-8d\n",
 				set.ID, set.Name, groupName, set.Strategy, len(members))
 		}
@@ -79,12 +85,19 @@ var targetsetCreateCmd = &cobra.Command{
 			return errors.New("--name is required")
 		}
 
+		// Validate ID format: alphanumeric, dash, underscore only
+		if !regexp.MustCompile(`^[a-zA-Z0-9_-]+$`).MatchString(id) {
+			return fmt.Errorf("invalid ID format: must contain only alphanumeric, dash, underscore")
+		}
+
 		repo := db.NewGroupTargetSetRepo(gormDB, logger)
 
 		var groupIDPtr *string
 		if group != "" {
 			groupIDPtr = &group
 		}
+
+		logger.Info("creating target set", zap.String("id", id), zap.String("name", name))
 
 		set := &db.GroupTargetSet{
 			ID:          id,
@@ -93,11 +106,10 @@ var targetsetCreateCmd = &cobra.Command{
 			Strategy:    strategy,
 			RetryPolicy: retryPolicy,
 			IsDefault:   isDefault,
-			CreatedAt:   time.Now(),
-			UpdatedAt:   time.Now(),
 		}
 
 		if err := repo.Create(set); err != nil {
+			logger.Error("failed to create target set", zap.Error(err))
 			return fmt.Errorf("create target set: %w", err)
 		}
 
@@ -111,6 +123,8 @@ var targetsetCreateCmd = &cobra.Command{
 		}
 		detailBytes, _ := json.Marshal(detail)
 		auditCLI(gormDB, logger, "targetset.create", id, string(detailBytes))
+
+		logger.Info("target set created successfully", zap.String("id", id))
 
 		fmt.Printf("✓ Target set created successfully\n")
 		fmt.Printf("  ID:           %s\n", id)
