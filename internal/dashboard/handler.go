@@ -1408,8 +1408,8 @@ func (h *Handler) handleTargetSetCreate(w http.ResponseWriter, r *http.Request) 
 	groupID := strings.TrimSpace(r.FormValue("group_id"))
 	strategy := strings.TrimSpace(r.FormValue("strategy"))
 
-	if id == "" || name == "" || groupID == "" {
-		http.Redirect(w, r, "/dashboard/llm?tab=targetsets&error=id+name+group_id+required", http.StatusSeeOther)
+	if id == "" || name == "" {
+		http.Redirect(w, r, "/dashboard/llm?tab=targetsets&error=id+name+required", http.StatusSeeOther)
 		return
 	}
 
@@ -1419,11 +1419,23 @@ func (h *Handler) handleTargetSetCreate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Handle optional group_id: empty = default (global) target set
+	var groupIDPtr *string
+	isDefault := false
+	if groupID == "" {
+		groupIDPtr = nil
+		isDefault = true
+	} else {
+		groupIDPtr = &groupID
+		isDefault = false
+	}
+
 	set := &db.GroupTargetSet{
-		ID:       id,
-		Name:     name,
-		GroupID:  &groupID,
-		Strategy: strategy,
+		ID:        id,
+		Name:      name,
+		GroupID:   groupIDPtr,
+		Strategy:  strategy,
+		IsDefault: isDefault,
 	}
 
 	if err := h.groupTargetSetRepo.Create(set); err != nil {

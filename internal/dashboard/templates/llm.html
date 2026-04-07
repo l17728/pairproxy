@@ -327,9 +327,9 @@
       </div>
       <div class="grid grid-cols-2 gap-3">
         <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1">绑定分组 <span class="text-red-500">*</span></label>
-          <select name="group_id" required class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm">
-            <option value="">选择分组</option>
+          <label class="block text-sm font-medium text-gray-700 mb-1">绑定分组</label>
+          <select name="group_id" class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm">
+            <option value="">默认（全局）</option>
             {{range .GroupsForBind}}
             <option value="{{.ID}}">{{.Name}}</option>
             {{end}}
