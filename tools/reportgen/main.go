@@ -12,6 +12,7 @@ func main() {
 	var dbPath, pgDSN, pgHost, pgUser, pgPassword, pgDBName, pgSSLMode string
 	var pgPort int
 	var fromStr, toStr, outputPath, templatePath string
+	var llmURL, llmKey, llmModel string
 
 	// SQLite
 	flag.StringVar(&dbPath, "db", "", "SQLite 数据库文件路径（使用 SQLite 时必填）")
@@ -30,6 +31,11 @@ func main() {
 	flag.StringVar(&outputPath, "output", "report.html", "输出 HTML 文件路径")
 	flag.StringVar(&templatePath, "template", "templates/report.html", "HTML 模板文件路径")
 
+	// LLM insights — 直接指定 URL 和 Key（优先于数据库查询）
+	flag.StringVar(&llmURL, "llm-url", "", "LLM 端点 URL，如 http://localhost:9000 或 https://api.openai.com（可选）")
+	flag.StringVar(&llmKey, "llm-key", "", "LLM API Key，Bearer token（可选，不指定则从数据库读取）")
+	flag.StringVar(&llmModel, "llm-model", "gpt-4o-mini", "LLM 模型名（默认 gpt-4o-mini）")
+
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "PairProxy 报告生成器 — 从数据库生成可视化分析报告\n\n")
 		fmt.Fprintf(os.Stderr, "用法（SQLite）:\n")
@@ -38,6 +44,8 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  reportgen -pg-dsn \"postgres://user:pass@host:5432/dbname\" -from 2026-04-01 -to 2026-04-07\n\n")
 		fmt.Fprintf(os.Stderr, "用法（PostgreSQL 独立字段）:\n")
 		fmt.Fprintf(os.Stderr, "  reportgen -pg-host localhost -pg-user app -pg-password secret -pg-dbname pairproxy -from 2026-04-01 -to 2026-04-07\n\n")
+		fmt.Fprintf(os.Stderr, "用法（指定 LLM 生成 AI 洞察）:\n")
+		fmt.Fprintf(os.Stderr, "  reportgen -db pairproxy.db -from 2026-04-01 -to 2026-04-07 -llm-url http://localhost:9000 -llm-key sk-xxx\n\n")
 		fmt.Fprintf(os.Stderr, "选项:\n")
 		flag.PrintDefaults()
 	}
@@ -103,11 +111,14 @@ func main() {
 	}
 
 	params := QueryParams{
-		DBPath: dsn,
-		DSN:    dsn,
-		Driver: driver,
-		From:   from,
-		To:     to,
+		DBPath:   dsn,
+		DSN:      dsn,
+		Driver:   driver,
+		From:     from,
+		To:       to,
+		LLMURL:   llmURL,
+		LLMKey:   llmKey,
+		LLMModel: llmModel,
 	}
 
 	if err := GenerateReport(params, tmplPath, outPath); err != nil {

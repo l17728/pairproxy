@@ -100,8 +100,8 @@ func GenerateReport(params QueryParams, templatePath, outputPath string) error {
 	// Generate rule-based insights
 	data.Insights = GenerateInsights(&data)
 
-	// Generate LLM insights (best-effort: requires KEY_ENCRYPTION_KEY env var)
-	if llmInsight := GenerateLLMInsights(&data, params.Driver, params.DSN); llmInsight != nil {
+	// Generate LLM insights (best-effort)
+	if llmInsight := GenerateLLMInsights(&data, params); llmInsight != nil {
 		data.Insights = append(data.Insights, *llmInsight)
 	}
 

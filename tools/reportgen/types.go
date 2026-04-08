@@ -433,6 +433,11 @@ type QueryParams struct {
 	Driver string // "sqlite"（默认）| "postgres"
 	From   time.Time
 	To     time.Time
+
+	// LLM insights — 直接指定，优先于数据库查询
+	LLMURL   string // LLM 端点 URL（如 http://localhost:9000 或 https://api.openai.com）
+	LLMKey   string // LLM API Key
+	LLMModel string // LLM 模型名（默认 gpt-4o-mini）
 }
 
 // PrevPeriod returns the previous period time range.

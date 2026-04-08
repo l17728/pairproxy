@@ -17,11 +17,12 @@ import (
 	"time"
 )
 
-// llmTarget holds the upstream URL, decrypted API key, and provider.
+// llmTarget holds the upstream URL, decrypted API key, provider, and model.
 type llmTarget struct {
 	URL      string
 	APIKey   string
 	Provider string // "anthropic" | "openai"
+	Model    string // overrides per-provider default when set
 }
 
 // QueryLLMTarget reads the first active LLM target from the DB and decrypts its API key.
@@ -115,11 +116,30 @@ func aesGCMDecrypt(ciphertext64, key string) (string, error) {
 // GenerateLLMInsights calls the upstream LLM with the full report data.
 // On context-too-long errors it retries with error_requests and slow_requests stripped.
 // Returns a single Insight of type "llm_analysis", or nil if LLM is unavailable.
-func GenerateLLMInsights(data *ReportData, driver, dsn string) *Insight {
-	target, err := QueryLLMTarget(driver, dsn)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "⚠️  LLM insights skipped: %v\n", err)
-		return nil
+//
+// Priority: command-line -llm-url/-llm-key params → database query (with KEY_ENCRYPTION_KEY).
+func GenerateLLMInsights(data *ReportData, params QueryParams) *Insight {
+	var target *llmTarget
+
+	if params.LLMURL != "" && params.LLMKey != "" {
+		// Use directly-specified URL and key (OpenAI-compatible API)
+		model := params.LLMModel
+		if model == "" {
+			model = "gpt-4o-mini"
+		}
+		target = &llmTarget{
+			URL:      params.LLMURL,
+			APIKey:   params.LLMKey,
+			Provider: "openai",
+			Model:    model,
+		}
+	} else {
+		var err error
+		target, err = QueryLLMTarget(params.Driver, params.DSN)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "⚠️  LLM insights skipped: %v\n", err)
+			return nil
+		}
 	}
 
 	// Attempt 1: full report JSON.
@@ -174,22 +194,23 @@ func callLLM(target *llmTarget, data *ReportData, stripDetails bool) (string, er
 
 	userMsg := fmt.Sprintf("以下是报告数据（JSON）：\n\n```json\n%s\n```\n\n请开始分析。", string(reportJSON))
 
-	switch target.Provider {
-	case "anthropic":
+	// Use Anthropic native format only when provider is "anthropic" and no explicit model override.
+	// All other cases (including -llm-url direct params) use OpenAI-compatible /v1/chat/completions.
+	if target.Provider == "anthropic" && target.Model == "" {
 		return callAnthropic(target, systemPrompt, userMsg)
-	case "openai":
-		return callOpenAI(target, systemPrompt, userMsg)
-	default:
-		return "", fmt.Errorf("unsupported provider: %s", target.Provider)
 	}
+	return callOpenAI(target, systemPrompt, userMsg)
 }
 
 // callAnthropic sends a request to the Anthropic Messages API.
 func callAnthropic(target *llmTarget, system, userMsg string) (string, error) {
 	endpoint := strings.TrimRight(target.URL, "/") + "/v1/messages"
-
+	model := target.Model
+	if model == "" {
+		model = "claude-haiku-4-5-20251001" // fast + cheap for analysis
+	}
 	body := map[string]interface{}{
-		"model":      "claude-haiku-4-5-20251001", // fast + cheap for analysis
+		"model":      model,
 		"max_tokens": 2048,
 		"system":     system,
 		"messages": []map[string]string{
@@ -199,12 +220,16 @@ func callAnthropic(target *llmTarget, system, userMsg string) (string, error) {
 	return doPost(endpoint, target.APIKey, "x-api-key", body, extractAnthropic)
 }
 
-// callOpenAI sends a request to the OpenAI Chat Completions API.
+// callOpenAI sends a request to the OpenAI-compatible Chat Completions API.
+// Works with OpenAI, sproxy, and any OpenAI-compatible endpoint.
 func callOpenAI(target *llmTarget, system, userMsg string) (string, error) {
 	endpoint := strings.TrimRight(target.URL, "/") + "/v1/chat/completions"
-
+	model := target.Model
+	if model == "" {
+		model = "gpt-4o-mini"
+	}
 	body := map[string]interface{}{
-		"model":      "gpt-4o-mini",
+		"model":      model,
 		"max_tokens": 2048,
 		"messages": []map[string]string{
 			{"role": "system", "content": system},
@@ -307,8 +332,8 @@ func isContextTooLong(err error) bool {
 	lower := strings.ToLower(le.body)
 	return le.status == 400 && (
 		strings.Contains(lower, "context window") ||
-		strings.Contains(lower, "context_length_exceeded") ||
-		strings.Contains(lower, "maximum context length") ||
-		strings.Contains(lower, "too many tokens") ||
-		strings.Contains(lower, "reduce the length"))
+			strings.Contains(lower, "context_length_exceeded") ||
+			strings.Contains(lower, "maximum context length") ||
+			strings.Contains(lower, "too many tokens") ||
+			strings.Contains(lower, "reduce the length"))
 }
