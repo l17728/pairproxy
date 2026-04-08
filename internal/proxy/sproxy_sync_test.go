@@ -19,7 +19,7 @@ import (
 // newTestBalancer 创建只含指定 URL 列表（均健康）的 balancer，供 SyncLLMTargets 测试使用。
 // ID 与 URL 相同（旧行为）。对于 SyncLLMTargets 后需要匹配 DB UUID 的场景，
 // 请用 newTestBalancerWithIDs。
-func newTestBalancer(urls []string) *lb.WeightedRandomBalancer {
+func newTestBalancer(urls []string) *lb.WeightedRandomBalancer { //nolint:unused
 	targets := make([]lb.Target, len(urls))
 	for i, u := range urls {
 		targets[i] = lb.Target{ID: u, Addr: u, Weight: 1, Healthy: true}
