@@ -1,6 +1,6 @@
 # PairProxy 升级指南
 
-> 当前版本：**v2.23.0** | 更新日期：2026-04-04
+> 当前版本：**v2.24.3** | 更新日期：2026-04-08
 
 本文档描述各版本间的升级步骤、数据库 Schema 变更、回滚方法及不兼容变更。
 
@@ -51,6 +51,37 @@
 ---
 
 ## 版本变更记录
+
+### v2.24.3 — Issue #6 正式关闭 + 复合约束全面修复
+
+**数据库 Schema 变更**
+
+无新增 Schema 变更（复合唯一约束已在 v2.24.0 引入）。
+
+**代码修复（无需迁移）**
+
+| 修复 | 说明 |
+|------|------|
+| `generateID()` 改用 UUID | 原 `time.Now().UnixNano()` 在同一纳秒内会生成重复 ID，导致同 URL 多 Key 创建失败 |
+| `GetByGroupID()` → `ListByGroupID()` | 分组目标集支持一对多（一个 group 可有多个 target set） |
+| `GetDefault()` → `ListDefaults()` | 支持多个全局默认目标集 |
+| `FindForUser()` 防御性重写 | 使用 `Find()` + slice 检查，避免 `First()` 歧义 |
+| `FindByProviderAndValue()` 防御性重写 | 多结果时返回明确错误而非静默返回第一条 |
+
+**向后兼容性**
+
+完全向后兼容，无数据迁移，无配置变更。
+
+**升级验证**
+
+```bash
+# 验证同 URL 多 Key 可用
+sproxy admin llm target add --url https://api.anthropic.com --provider anthropic --api-key-id <key-A-id>
+sproxy admin llm target add --url https://api.anthropic.com --provider anthropic --api-key-id <key-B-id>
+sproxy admin llm target list  # 应显示两条记录
+```
+
+---
 
 ### v2.23.0 — APIKey 号池修复 + 健康检查认证 + 文档修正
 

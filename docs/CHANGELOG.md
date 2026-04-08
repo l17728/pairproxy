@@ -1,5 +1,28 @@
 # PairProxy Changelog
 
+## [v2.24.3] - 2026-04-08
+
+### 🐛 Bug Fixes
+
+#### Issue #6: 多 API Key 共用同一 URL（正式关闭）
+- **根因修复**：`generateID()` 从 `time.Now().UnixNano()` base36 改为 `uuid.NewString()`
+  - 原实现在同一纳秒内创建多个 target 时产生相同 ID，触发 `UNIQUE constraint failed: llm_targets.id`
+  - 复合唯一约束 `(url, api_key_id)` 现可正常工作：同一 URL 配多个不同 API Key 完全可用
+
+#### 复合约束一致性（举一反三全树收敛）
+- **#28/#35**: `GetByGroupID()` → `ListByGroupID()`：修复一对多关系被建模为一对一的问题
+- **#30**: `GetDefault()` → `ListDefaults()`：支持多个全局默认目标集
+- **#31/#36**: `FindForUser()` 改用防御性 `Find()` + slice 长度检查，记录数据完整性违规
+- **#32**: `FindByProviderAndValue()` 改用防御性 `Find()`，多结果时返回明确错误
+
+### 🧪 Tests
+- 新增 2077 个测试用例覆盖（较 v2.24.2 新增约 50 个）
+- 新增并发竞态测试（10 goroutine 并发创建、2 goroutine 并发绑定）
+- 新增 NULL 值处理回归测试（验证复合约束 NULL != NULL 的 SQLite 行为）
+- 新增 Issue #6 回归测试：同 URL 不同 Key 均可成功创建
+
+---
+
 ## [v2.24.2] - 2026-04-07
 
 ### ✨ New Features

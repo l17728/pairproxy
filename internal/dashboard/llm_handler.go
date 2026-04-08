@@ -4,8 +4,8 @@ import (
 	"net/http"
 	neturl "net/url"
 	"strconv"
-	"time"
 
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 
 	"github.com/l17728/pairproxy/internal/db"
@@ -618,7 +618,7 @@ func (h *Handler) handleLLMDeleteTarget(w http.ResponseWriter, r *http.Request) 
 	http.Redirect(w, r, "/dashboard/llm?flash=目标已删除", http.StatusSeeOther)
 }
 
-// generateID 生成唯一 ID（简单实现）
+// generateID 生成唯一 ID
 func generateID() string {
-	return strconv.FormatInt(time.Now().UnixNano(), 36)
+	return uuid.NewString()
 }
