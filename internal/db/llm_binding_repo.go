@@ -66,30 +66,42 @@ func (r *LLMBindingRepo) Set(targetID string, userID, groupID *string) error {
 
 // FindForUser 查找用户的 LLM target 绑定，用户级优先于分组级。
 // 返回 (targetID, true, nil) 若找到；("", false, nil) 若无绑定；("", false, err) 若 DB 错误。
+// 防御性检查：Set() 应通过 delete-then-insert 保证每个 userID/groupID 至多一条绑定；
+// 若发现多条，记录 Error 日志并取第一条（保证行为确定性）。
 func (r *LLMBindingRepo) FindForUser(userID, groupID string) (targetID string, found bool, err error) {
 	// 1. 先查用户级绑定
 	if userID != "" {
-		var b LLMBinding
-		err := r.db.Where("user_id = ?", userID).First(&b).Error
-		if err == nil {
-			r.logger.Debug("llm binding found (user)", zap.String("user_id", userID), zap.String("target_id", b.TargetID))
-			return b.TargetID, true, nil
+		var bindings []LLMBinding
+		if dbErr := r.db.Where("user_id = ?", userID).Find(&bindings).Error; dbErr != nil {
+			return "", false, fmt.Errorf("find user llm binding: %w", dbErr)
 		}
-		if err != gorm.ErrRecordNotFound {
-			return "", false, fmt.Errorf("find user llm binding: %w", err)
+		if len(bindings) > 1 {
+			r.logger.Error("data integrity violation: multiple user bindings found",
+				zap.String("user_id", userID),
+				zap.Int("count", len(bindings)),
+			)
+		}
+		if len(bindings) > 0 {
+			r.logger.Debug("llm binding found (user)", zap.String("user_id", userID), zap.String("target_id", bindings[0].TargetID))
+			return bindings[0].TargetID, true, nil
 		}
 	}
 
 	// 2. 再查分组级绑定
 	if groupID != "" {
-		var b LLMBinding
-		err := r.db.Where("group_id = ?", groupID).First(&b).Error
-		if err == nil {
-			r.logger.Debug("llm binding found (group)", zap.String("group_id", groupID), zap.String("target_id", b.TargetID))
-			return b.TargetID, true, nil
+		var bindings []LLMBinding
+		if dbErr := r.db.Where("group_id = ?", groupID).Find(&bindings).Error; dbErr != nil {
+			return "", false, fmt.Errorf("find group llm binding: %w", dbErr)
 		}
-		if err != gorm.ErrRecordNotFound {
-			return "", false, fmt.Errorf("find group llm binding: %w", err)
+		if len(bindings) > 1 {
+			r.logger.Error("data integrity violation: multiple group bindings found",
+				zap.String("group_id", groupID),
+				zap.Int("count", len(bindings)),
+			)
+		}
+		if len(bindings) > 0 {
+			r.logger.Debug("llm binding found (group)", zap.String("group_id", groupID), zap.String("target_id", bindings[0].TargetID))
+			return bindings[0].TargetID, true, nil
 		}
 	}
 

@@ -366,3 +366,96 @@ func TestLLMBindingRepo_SetReplace_GroupMultipleBindings_DeletesOld(t *testing.T
 	}
 	assert.Equal(t, 1, groupBindings, "分组应只有一条绑定记录")
 }
+
+// TestLLMBindingRepo_FindForUser_DefensiveCheck 测试防御性检查（问题 #31/#36 修复）
+// 验证当 Set() 的 delete-then-insert 保证生效时，FindForUser() 返回唯一结果
+func TestLLMBindingRepo_FindForUser_SetGuaranteesUnique(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	gormDB, err := Open(logger, ":memory:")
+	require.NoError(t, err)
+	require.NoError(t, Migrate(logger, gormDB))
+
+	repo := NewLLMBindingRepo(gormDB, logger)
+
+	const (
+		userID  = "user-test-1"
+		target1 = "https://llm1.example.com"
+		target2 = "https://llm2.example.com"
+	)
+
+	uid := userID
+
+	// 第一次 Set
+	require.NoError(t, repo.Set(target1, &uid, nil))
+
+	// FindForUser 应该找到 target1
+	tid, found, err := repo.FindForUser(userID, "")
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.Equal(t, target1, tid)
+
+	// 再次 Set（替换）
+	require.NoError(t, repo.Set(target2, &uid, nil))
+
+	// FindForUser 应该找到 target2（旧绑定已被删除）
+	tid, found, err = repo.FindForUser(userID, "")
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.Equal(t, target2, tid)
+
+	// 验证数据库中只有一条绑定
+	bindings, err := repo.List()
+	require.NoError(t, err)
+	userBindings := 0
+	for _, b := range bindings {
+		if b.UserID != nil && *b.UserID == userID {
+			userBindings++
+		}
+	}
+	assert.Equal(t, 1, userBindings, "Set() 应通过 delete-then-insert 保证最多一条用户绑定")
+}
+
+// TestLLMBindingRepo_FindForUser_UserPriorityConfirmed 测试用户级绑定优先于分组级
+// 验证同时有用户和分组绑定时，用户级优先
+func TestLLMBindingRepo_FindForUser_UserPriorityConfirmed(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	gormDB, err := Open(logger, ":memory:")
+	require.NoError(t, err)
+	require.NoError(t, Migrate(logger, gormDB))
+
+	repo := NewLLMBindingRepo(gormDB, logger)
+
+	const (
+		userID  = "user-priority-test"
+		groupID = "group-priority-test"
+		userTarget  = "https://user-llm.example.com"
+		groupTarget = "https://group-llm.example.com"
+	)
+
+	uid := userID
+	gid := groupID
+
+	// 设置用户级和分组级绑定
+	require.NoError(t, repo.Set(userTarget, &uid, nil))
+	require.NoError(t, repo.Set(groupTarget, nil, &gid))
+
+	// FindForUser 时用户级绑定应优先
+	tid, found, err := repo.FindForUser(userID, groupID)
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.Equal(t, userTarget, tid, "用户级绑定应优先于分组级绑定")
+
+	// 删除用户级绑定后，分组级绑定生效
+	bindings, _ := repo.List()
+	for _, b := range bindings {
+		if b.UserID != nil && *b.UserID == userID {
+			require.NoError(t, repo.Delete(b.ID))
+			break
+		}
+	}
+
+	tid, found, err = repo.FindForUser(userID, groupID)
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.Equal(t, groupTarget, tid, "用户级绑定删除后，分组级绑定应生效")
+}
