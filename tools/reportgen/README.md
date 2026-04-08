@@ -4,8 +4,8 @@
 
 reportgen 是 PairProxy 的可视化分析报告生成工具，能够从 SQLite 或 PostgreSQL 数据库中提取使用数据，生成交互式 HTML 报告。报告包含 16+ 个可视化卡片，覆盖用户、运维和管理三个视角的分析需求。
 
-**最新版本**: v2.24.1
-**发布日期**: 2026-04-05
+**最新版本**: v2.24.3
+**发布日期**: 2026-04-08
 **数据库支持**: SQLite（默认）| PostgreSQL
 
 ---
@@ -18,16 +18,16 @@ reportgen 是 PairProxy 的可视化分析报告生成工具，能够从 SQLite 
 
 | 平台 | 文件 |
 |------|------|
-| Linux x86_64 | `reportgen-v2.24.1-linux-amd64.tar.gz` |
-| Linux ARM64 | `reportgen-v2.24.1-linux-arm64.tar.gz` |
-| macOS x86_64 | `reportgen-v2.24.1-darwin-amd64.tar.gz` |
-| macOS ARM64 (Apple Silicon) | `reportgen-v2.24.1-darwin-arm64.tar.gz` |
-| Windows x86_64 | `reportgen-v2.24.1-windows-amd64.zip` |
-| Windows ARM64 | `reportgen-v2.24.1-windows-arm64.zip` |
+| Linux x86_64 | `reportgen-v2.24.3-linux-amd64.tar.gz` |
+| Linux ARM64 | `reportgen-v2.24.3-linux-arm64.tar.gz` |
+| macOS x86_64 | `reportgen-v2.24.3-darwin-amd64.tar.gz` |
+| macOS ARM64 (Apple Silicon) | `reportgen-v2.24.3-darwin-arm64.tar.gz` |
+| Windows x86_64 | `reportgen-v2.24.3-windows-amd64.zip` |
+| Windows ARM64 | `reportgen-v2.24.3-windows-arm64.zip` |
 
 ```bash
 # Linux/macOS 示例
-tar -xzf reportgen-v2.24.1-linux-amd64.tar.gz
+tar -xzf reportgen-v2.24.3-linux-amd64.tar.gz
 ./reportgen -db /path/to/pairproxy.db -from 2026-04-01 -to 2026-04-05
 ```
 
@@ -59,6 +59,9 @@ go build -o reportgen
 可选参数:
   -output <path>    输出 HTML 文件路径 (默认: report.html)
   -template <path>  HTML 模板文件路径 (默认: templates/report.html)
+  -llm-url <url>    LLM 端点 URL (如 http://localhost:9000，可选)
+  -llm-key <key>    LLM API Key, Bearer token (可选)
+  -llm-model <model> LLM 模型名 (默认: gpt-4o-mini)
 ```
 
 #### PostgreSQL 模式（方案一：完整 DSN）
@@ -73,6 +76,9 @@ go build -o reportgen
 可选参数:
   -output <path>    输出 HTML 文件路径 (默认: report.html)
   -template <path>  HTML 模板文件路径 (默认: templates/report.html)
+  -llm-url <url>    LLM 端点 URL (可选)
+  -llm-key <key>    LLM API Key, Bearer token (可选)
+  -llm-model <model> LLM 模型名 (默认: gpt-4o-mini)
 ```
 
 #### PostgreSQL 模式（方案二：独立字段）
@@ -93,6 +99,9 @@ go build -o reportgen
   -pg-sslmode <mode>    SSL 模式: disable|require|verify-full (默认: disable)
   -output <path>        输出 HTML 文件路径 (默认: report.html)
   -template <path>      HTML 模板文件路径 (默认: templates/report.html)
+  -llm-url <url>        LLM 端点 URL (可选)
+  -llm-key <key>        LLM API Key, Bearer token (可选)
+  -llm-model <model>    LLM 模型名 (默认: gpt-4o-mini)
 ```
 
 ### 常见示例
@@ -130,6 +139,18 @@ go build -o reportgen
 ```bash
 ./reportgen -db pairproxy.db -from 2026-04-01 -to 2026-04-07 \
   -template /custom/templates/report.html -output custom-report.html
+```
+
+#### 使用直接 LLM URL 和 Key (无需数据库配置)
+```bash
+./reportgen -db pairproxy.db -from 2026-04-01 -to 2026-04-07 \
+  -llm-url http://localhost:9000 -llm-key "your-api-key" -llm-model gpt-4o-mini
+```
+
+#### 仅使用规则洞察（跳过 LLM）
+```bash
+./reportgen -db pairproxy.db -from 2026-04-01 -to 2026-04-07
+# 不指定 -llm-url 和 -llm-key 时，自动降级为纯规则分析
 ```
 
 ---
@@ -305,22 +326,51 @@ CREATE TABLE usage_logs (
 
 除规则洞察外，reportgen 支持调用上游 LLM（Anthropic 或 OpenAI）对完整报告数据进行深度分析，生成三视角（使用者/运维/管理者）的中文洞察报告。
 
-### 启用条件
+### 启用方式（二选一）
 
-1. **数据库中存在活跃 LLM 目标**：`llm_targets` 表需有 `is_active=1` 且 `provider` 为 `anthropic` 或 `openai` 的行，并关联有效的 `api_keys` 记录。
-2. **设置环境变量**：API Key 在数据库中以 AES-GCM 加密存储，解密需提供密钥加密密钥：
+#### 方案 1：命令行参数（推荐用于本地开发/临时配置）
+
+```bash
+./reportgen -db pairproxy.db -from 2026-04-01 -to 2026-04-07 \
+  -llm-url http://localhost:9000 \
+  -llm-key "your-api-key" \
+  -llm-model gpt-4o-mini
+```
+
+**优点**：
+- 无需修改数据库
+- 快速指定任意 LLM 端点
+- 便于本地测试和开发
+
+**参数说明**：
+- `-llm-url`: LLM 端点 URL（如 `http://localhost:9000`）
+- `-llm-key`: LLM API Key，Bearer token 格式
+- `-llm-model`: LLM 模型名（默认 `gpt-4o-mini`；Anthropic 端点推荐 `claude-haiku-4-5-20251001`）
+
+#### 方案 2：数据库配置（生产环境推荐）
+
+在数据库中配置 LLM 目标，设置环境变量解密 API Key：
 
 ```bash
 export KEY_ENCRYPTION_KEY="your-key-encryption-key"
 ./reportgen -db pairproxy.db -from 2026-04-01 -to 2026-04-07
 ```
 
+此时 reportgen 会自动查询数据库中的 LLM 目标配置。
+
+### 优先级
+
+若同时指定了命令行参数和环境变量：
+- **命令行参数优先**：若指定 `-llm-url` 和 `-llm-key`，优先使用
+- **环境变量备选**：否则从数据库查询（需要 `KEY_ENCRYPTION_KEY`）
+- **纯规则分析**：两者均未指定时，自动降级为规则洞察
+
 ### 工作原理
 
-- reportgen 读取第一个活跃的 LLM 目标，解密 API Key。
-- 将完整报告 JSON 发送给 LLM，要求其从三个视角各给出 3~5 条洞察。
-- 若报告 JSON 超出 LLM 上下文窗口，自动去除 `error_requests`、`slow_requests`、`io_scatter_plot`、`retention_data` 等大数组后重试。
-- 洞察以纯文本形式附加到报告末尾的"🤖 AI 智能洞察"面板。
+- reportgen 读取 LLM 端点配置（命令行或数据库）
+- 将完整报告 JSON 发送给 LLM，要求其从三个视角各给出 3~5 条洞察
+- 若报告 JSON 超出 LLM 上下文窗口，自动去除 `error_requests`、`slow_requests`、`io_scatter_plot`、`retention_data` 等大数组后重试
+- 洞察以纯文本形式附加到报告末尾的"🤖 AI 智能洞察"面板
 
 ### 模型选择
 
@@ -329,13 +379,36 @@ export KEY_ENCRYPTION_KEY="your-key-encryption-key"
 | Anthropic | `claude-haiku-4-5-20251001` | 速度快、成本低，适合分析任务 |
 | OpenAI | `gpt-4o-mini` | 成本较低的替代方案 |
 
+**API 兼容性自动判断**：
+- Anthropic native：使用 `/v1/messages` API
+- OpenAI 兼容：使用 `/v1/chat/completions` API
+
 ### 跳过 LLM 洞察
 
-若不需要 LLM 洞察，不设置 `KEY_ENCRYPTION_KEY` 环境变量即可。reportgen 会在 stderr 打印提示并继续生成规则洞察：
+若不需要 LLM 洞察：
+- 不指定 `-llm-url` 和 `-llm-key` 参数
+- 或不设置 `KEY_ENCRYPTION_KEY` 环境变量
+
+reportgen 会自动降级为纯规则洞察，在 stderr 打印提示：
 
 ```
-⚠️  LLM insights skipped: KEY_ENCRYPTION_KEY env var not set; skipping LLM insights
+⚠️  LLM insights skipped: 未指定 LLM 配置，使用纯规则分析
 ```
+
+即使 LLM 连接失败，报告仍可正常生成。
+
+### 容错机制
+
+reportgen 包含完善的容错机制，确保任何故障都不会中断报告生成：
+
+| 故障类型 | 表现 |
+|---------|------|
+| LLM 连接失败 | 降级为纯规则分析，报告仍可用 |
+| LLM 返回 HTTP 错误 (如 429) | 记录错误并跳过洞察 |
+| 数据库查询失败 | 相关查询被跳过，报告继续生成 |
+| LLM 调用异常 (panic) | 异常被捕获，不影响主流程 |
+| 报告模板缺失 | 使用内置最小模板渲染 |
+| 数据为空 | 自动生成"暂无数据"提示洞察 |
 
 ---
 
@@ -619,6 +692,13 @@ A: 当前报告是全局视角。扩展功能可参考"开发和扩展"章节。
 
 ## 变更日志
 
+### v2.24.3 (2026-04-08)
+- ✨ 新增命令行 LLM 参数支持 (`-llm-url`, `-llm-key`, `-llm-model`)，无需数据库配置直接指定 LLM 端点
+- 🔧 完善 LLM API 兼容性支持 (OpenAI `/v1/chat/completions` vs Anthropic `/v1/messages` 自动判断)
+- 🛡️ 全面容错机制：数据库查询失败、LLM 连接失败、模板缺失、无数据场景等均可优雅降级
+- 🔄 改进错误日志：区分 HTTP 错误 (429 等) 与网络连接失败，提供针对性修复建议
+- 📊 完整支持 v2.15.0+ 数据库架构，自动适配不同版本
+
 ### v2.26.0 (2026-04-07)
 - ✨ 新增模型每日用量堆叠面积图（按模型×日期）
 - ✨ 新增峰值 RPM KPI 卡片
@@ -648,4 +728,4 @@ A: 当前报告是全局视角。扩展功能可参考"开发和扩展"章节。
 
 ---
 
-**文档版本**: v2.26.0 | **最后更新**: 2026-04-07
+**文档版本**: v2.24.3 | **最后更新**: 2026-04-08

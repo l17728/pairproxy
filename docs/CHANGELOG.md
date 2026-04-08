@@ -15,6 +15,37 @@
 - **#31/#36**: `FindForUser()` 改用防御性 `Find()` + slice 长度检查，记录数据完整性违规
 - **#32**: `FindByProviderAndValue()` 改用防御性 `Find()`，多结果时返回明确错误
 
+### ✨ reportgen 工具增强
+
+#### 新功能：命令行 LLM 参数
+- **参数新增**：`-llm-url`、`-llm-key`、`-llm-model` 三个新参数
+  - `-llm-url`: LLM 端点 URL（如 `http://localhost:9000`）
+  - `-llm-key`: LLM API Key（Bearer token）
+  - `-llm-model`: LLM 模型名（默认 `gpt-4o-mini`）
+- **优先级**：若指定 `-llm-url` 和 `-llm-key`，优先使用；否则从数据库查询配置
+- **使用场景**：无需修改数据库，直接指定 LLM 端点，便于本地开发和临时配置
+
+#### 新功能：API 兼容性支持
+- 验证并优化 LLM API 调用路径
+  - OpenAI 兼容的端点使用 `/v1/chat/completions` API
+  - Anthropic native 端点使用 `/v1/messages` API
+- 正确的请求头处理：OpenAI (`Authorization: Bearer`) vs Anthropic (`x-api-key`)
+
+#### 可靠性改进：全面容错机制
+- **数据库查询容错**：查询失败时自动跳过，继续处理其他操作
+- **LLM 连接容错**：
+  - 连接失败或网络超时 → 降级为纯规则分析，仍可生成有意义的报告
+  - HTTP 错误（如 429 限流）→ 区分识别，提供针对性日志提示
+- **LLM 调用保护**：Panic 恢复机制，异常不影响主流程
+- **模板容错**：模板文件缺失 → 自动使用内置最小模板渲染，确保报告可用性
+- **数据容错**：无数据时段自动检测并生成提示洞察（"📭 暂无数据"）
+- **错误日志优化**：区分不同故障类型，提供有针对性的修复建议
+
+#### 版本兼容性
+- 完整支持 v2.15.0+ 数据库架构，自动适配不同版本
+  - 所有查询仅使用 v2.15.0 时已存在的列
+  - 不依赖 v2.20.0+ 新增表（GroupTargetSet 等）
+
 ### 🧪 Tests
 - 新增 2077 个测试用例覆盖（较 v2.24.2 新增约 50 个）
 - 新增并发竞态测试（10 goroutine 并发创建、2 goroutine 并发绑定）

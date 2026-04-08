@@ -52,7 +52,7 @@
 
 ## 版本变更记录
 
-### v2.24.3 — Issue #6 正式关闭 + 复合约束全面修复
+### v2.24.3 — Issue #6 正式关闭 + 复合约束全面修复 + reportgen 容错增强
 
 **数据库 Schema 变更**
 
@@ -68,17 +68,47 @@
 | `FindForUser()` 防御性重写 | 使用 `Find()` + slice 检查，避免 `First()` 歧义 |
 | `FindByProviderAndValue()` 防御性重写 | 多结果时返回明确错误而非静默返回第一条 |
 
+**reportgen 工具增强**
+
+新增 LLM 命令行参数支持：
+
+```bash
+./reportgen \
+  -db ./pairproxy.db \
+  -from 2026-01-01 -to 2026-04-01 \
+  -llm-url http://localhost:9000 \
+  -llm-key "your-api-key" \
+  -llm-model gpt-4o-mini
+```
+
+- `-llm-url`：LLM 端点 URL（可选，若指定则优先于数据库配置）
+- `-llm-key`：LLM API Key，Bearer token（可选）
+- `-llm-model`：LLM 模型名（默认 `gpt-4o-mini`）
+
+**容错机制**
+
+- **数据库查询容错**：查询失败时自动跳过，继续处理
+- **LLM 连接容错**：连接失败 → 降级为纯规则分析，仍可生成有意义的报告
+- **LLM 调用保护**：Panic 恢复，异常不影响主流程
+- **模板容错**：模板缺失 → 使用内置最小模板
+- **无数据处理**：自动检测并生成提示洞察
+- **API 兼容性**：OpenAI (`/v1/chat/completions`) 和 Anthropic (`/v1/messages`) 自动判断
+
 **向后兼容性**
 
-完全向后兼容，无数据迁移，无配置变更。
+完全向后兼容，无数据迁移，无配置变更。新参数均为可选。
 
 **升级验证**
 
 ```bash
-# 验证同 URL 多 Key 可用
+# 1. 验证同 URL 多 Key 可用
 sproxy admin llm target add --url https://api.anthropic.com --provider anthropic --api-key-id <key-A-id>
 sproxy admin llm target add --url https://api.anthropic.com --provider anthropic --api-key-id <key-B-id>
 sproxy admin llm target list  # 应显示两条记录
+
+# 2. 测试 reportgen 新参数
+reportgen -db ./pairproxy.db -from 2026-03-01 -to 2026-04-01 -llm-url http://localhost:9000 -llm-key "test"
+# 应生成报告，即使 LLM 连接失败也能降级输出纯规则分析
 ```
 
 ---
