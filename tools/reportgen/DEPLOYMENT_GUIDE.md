@@ -148,7 +148,7 @@ spec:
           serviceAccountName: pairproxy
           containers:
           - name: reportgen
-            image: pairproxy/reportgen:v2.24.2
+            image: pairproxy/reportgen:v2.24.4
             env:
             - name: DB_HOST
               valueFrom:
@@ -195,7 +195,7 @@ version: '3.8'
 
 services:
   reportgen-weekly:
-    image: pairproxy/reportgen:v2.24.2
+    image: pairproxy/reportgen:v2.24.4
     environment:
       PG_DSN: postgres://app:${DB_PASSWORD}@postgres:5432/pairproxy
     volumes:

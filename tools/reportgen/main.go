@@ -26,8 +26,8 @@ func main() {
 	flag.StringVar(&pgDBName, "pg-dbname", "", "PostgreSQL 数据库名")
 	flag.StringVar(&pgSSLMode, "pg-sslmode", "disable", "PostgreSQL SSL 模式（disable|require|verify-full）")
 
-	flag.StringVar(&fromStr, "from", "", "开始日期，格式 YYYY-MM-DD（必填）")
-	flag.StringVar(&toStr, "to", "", "结束日期，格式 YYYY-MM-DD（必填）")
+	flag.StringVar(&fromStr, "from", "", "开始日期，格式 YYYY-MM-DD（不填默认30天前）")
+	flag.StringVar(&toStr, "to", "", "结束日期，格式 YYYY-MM-DD（不填默认今天）")
 	flag.StringVar(&outputPath, "output", "report.html", "输出 HTML 文件路径")
 	flag.StringVar(&templatePath, "template", "templates/report.html", "HTML 模板文件路径")
 
@@ -39,13 +39,15 @@ func main() {
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "PairProxy 报告生成器 — 从数据库生成可视化分析报告\n\n")
 		fmt.Fprintf(os.Stderr, "用法（SQLite）:\n")
+		fmt.Fprintf(os.Stderr, "  reportgen -db pairproxy.db                        # 默认过去30天\n")
 		fmt.Fprintf(os.Stderr, "  reportgen -db pairproxy.db -from 2026-04-01 -to 2026-04-07 -output weekly.html\n\n")
 		fmt.Fprintf(os.Stderr, "用法（PostgreSQL DSN）:\n")
+		fmt.Fprintf(os.Stderr, "  reportgen -pg-dsn \"postgres://user:pass@host:5432/dbname\"\n")
 		fmt.Fprintf(os.Stderr, "  reportgen -pg-dsn \"postgres://user:pass@host:5432/dbname\" -from 2026-04-01 -to 2026-04-07\n\n")
 		fmt.Fprintf(os.Stderr, "用法（PostgreSQL 独立字段）:\n")
-		fmt.Fprintf(os.Stderr, "  reportgen -pg-host localhost -pg-user app -pg-password secret -pg-dbname pairproxy -from 2026-04-01 -to 2026-04-07\n\n")
+		fmt.Fprintf(os.Stderr, "  reportgen -pg-host localhost -pg-user app -pg-password secret -pg-dbname pairproxy\n\n")
 		fmt.Fprintf(os.Stderr, "用法（指定 LLM 生成 AI 洞察）:\n")
-		fmt.Fprintf(os.Stderr, "  reportgen -db pairproxy.db -from 2026-04-01 -to 2026-04-07 -llm-url http://localhost:9000 -llm-key sk-xxx\n\n")
+		fmt.Fprintf(os.Stderr, "  reportgen -db pairproxy.db -llm-url http://localhost:9000 -llm-key sk-xxx\n\n")
 		fmt.Fprintf(os.Stderr, "选项:\n")
 		flag.PrintDefaults()
 	}
@@ -68,10 +70,19 @@ func main() {
 	}
 
 	// Validate required flags
-	if dsn == "" || fromStr == "" || toStr == "" {
-		fmt.Fprintf(os.Stderr, "错误：必须指定数据库（-db 或 -pg-dsn 或 -pg-user/-pg-dbname），以及 -from、-to\n\n")
+	if dsn == "" {
+		fmt.Fprintf(os.Stderr, "错误：必须指定数据库（-db 或 -pg-dsn 或 -pg-user/-pg-dbname）\n\n")
 		flag.Usage()
 		os.Exit(1)
+	}
+
+	// Default date range: last 30 days
+	now := time.Now()
+	if toStr == "" {
+		toStr = now.Format("2006-01-02")
+	}
+	if fromStr == "" {
+		fromStr = now.AddDate(0, 0, -30).Format("2006-01-02")
 	}
 
 	// SQLite: validate file exists
@@ -91,7 +102,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "错误：无效的结束日期格式: %s（需要 YYYY-MM-DD）\n", toStr)
 		os.Exit(1)
 	}
+	fmt.Fprintf(os.Stderr, "📅 原始时间范围: %s 至 %s\n", from.Format("2006-01-02 15:04:05"), to.Format("2006-01-02 15:04:05"))
 	to = endOfDay(to)
+	fmt.Fprintf(os.Stderr, "📅 调整后时间范围: %s 至 %s\n", from.Format("2006-01-02 15:04:05"), to.Format("2006-01-02 15:04:05"))
 
 	if !from.Before(to) {
 		fmt.Fprintf(os.Stderr, "错误：开始日期必须早于结束日期\n")
@@ -130,7 +143,7 @@ func main() {
 }
 
 func endOfDay(t time.Time) time.Time {
-	return time.Date(t.Year(), t.Month(), t.Day(), 23, 59, 59, 0, t.Location())
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location()).AddDate(0, 0, 1)
 }
 
 func fileExists(path string) bool {

@@ -121,12 +121,18 @@ func aesGCMDecrypt(ciphertext64, key string) (string, error) {
 func GenerateLLMInsights(data *ReportData, params QueryParams) *Insight {
 	var target *llmTarget
 
+	fmt.Fprintf(os.Stderr, "🤖 开始 LLM 洞察生成...\n")
+
 	if params.LLMURL != "" && params.LLMKey != "" {
 		// Use directly-specified URL and key (OpenAI-compatible API)
 		model := params.LLMModel
 		if model == "" {
 			model = "gpt-4o-mini"
 		}
+		fmt.Fprintf(os.Stderr, "   来源: 命令行参数\n")
+		fmt.Fprintf(os.Stderr, "   URL: %s\n", params.LLMURL)
+		fmt.Fprintf(os.Stderr, "   模型: %s\n", model)
+		fmt.Fprintf(os.Stderr, "   Key: %s***\n", safeKeyPrefix(params.LLMKey, 8))
 		target = &llmTarget{
 			URL:      params.LLMURL,
 			APIKey:   params.LLMKey,
@@ -134,15 +140,23 @@ func GenerateLLMInsights(data *ReportData, params QueryParams) *Insight {
 			Model:    model,
 		}
 	} else {
+		fmt.Fprintf(os.Stderr, "   来源: 数据库 (KEY_ENCRYPTION_KEY)\n")
 		var err error
 		target, err = QueryLLMTarget(params.Driver, params.DSN)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "⚠️  LLM insights skipped: %v\n", err)
 			return nil
 		}
+		fmt.Fprintf(os.Stderr, "   URL: %s\n", target.URL)
+		fmt.Fprintf(os.Stderr, "   Provider: %s\n", target.Provider)
+		if target.Model != "" {
+			fmt.Fprintf(os.Stderr, "   模型: %s\n", target.Model)
+		}
+		fmt.Fprintf(os.Stderr, "   Key: %s***\n", safeKeyPrefix(target.APIKey, 8))
 	}
 
 	// Attempt 1: full report JSON.
+	fmt.Fprintf(os.Stderr, "   发送请求（完整数据）...\n")
 	result, err := callLLM(target, data, false)
 	if err != nil {
 		if isContextTooLong(err) {
@@ -153,20 +167,42 @@ func GenerateLLMInsights(data *ReportData, params QueryParams) *Insight {
 		if err != nil {
 			var le *llmError
 			if errors.As(err, &le) {
-				fmt.Fprintf(os.Stderr, "⚠️  LLM 调用失败（HTTP %d），跳过 AI 洞察，使用纯规则分析\n", le.status)
+				fmt.Fprintf(os.Stderr, "❌ LLM 调用失败（HTTP %d）\n", le.status)
+				fmt.Fprintf(os.Stderr, "   响应体: %s\n", truncate(le.body, 500))
 			} else {
-				fmt.Fprintf(os.Stderr, "⚠️  LLM 连接失败（%v），跳过 AI 洞察，使用纯规则分析\n", err)
+				fmt.Fprintf(os.Stderr, "❌ LLM 连接失败: %v\n", err)
 			}
+			fmt.Fprintf(os.Stderr, "   → 跳过 AI 洞察，使用纯规则分析\n")
 			return nil
 		}
 	}
 
+	fmt.Fprintf(os.Stderr, "✅ LLM 洞察生成成功（%d 字符）\n", len(result))
 	return &Insight{
 		Type:   "llm_analysis",
 		Title:  "🤖 AI 智能洞察",
 		Detail: result,
 		Emoji:  "🤖",
 	}
+}
+
+// safeKeyPrefix returns the first n chars of a key for display, or "<empty>" if blank.
+func safeKeyPrefix(key string, n int) string {
+	if key == "" {
+		return "<empty>"
+	}
+	if len(key) <= n {
+		return key
+	}
+	return key[:n]
+}
+
+// truncate limits a string to maxLen characters for display.
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "...(truncated)"
 }
 
 // callLLM serialises ReportData (optionally stripping large arrays) and sends it to the LLM.
@@ -193,6 +229,7 @@ func callLLM(target *llmTarget, data *ReportData, stripDetails bool) (result str
 	if err != nil {
 		return "", fmt.Errorf("marshal report: %w", err)
 	}
+	fmt.Fprintf(os.Stderr, "   JSON 大小: %d KB (stripDetails=%v)\n", len(reportJSON)/1024, stripDetails)
 
 	systemPrompt := `你是一名专业的 AI 平台运营分析师。
 你会收到一份 PairProxy API 网关的 JSON 格式使用报告。
@@ -206,11 +243,13 @@ func callLLM(target *llmTarget, data *ReportData, stripDetails bool) (result str
 
 	userMsg := fmt.Sprintf("以下是报告数据（JSON）：\n\n```json\n%s\n```\n\n请开始分析。", string(reportJSON))
 
-	// Use Anthropic native format only when provider is "anthropic" and no explicit model override.
-	// All other cases (including -llm-url direct params) use OpenAI-compatible /v1/chat/completions.
-	if target.Provider == "anthropic" && target.Model == "" {
+	// Use Anthropic native format for all anthropic targets (model override is handled inside callAnthropic).
+	// All other cases use OpenAI-compatible /v1/chat/completions.
+	if target.Provider == "anthropic" {
+		fmt.Fprintf(os.Stderr, "   协议: Anthropic Messages API\n")
 		return callAnthropic(target, systemPrompt, userMsg)
 	}
+	fmt.Fprintf(os.Stderr, "   协议: OpenAI Chat Completions API\n")
 	return callOpenAI(target, systemPrompt, userMsg)
 }
 
@@ -219,8 +258,9 @@ func callAnthropic(target *llmTarget, system, userMsg string) (string, error) {
 	endpoint := strings.TrimRight(target.URL, "/") + "/v1/messages"
 	model := target.Model
 	if model == "" {
-		model = "claude-haiku-4-5-20251001" // fast + cheap for analysis
+		model = "claude-haiku-4-5" // fast + cheap for analysis
 	}
+	fmt.Fprintf(os.Stderr, "   模型: %s\n", model)
 	body := map[string]interface{}{
 		"model":      model,
 		"max_tokens": 2048,
@@ -257,6 +297,8 @@ func doPost(endpoint, apiKey, authScheme string, body interface{}, extract func(
 		return "", fmt.Errorf("marshal body: %w", err)
 	}
 
+	fmt.Fprintf(os.Stderr, "   → POST %s (请求体 %d bytes)\n", endpoint, len(b))
+
 	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(b))
 	if err != nil {
 		return "", fmt.Errorf("create request: %w", err)
@@ -270,8 +312,10 @@ func doPost(endpoint, apiKey, authScheme string, body interface{}, extract func(
 	}
 
 	client := &http.Client{Timeout: 120 * time.Second}
+	t0 := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "   ← 请求失败 (%v): %v\n", time.Since(t0).Round(time.Millisecond), err)
 		return "", fmt.Errorf("http request: %w", err)
 	}
 	defer resp.Body.Close()
@@ -280,8 +324,10 @@ func doPost(endpoint, apiKey, authScheme string, body interface{}, extract func(
 	if err != nil {
 		return "", fmt.Errorf("read response: %w", err)
 	}
+	fmt.Fprintf(os.Stderr, "   ← HTTP %d (%v, 响应 %d bytes)\n", resp.StatusCode, time.Since(t0).Round(time.Millisecond), len(respBody))
 
 	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(os.Stderr, "   响应体: %s\n", truncate(string(respBody), 300))
 		return "", &llmError{status: resp.StatusCode, body: string(respBody)}
 	}
 
@@ -338,6 +384,10 @@ func isContextTooLong(err error) bool {
 	var le *llmError
 	if !errors.As(err, &le) {
 		return false
+	}
+	// HTTP 413: Payload Too Large (some proxies/providers)
+	if le.status == 413 {
+		return true
 	}
 	// Anthropic: 400 with "context window" in body
 	// OpenAI: 400 with "context_length_exceeded" or "maximum context length"

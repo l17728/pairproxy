@@ -41,9 +41,14 @@ tr:nth-child(even) td{background:#111130}
 .insight-model_suggestion{border-left-color:#ffd54f}
 .insight-llm_analysis{border-left-color:#7c4dff;background:#1a1535}
 .footer{text-align:center;color:#666;font-size:0.8rem;margin-top:32px;padding:20px 0;border-top:1px solid #1a1a3e}
+.card h3{position:relative;display:flex;align-items:center;gap:6px}
+.tip-icon{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;background:#2a3a6e;color:#4fc3f7;font-size:10px;font-weight:700;cursor:help;flex-shrink:0;line-height:1;border:1px solid #3a4a8e;margin-left:2px}
+.tip-box{display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:999;background:#0d1b3e;color:#c8d8f0;font-size:0.78rem;font-weight:400;line-height:1.65;padding:10px 14px;border-radius:8px;border:1px solid #3a5a9e;box-shadow:0 4px 20px rgba(0,0,0,0.6);width:300px;white-space:pre-line;pointer-events:none}
+.tip-icon:hover+.tip-box,.tip-icon:focus+.tip-box{display:block}
 @media(max-width:768px){
 .kpi-row{grid-template-columns:repeat(2,1fr)}
 .grid{grid-template-columns:1fr}
+.tip-box{width:220px}
 }
 </style>
 </head>
@@ -55,143 +60,99 @@ tr:nth-child(even) td{background:#111130}
   <!-- KPI Cards -->
   <div class="kpi-row" id="kpi-row"></div>
 
-  <!-- Row 1: Token Trend + Cost Trend -->
+  <!-- Row 1: Token Trend + Daily Requests -->
   <div class="grid">
-    <div class="card"><h3>📈 Token 用量趋势</h3><div id="chart-daily-trend" class="chart-box"></div></div>
-    <div class="card"><h3>💰 费用趋势 (USD)</h3><div id="chart-cost-trend" class="chart-box"></div></div>
+    <div class="card"><h3>📈 Token 用量趋势<span class="tip-icon">?</span><span class="tip-box">【用途】展示每日输入/输出/总 Token 的消耗量变化。&#10;【看什么】Token 用量的增长或下降趋势，识别高峰日。&#10;【怎么用】对比输入与输出占比，判断是否存在异常高输出场景（如长对话、大量补全）。</span></h3><div id="chart-daily-trend" class="chart-box"></div></div>
+    <div class="card"><h3>📊 每日请求数趋势<span class="tip-icon">?</span><span class="tip-box">【用途】展示每天发起的 API 请求总量随时间的变化。&#10;【看什么】工作日 vs 周末差异、异常峰值、整体增长率。&#10;【怎么用】若某天请求量骤升，结合错误率图判断是否为批量异常请求。</span></h3><div id="chart-daily-requests" class="chart-box"></div></div>
   </div>
 
   <!-- Row 1a: Model Daily Trend Stacked Area -->
   <div class="grid" style="margin-bottom:20px">
-    <div class="card grid-full"><h3>🤖 模型每日用量趋势（堆叠面积）</h3><div id="chart-model-daily-trend" class="chart-box" style="min-height:350px"></div></div>
+    <div class="card grid-full"><h3>🤖 模型每日用量趋势（堆叠面积）<span class="tip-icon">?</span><span class="tip-box">【用途】按模型拆分，展示每天各模型 Token 消耗量的堆叠占比变化。&#10;【看什么】哪个模型用量最高、是否有模型迁移趋势、某模型用量突增的日期。&#10;【怎么用】面积越大表示该模型使用越多；若某模型面积快速扩大，需评估对应成本压力。</span></h3><div id="chart-model-daily-trend" class="chart-box" style="min-height:350px"></div></div>
   </div>
 
-  <!-- Row 1b: Daily Request Count + Cost-per-Token Trend -->
+  <!-- Row 1b: I/O Ratio + Latency Histogram -->
   <div class="grid">
-    <div class="card"><h3>📊 每日请求数趋势</h3><div id="chart-daily-requests" class="chart-box"></div></div>
-    <div class="card"><h3>💡 每 Token 费用趋势</h3><div id="chart-cost-per-token" class="chart-box"></div></div>
-  </div>
-
-  <!-- Row 1c: I/O Ratio Daily Trend + Latency Histogram -->
-  <div class="grid">
-    <div class="card"><h3>📐 I/O 比率每日趋势</h3><div id="chart-io-ratio-trend" class="chart-box"></div></div>
-    <div class="card"><h3>⏱️ 延迟分布直方图</h3><div id="chart-latency-histogram" class="chart-box"></div></div>
+    <div class="card"><h3>📐 I/O 比率每日趋势<span class="tip-icon">?</span><span class="tip-box">【用途】展示每日输出 Token / 输入 Token 的比率变化。&#10;【看什么】比率越高说明模型生成内容越多（长回复）；比率突增可能表示出现无限生成或配置异常。&#10;【怎么用】正常值通常在 0.1–0.5 之间，超过 2 需排查是否存在异常请求。</span></h3><div id="chart-io-ratio-trend" class="chart-box"></div></div>
+    <div class="card"><h3>⏱️ 延迟分布直方图<span class="tip-icon">?</span><span class="tip-box">【用途】展示所有请求延迟的频次分布（直方图）。&#10;【看什么】延迟集中在哪个区间，是否存在长尾（极慢请求）。&#10;【怎么用】柱子越高表示该延迟区间的请求越多；若右侧有孤立高柱，说明有大量超时请求需排查。</span></h3><div id="chart-latency-histogram" class="chart-box"></div></div>
   </div>
 
   <!-- Row 2: Request Heatmap + Token Throughput Heatmap -->
   <div class="grid">
-    <div class="card"><h3>🕐 24h×7天 请求热力图</h3><div id="chart-heatmap" class="chart-box"></div></div>
-    <div class="card"><h3>🔥 Token 吞吐热力图</h3><div id="chart-token-heatmap" class="chart-box"></div></div>
+    <div class="card"><h3>🕐 24h×7天 请求热力图<span class="tip-icon">?</span><span class="tip-box">【用途】以小时（0–23）× 星期几（周一至周日）的矩阵展示请求密度。&#10;【看什么】哪个时间段使用最密集，是否有明显的上下班高峰规律。&#10;【怎么用】颜色越深表示请求越多；可用于规划维护窗口（选用量最低的时段）。</span></h3><div id="chart-heatmap" class="chart-box"></div></div>
+    <div class="card"><h3>🔥 Token 吞吐热力图<span class="tip-icon">?</span><span class="tip-box">【用途】以相同的时间矩阵展示 Token 消耗总量的热力分布。&#10;【看什么】哪些时段产生了最多的 Token 消耗（即成本压力最大的时段）。&#10;【怎么用】与请求热力图对比——若某时段请求少但 Token 高，说明该时段存在大型请求（如长文档处理）。</span></h3><div id="chart-token-heatmap" class="chart-box"></div></div>
   </div>
 
-  <!-- Row 2b: Top Users Token + Top Users Cost -->
+  <!-- Row 2b: TOP10 Token + TOP10 by Request -->
   <div class="grid">
-    <div class="card"><h3>🏆 TOP10 用户 Token 用量</h3><div id="chart-top-users" class="chart-box"></div></div>
-    <div class="card"><h3>💰 TOP10 用户费用</h3><div id="chart-top-users-cost" class="chart-box"></div></div>
+    <div class="card"><h3>🏆 TOP10 用户 Token 用量<span class="tip-icon">?</span><span class="tip-box">【用途】列出消耗 Token 最多的前 10 名用户（条形图）。&#10;【看什么】用量最高的用户是否符合预期，是否存在超出配额的使用。&#10;【怎么用】结合配额表判断头部用户是否需要调整限额；用量异常高的用户需核查请求内容。</span></h3><div id="chart-top-users" class="chart-box"></div></div>
+    <div class="card"><h3>🔢 TOP10 请求人（按请求次数）<span class="tip-icon">?</span><span class="tip-box">【用途】列出发起请求次数最多的前 10 名用户。&#10;【看什么】高频请求用户是否与高 Token 用户重合，若不重合说明存在大量短请求（如自动化脚本）。&#10;【怎么用】高频低 Token 用户可能是自动化工具，需评估是否符合使用规范。</span></h3><div id="chart-top-users-req" class="chart-box"></div></div>
   </div>
 
-  <!-- Row 2c: User Tier Distribution + Token Percentile Bar -->
-  <div class="grid">
-    <div class="card"><h3>👥 用户分层分布</h3><div id="chart-user-tier" class="chart-box"></div></div>
-    <div class="card"><h3>📊 Token 用量百分位数 (P50–P99)</h3><div id="chart-user-token-pct" class="chart-box"></div></div>
+  <!-- Row 2c: User Tier + Token Percentile + Request Boxplot -->
+  <div class="grid" style="grid-template-columns:1fr 1fr 1fr">
+    <div class="card"><h3>👥 用户分层分布<span class="tip-icon">?</span><span class="tip-box">【用途】将用户按 Token 消耗量分为超级用户、活跃用户、普通用户、低频用户四层。&#10;【看什么】各层级用户数量与 Token 占比，判断使用集中度。&#10;【怎么用】若超级用户（&lt;5%）贡献了 &gt;80% Token，说明依赖度过高，需评估风险。</span></h3><div id="chart-user-tier" class="chart-box"></div></div>
+    <div class="card"><h3>📊 Token 用量百分位数 (P50–P99)<span class="tip-icon">?</span><span class="tip-box">【用途】展示所有用户 Token 消耗量在 P50/P75/P90/P95/P99 分位数处的值。&#10;【看什么】用户间的用量差异程度，P99 与 P50 差距越大说明分布越不均匀。&#10;【怎么用】P95 值可作为配额上限的参考基准；P99 异常高时需排查极端用户。</span></h3><div id="chart-user-token-pct" class="chart-box"></div></div>
+    <div class="card"><h3>📦 用户请求数分布（箱线统计）<span class="tip-icon">?</span><span class="tip-box">【用途】用箱线图统计所有用户请求次数的分布（最小值、Q1、中位数、Q3、最大值）。&#10;【看什么】请求次数的中位数与极值，判断用户行为的集中程度。&#10;【怎么用】上边界（Max）远大于 Q3 时，说明存在极高频用户；中位数偏低说明大部分用户使用较少。</span></h3><div id="chart-req-boxplot-stats" class="chart-box"></div></div>
   </div>
 
-  <!-- Request-count analytics: TOP10 by requests + box plot stats -->
-  <div class="grid">
-    <div class="card"><h3>🔢 TOP10 请求人（按请求次数）</h3><div id="chart-top-users-req" class="chart-box"></div></div>
-    <div class="card"><h3>📦 用户请求数分布（箱线统计）</h3><div id="chart-req-boxplot-stats" class="chart-box"></div></div>
-  </div>
-
-  <!-- Row 3: Model Dist + Source Node Pie -->
-  <div class="grid">
-    <div class="card"><h3>🤖 模型使用分布</h3><div id="chart-model-dist" class="chart-box"></div></div>
-    <div class="card"><h3>📡 Source Node 流量分布</h3><div id="chart-source-node" class="chart-box"></div></div>
-  </div>
-
-  <!-- Row 3b: Upstream Share Pie + Upstream Status -->
-  <div class="grid">
-    <div class="card"><h3>🌐 上游流量占比</h3><div id="chart-upstream-share" class="chart-box"></div></div>
-    <div class="card"><h3>🌐 上游端点状态</h3><div id="chart-upstream" class="chart-box"></div></div>
+  <!-- Row 3: Model Dist + Upstream Status + Upstream Share -->
+  <div class="grid" style="grid-template-columns:1fr 1fr 1fr">
+    <div class="card"><h3>🤖 模型使用分布<span class="tip-icon">?</span><span class="tip-box">【用途】以饼图展示各模型在请求数量上的占比。&#10;【看什么】哪个模型是主力，是否有模型占比过高带来单点风险。&#10;【怎么用】若某模型占比 &gt;80%，需评估其稳定性与成本；占比极低的模型可考虑是否继续保留。</span></h3><div id="chart-model-dist" class="chart-box"></div></div>
+    <div class="card"><h3>🌐 上游端点状态<span class="tip-icon">?</span><span class="tip-box">【用途】展示各上游端点的请求量、平均延迟和错误率（条形图）。&#10;【看什么】哪个上游服务响应最慢、错误率最高。&#10;【怎么用】错误率 &gt;5% 的端点需优先排查；对比延迟判断是否需要切换或降权某上游。</span></h3><div id="chart-upstream" class="chart-box"></div></div>
+    <div class="card"><h3>🥧 上游请求占比<span class="tip-icon">?</span><span class="tip-box">【用途】以饼图展示各上游端点承接的请求数量占比。&#10;【看什么】流量是否均衡分布在各上游，是否存在流量倾斜。&#10;【怎么用】若某上游占比异常高，检查路由策略；配合上游状态图判断高占比端点的健康状况。</span></h3><div id="chart-upstream-share" class="chart-box"></div></div>
   </div>
 
   <!-- Row 3c: Upstream Latency Trend (full width) -->
   <div class="grid" style="margin-bottom:20px">
-    <div class="card grid-full"><h3>📈 上游延迟趋势（多线）</h3><div id="chart-upstream-latency-trend" class="chart-box" style="min-height:350px"></div></div>
+    <div class="card grid-full"><h3>📈 上游延迟趋势（多线）<span class="tip-icon">?</span><span class="tip-box">【用途】展示各上游端点的平均延迟随时间的变化趋势（多条折线）。&#10;【看什么】各上游延迟是否同步波动（系统性问题）还是单独上升（该上游特有问题）。&#10;【怎么用】某上游延迟持续高于其他时，考虑降低该上游权重或切换；若所有上游同时升高，排查网络层或模型提供商的全局问题。</span></h3><div id="chart-upstream-latency-trend" class="chart-box" style="min-height:350px"></div></div>
   </div>
 
-  <!-- Row 4: Status Codes + Streaming -->
+  <!-- Row 4: Status Codes + Groups -->
   <div class="grid">
-    <div class="card"><h3>📊 状态码分布</h3><div id="chart-status-codes" class="chart-box"></div></div>
-    <div class="card"><h3>⚡ 流式 vs 非流式对比</h3><div id="chart-streaming" class="chart-box"></div></div>
-  </div>
-
-  <!-- Row 4b: Streaming Latency Box Plot -->
-  <div class="grid">
-    <div class="card"><h3>⚡ 流式 vs 非流式 延迟箱线图</h3><div id="chart-streaming-boxplot" class="chart-box"></div></div>
-    <div class="card"><h3>📊 I/O Token 比率分布</h3><div id="chart-io-ratio" class="chart-box"></div></div>
-  </div>
-
-  <!-- Row 5: Groups -->
-  <div class="grid">
-    <div class="card"><h3>🏢 分组对比</h3><div id="chart-groups" class="chart-box"></div></div>
-    <div class="card"><h3>📦 分组用量箱线图（组内差异）</h3><div id="chart-group-token-boxplot" class="chart-box"></div></div>
+    <div class="card"><h3>📊 状态码分布<span class="tip-icon">?</span><span class="tip-box">【用途】统计各 HTTP 状态码的请求数量（2xx 成功、4xx 客户端错误、5xx 服务端错误）。&#10;【看什么】错误状态码的占比，哪类错误最常见。&#10;【怎么用】429（限流）多 → 考虑提升配额或限速策略；401/403 多 → 检查认证配置；5xx 多 → 排查上游服务稳定性。</span></h3><div id="chart-status-codes" class="chart-box"></div></div>
+    <div class="card"><h3>🏢 分组对比<span class="tip-icon">?</span><span class="tip-box">【用途】按用户分组（部门/团队）对比各组的请求数、Token 消耗和费用。&#10;【看什么】各组之间的用量差异，哪个组是最大消费方。&#10;【怎么用】结合配额使用表，判断哪些组需要调整限额；用量远超其他组的团队可能存在批量自动化请求。</span></h3><div id="chart-groups" class="chart-box"></div></div>
   </div>
 
   <!-- Phase 2: Latency Analysis Row -->
   <div class="grid">
-    <div class="card"><h3>⏱️ 延迟箱线图（按模型）</h3><div id="chart-latency-boxplot" class="chart-box"></div></div>
-    <div class="card"><h3>📊 P50/P95/P99 延迟趋势</h3><div id="chart-latency-percentiles" class="chart-box"></div></div>
+    <div class="card"><h3>⏱️ 延迟箱线图（按模型）<span class="tip-icon">?</span><span class="tip-box">【用途】按模型分组，用箱线图展示延迟分布（Q1/中位数/Q3/须）。&#10;【看什么】哪个模型延迟最稳定（箱体窄）、哪个模型有严重长尾（须长）。&#10;【怎么用】箱体上边界（Q3）高 → 该模型稳定性差；须末端极长 → 存在偶发超时，需设置合理超时阈值。</span></h3><div id="chart-latency-boxplot" class="chart-box"></div></div>
+    <div class="card"><h3>📊 P50/P95/P99 延迟趋势<span class="tip-icon">?</span><span class="tip-box">【用途】展示每日 P50（中位数）、P95、P99 延迟的变化趋势。&#10;【看什么】P95/P99 与 P50 的差距，差距越大说明尾部延迟越严重；趋势上升需警惕。&#10;【怎么用】SLA 通常以 P95 或 P99 为准；若 P99 持续超过目标值，需优化慢请求路径。</span></h3><div id="chart-latency-percentiles" class="chart-box"></div></div>
   </div>
 
-  <!-- Daily Avg/Max Latency Trend -->
+  <!-- Daily Latency Trend + Freq -->
   <div class="grid">
-    <div class="card"><h3>⏱️ 每日平均/最大延迟趋势</h3><div id="chart-daily-latency" class="chart-box"></div></div>
-    <div class="card"><h3>📥 模型输入 Token 箱线图</h3><div id="chart-model-input-boxplot" class="chart-box"></div></div>
-  </div>
-
-  <!-- Model Output Token Box Plot -->
-  <div class="grid">
-    <div class="card"><h3>📤 模型输出 Token 箱线图</h3><div id="chart-model-output-boxplot" class="chart-box"></div></div>
+    <div class="card"><h3>⏱️ 每日平均/最大延迟趋势<span class="tip-icon">?</span><span class="tip-box">【用途】展示每日平均延迟与最大延迟的双线趋势图。&#10;【看什么】平均延迟代表整体水平，最大延迟暴露单日最差情况。&#10;【怎么用】若最大延迟某天骤增但平均值正常，说明存在单次极端慢请求；两者同步上升说明系统整体变慢。</span></h3><div id="chart-daily-latency" class="chart-box"></div></div>
+    <div class="card"><h3>👤 用户请求频次分布<span class="tip-icon">?</span><span class="tip-box">【用途】将用户按请求频次分桶（如 1–10次、11–50次、51–200次...），展示每桶用户数。&#10;【看什么】大多数用户属于哪个频次区间，是否存在大量极高频用户。&#10;【怎么用】若高频桶（&gt;500次/天）用户数增多，需检查是否为自动化脚本；低频用户占比过高说明产品使用频率偏低。</span></h3><div id="chart-freq" class="chart-box"></div></div>
   </div>
 
   <!-- Phase 8: Latency vs Token Scatter (full width) -->
   <div class="grid" style="margin-bottom:20px">
-    <div class="card grid-full"><h3>🔬 延迟 vs Token 散点图（采样 1000）</h3><div id="chart-latency-scatter" class="chart-box" style="min-height:400px"></div></div>
+    <div class="card grid-full"><h3>🔬 延迟 vs Token 散点图（采样 1000）<span class="tip-icon">?</span><span class="tip-box">【用途】以散点图展示单次请求的 Token 总量与延迟的关系（随机采样 1000 条）。&#10;【看什么】延迟是否与 Token 量正相关，是否存在大量"高 Token 低延迟"或"低 Token 高延迟"的异常点。&#10;【怎么用】正常情况下两者正相关；若高延迟点聚集在低 Token 区，说明存在与请求体积无关的系统性延迟（如冷启动、网络问题）。</span></h3><div id="chart-latency-scatter" class="chart-box" style="min-height:400px"></div></div>
   </div>
 
-  <!-- Row 6: Freq + Pareto -->
+  <!-- Row 6: IO Scatter + Pareto -->
   <div class="grid">
-    <div class="card"><h3>👤 用户请求频次分布</h3><div id="chart-freq" class="chart-box"></div></div>
-    <div class="card"><h3>📈 帕累托图（累积贡献%）</h3><div id="chart-pareto" class="chart-box"></div></div>
+    <div class="card"><h3>💧 Input vs Output Token 相关性<span class="tip-icon">?</span><span class="tip-box">【用途】散点图展示每次请求的输入 Token 与输出 Token 数量的关系。&#10;【看什么】输入与输出是否有稳定比例关系，是否存在异常的极大输出（输入很少但输出极多）。&#10;【怎么用】点群偏向右下（高输入低输出）→ 内容总结类场景；偏左上（低输入高输出）→ 内容生成类场景；离群点需核查是否为异常请求。</span></h3><div id="chart-io-scatter" class="chart-box"></div></div>
+    <div class="card"><h3>📈 帕累托图（累积贡献%）<span class="tip-icon">?</span><span class="tip-box">【用途】展示用户按 Token 消耗降序排列后的累积贡献百分比（二八法则验证）。&#10;【看什么】前 N% 的用户贡献了多少 Token，是否符合 80/20 规律。&#10;【怎么用】若前 20% 用户贡献 &gt;90% Token，资源重心应放在服务好头部用户；同时需评估尾部用户的使用激励策略。</span></h3><div id="chart-pareto" class="chart-box"></div></div>
   </div>
 
-  <!-- Phase 3: Advanced Analysis -->
+  <!-- Phase 4: Engagement & Model Radar -->
   <div class="grid">
-    <div class="card"><h3>📈 模型费用占比</h3><div id="chart-model-cost" class="chart-box"></div></div>
-    <div class="card"><h3>💧 Input vs Output Token 相关性</h3><div id="chart-io-scatter" class="chart-box"></div></div>
+    <div class="card"><h3>📊 DAU/WAU/MAU 趋势<span class="tip-icon">?</span><span class="tip-box">【用途】展示每日/每周/每月活跃用户数（DAU/WAU/MAU）的变化趋势。&#10;【看什么】用户活跃度是否在增长，节假日/周末的活跃度规律。&#10;【怎么用】DAU/MAU 比值（粘性指数）越高说明用户回访越频繁；MAU 增长但 DAU 不增说明新用户多但留存差。</span></h3><div id="chart-engagement-trend" class="chart-box"></div></div>
+    <div class="card"><h3>⏱️ 上游延迟箱线图（按模型）<span class="tip-icon">?</span><span class="tip-box">【用途】按上游端点/模型分组，展示延迟四分位数分布（箱线图）。&#10;【看什么】各上游之间的延迟稳定性差异，是否有某上游延迟异常偏高或波动剧烈。&#10;【怎么用】箱体越窄说明该上游延迟越稳定；中位线高的上游建议降低路由权重或更换。</span></h3><div id="chart-upstream-latency" class="chart-box"></div></div>
   </div>
 
-  <!-- Phase 4: Engagement & Upstream Latency -->
-  <div class="grid">
-    <div class="card"><h3>📊 DAU/WAU/MAU 趋势</h3><div id="chart-engagement-trend" class="chart-box"></div></div>
-    <div class="card"><h3>⏱️ 上游延迟箱线图</h3><div id="chart-upstream-latency" class="chart-box"></div></div>
-  </div>
-
-  <!-- Phase 6: Model Radar + Adoption Rate + Stickiness Gauge -->
-  <div class="grid" style="margin-bottom:20px">
-    <div class="card"><h3>🎯 模型能力雷达图</h3><div id="chart-model-radar" class="chart-box" style="min-height:400px"></div></div>
-    <div class="card"><h3>📊 用户采纳率</h3><div id="chart-adoption-rate" class="chart-box"></div></div>
-  </div>
-
-  <!-- Phase 8: Stickiness Gauge + Retention Curve -->
-  <div class="grid" style="margin-bottom:20px">
-    <div class="card"><h3>🎯 DAU/MAU 粘性指数</h3><div id="chart-stickiness-gauge" class="chart-box"></div></div>
-    <div class="card"><h3>📅 用户留存曲线</h3><div id="chart-retention" class="chart-box"></div></div>
+  <!-- Phase 6: Adoption + Stickiness + Retention -->
+  <div class="grid" style="grid-template-columns:1fr 1fr 1fr;margin-bottom:20px">
+    <div class="card"><h3>📊 用户采纳率<span class="tip-icon">?</span><span class="tip-box">【用途】展示注册用户中有实际使用（发起过请求）的比例（采纳率）。&#10;【看什么】有多少注册账号是真正活跃的，采纳率是否在提升。&#10;【怎么用】采纳率低（&lt;30%）说明大量账号闲置，需加强用户引导或培训；采纳率接近 100% 说明活跃度良好但可能需要开放更多名额。</span></h3><div id="chart-adoption-rate" class="chart-box"></div></div>
+    <div class="card"><h3>🎯 DAU/MAU 粘性指数<span class="tip-icon">?</span><span class="tip-box">【用途】以仪表盘形式展示 DAU/MAU 的比值（粘性指数），反映用户每月使用天数的密度。&#10;【看什么】值越接近 1 表示用户每天都在使用（高粘性），越接近 0 表示偶尔使用。&#10;【怎么用】行业平均约 0.15–0.25；&gt;0.5 为高粘性产品；下降趋势需排查是否有功能体验问题。</span></h3><div id="chart-stickiness-gauge" class="chart-box"></div></div>
+    <div class="card"><h3>📅 用户留存曲线<span class="tip-icon">?</span><span class="tip-box">【用途】以队列分析方式展示新用户在后续各天/周的留存率（第 N 天还有多少人继续使用）。&#10;【看什么】留存率下降的速度，Day 7/Day 30 留存率是关键指标。&#10;【怎么用】留存曲线趋于平缓说明有忠实用户群；Day 1 留存极低（&lt;30%）需优化新手引导体验。</span></h3><div id="chart-retention" class="chart-box"></div></div>
   </div>
 
   <!-- Error Requests Table (filterable) -->
   <div class="card" style="margin-bottom:20px">
-    <h3>🚨 错误请求明细</h3>
+    <h3>🚨 错误请求明细<span class="tip-icon">?</span><span class="tip-box">【用途】列出所有非 2xx 状态码的请求明细，支持按状态码和模型过滤。&#10;【看什么】错误的时间分布、高频出错用户、错误集中的模型。&#10;【怎么用】筛选 401 → 排查 API Key 失效；筛选 429 → 识别超限用户；筛选 5xx → 定位上游故障时间段。</span></h3>
     <div style="display:flex;gap:12px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
       <select id="err-filter-status" style="background:#1a1a3e;color:#e0e0e0;border:1px solid #2a2a5e;padding:6px 10px;border-radius:6px;font-size:0.85rem">
         <option value="">全部状态码</option>
@@ -199,14 +160,11 @@ tr:nth-child(even) td{background:#111130}
       <select id="err-filter-model" style="background:#1a1a3e;color:#e0e0e0;border:1px solid #2a2a5e;padding:6px 10px;border-radius:6px;font-size:0.85rem">
         <option value="">全部模型</option>
       </select>
-      <select id="err-filter-upstream" style="background:#1a1a3e;color:#e0e0e0;border:1px solid #2a2a5e;padding:6px 10px;border-radius:6px;font-size:0.85rem">
-        <option value="">全部上游</option>
-      </select>
       <span id="err-count-label" style="color:#a0a0a0;font-size:0.85rem;margin-left:auto"></span>
     </div>
     <div class="table-wrap">
       <table id="error-table">
-        <thead><tr><th>时间</th><th>用户</th><th>模型</th><th>状态码</th><th>延迟(ms)</th><th>输入Token</th><th>上游</th><th>RequestID</th></tr></thead>
+        <thead><tr><th>时间</th><th>用户</th><th>模型</th><th>状态码</th><th>延迟(ms)</th><th>输入Token</th><th>RequestID</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
@@ -214,10 +172,10 @@ tr:nth-child(even) td{background:#111130}
 
   <!-- Slow Requests Table -->
   <div class="card" style="margin-bottom:20px">
-    <h3>🐌 慢请求 TOP10</h3>
+    <h3>🐌 慢请求 TOP10<span class="tip-icon">?</span><span class="tip-box">【用途】列出延迟最高的前 10 条请求详情。&#10;【看什么】慢请求集中在哪个模型、哪个用户、什么时间段，输入 Token 量是否特别大。&#10;【怎么用】若慢请求 Token 量很大 → 建议设置最大 Token 限制；若 Token 正常但延迟高 → 排查上游服务响应问题。</span></h3>
     <div class="table-wrap">
       <table id="slow-table">
-        <thead><tr><th>时间</th><th>用户</th><th>模型</th><th>输入Token</th><th>输出Token</th><th>延迟(ms)</th><th>状态码</th><th>上游</th></tr></thead>
+        <thead><tr><th>时间</th><th>用户</th><th>模型</th><th>输入Token</th><th>输出Token</th><th>延迟(ms)</th><th>状态码</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
@@ -225,19 +183,8 @@ tr:nth-child(even) td{background:#111130}
 
   <!-- Insights -->
   <div class="card" style="margin-bottom:20px">
-    <h3>📝 智能洞察</h3>
+    <h3>📝 智能洞察<span class="tip-icon">?</span><span class="tip-box">【用途】基于本期报告数据自动生成的文字洞察，分为规则洞察（始终生成）和 AI 洞察（配置 LLM 后生成）。&#10;【看什么】异常增长、成本预警、效率建议、用户参与度分析等关键结论。&#10;【怎么用】优先关注红色（anomaly/cost_warning）类洞察；AI 洞察配置方法见 README -llm-url/-llm-key 参数说明。</span></h3>
     <div id="insights-container"></div>
-  </div>
-
-  <!-- Phase 4: Quota Usage Table -->
-  <div class="card" style="margin-bottom:20px">
-    <h3>📋 用户配额使用情况</h3>
-    <div class="table-wrap">
-      <table id="quota-table">
-        <thead><tr><th>用户</th><th>日配额</th><th>日已用</th><th>日使用率</th><th>月配额</th><th>月已用</th><th>月使用率</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
   </div>
 
   <div class="footer" id="report-footer"></div>
@@ -263,45 +210,33 @@ function init(){
   initHeader();
   initKPI();
   initDailyTrend();
-  initCostTrend();
   initModelDailyTrend();
   initDailyRequests();
-  initCostPerToken();
   initIORatioTrend();
   initLatencyHistogram();
   initHeatmap();
   initTokenHeatmap();
   initTopUsers();
-  initTopUsersByCost();
   initUserTierDist();
   initUserTokenPercentiles();
   initTopUsersByRequest();
   initReqBoxplotStats();
   initModelDist();
-  initSourceNodeDist();
-  initUpstreamShare();
   initUpstream();
+  initUpstreamShare();
   initUpstreamLatencyTrend();
   initStatusCodes();
-  initStreaming();
-  initStreamingBoxPlot();
-  initIORatio();
   initGroups();
-  initGroupTokenBoxplot();
   initLatencyBoxplot();
   initLatencyPercentiles();
   initDailyLatencyTrend();
-  initModelInputBoxPlot();
-  initModelOutputBoxPlot();
   initLatencyScatter();
   initFreq();
   initPareto();
-  initModelCost();
   initIOScatter();
   renderSlowRequests();
   initEngagementTrend();
   initUpstreamLatency();
-  initModelRadar();
   initAdoptionRate();
   initStickinessGauge();
   initRetentionCurve();
@@ -317,17 +252,17 @@ function initHeader(){
 }
 
 function initKPI(){
+  if(!D.kpi)return;
   const k=D.kpi;
   const items=[
-    {label:'总请求',value:fmt(k.total_requests),change:k.requests_change,unit:''},
-    {label:'总 Token',value:fmtTok(k.total_tokens),change:k.tokens_change,unit:''},
-    {label:'总费用',value:fmtCost(k.total_cost),change:k.cost_change,unit:''},
-    {label:'活跃用户',value:k.active_users,change:k.users_change,unit:'人'},
-    {label:'错误率',value:fmtPct(k.error_rate),change:k.error_rate_change,unit:''},
-    {label:'平均延迟',value:Math.round(k.avg_latency_ms)+'ms',change:k.latency_change,unit:''},
-    {label:'P95延迟',value:Math.round(k.p95_latency_ms)+'ms',change:0,unit:''},
-    {label:'P99延迟',value:Math.round(k.p99_latency_ms)+'ms',change:0,unit:''},
-    {label:'峰值 RPM',value:fmt(k.peak_rpm),change:0,unit:''},
+    {label:'总请求',value:fmt(k.total_requests||0),change:k.requests_change||0,unit:''},
+    {label:'总 Token',value:fmtTok(k.total_tokens||0),change:k.tokens_change||0,unit:''},
+    {label:'活跃用户',value:k.active_users||0,change:k.users_change||0,unit:'人'},
+    {label:'错误率',value:fmtPct(k.error_rate||0),change:k.error_rate_change||0,unit:''},
+    {label:'平均延迟',value:Math.round(k.avg_latency_ms||0)+'ms',change:k.latency_change||0,unit:''},
+    {label:'P95延迟',value:Math.round(k.p95_latency_ms||0)+'ms',change:0,unit:''},
+    {label:'P99延迟',value:Math.round(k.p99_latency_ms||0)+'ms',change:0,unit:''},
+    {label:'峰值 RPM',value:fmt(k.peak_rpm||0),change:0,unit:''},
   ];
   const row=document.getElementById('kpi-row');
   row.innerHTML=items.map(i=>{
@@ -359,17 +294,6 @@ function initDailyTrend(){
       {name:'输入 Token',type:'line',stack:'t',areaStyle:{opacity:0.3},data:D.daily_trend.map(r=>r.input_tokens),itemStyle:{color:'#4fc3f7'},lineStyle:{width:2}},
       {name:'输出 Token',type:'line',stack:'t',areaStyle:{opacity:0.3},data:D.daily_trend.map(r=>r.output_tokens),itemStyle:{color:'#66bb6a'},lineStyle:{width:2}}
     ]
-  });
-}
-
-function initCostTrend(){
-  const c=mkChart('chart-cost-trend');if(!c||!D.daily_trend||!D.daily_trend.length)return;
-  c.setOption({
-    tooltip:{trigger:'axis',formatter:p=>'$'+p[0].value.toFixed(2)},
-    grid:{left:60,right:20,top:30,bottom:30},
-    xAxis:{type:'category',data:D.daily_trend.map(r=>r.date),axisLabel:{fontSize:10}},
-    yAxis:{type:'value',axisLabel:{formatter:v=>'$'+v.toFixed(0)}},
-    series:[{type:'line',data:D.daily_trend.map(r=>r.cost_usd),areaStyle:{opacity:0.3,color:'#ff7043'},itemStyle:{color:'#ff7043'},lineStyle:{width:2}}]
   });
 }
 
@@ -409,7 +333,7 @@ function initTopUsersByRequest(){
   c.setOption({
     tooltip:{trigger:'axis',axisPointer:{type:'shadow'},formatter:function(p){
       const u=D.top_users_by_request[D.top_users_by_request.length-1-p[0].dataIndex];
-      return u.username+'<br>请求数: '+fmt(u.requests)+'<br>Token: '+fmtTok(u.value)+'<br>费用: $'+u.cost_usd.toFixed(2)+(u.group_name?'<br>分组: '+u.group_name:'');
+      return u.username+'<br>请求数: '+fmt(u.requests)+'<br>Token: '+fmtTok(u.value)+'<br>费用: $'+(u.cost_usd||0).toFixed(2)+(u.group_name?'<br>分组: '+u.group_name:'');
     }},
     grid:{left:100,right:40,top:10,bottom:30},
     xAxis:{type:'value',name:'请求次数'},
@@ -461,12 +385,13 @@ function initModelDist(){
 
 function initUpstream(){
   const c=mkChart('chart-upstream');if(!c||!D.upstream_stats||!D.upstream_stats.length)return;
-  const urls=D.upstream_stats.map(u=>u.url.replace(/https?:\/\//,'').split('/')[0]);
+  // 使用序号代替 URL/IP
+  const labels=D.upstream_stats.map((u,i)=>'上游-'+(i+1));
   c.setOption({
     tooltip:{trigger:'axis'},
     legend:{data:['平均延迟(ms)','错误率(%)']},
     grid:{left:60,right:60,top:40,bottom:30},
-    xAxis:{type:'category',data:urls,axisLabel:{fontSize:10}},
+    xAxis:{type:'category',data:labels,axisLabel:{fontSize:10}},
     yAxis:[
       {type:'value',name:'ms',axisLabel:{formatter:v=>v+'ms'}},
       {type:'value',name:'%',axisLabel:{formatter:v=>v+'%'}}
@@ -682,11 +607,12 @@ function initEngagementTrend(){
 function initUpstreamLatency(){
   const c=mkChart('chart-upstream-latency');if(!c||!D.upstream_latency_box_plot||!D.upstream_latency_box_plot.length)return;
   const data=D.upstream_latency_box_plot.map(bp=>[bp.min,bp.q1,bp.median,bp.q3,bp.max]);
-  const labels=D.upstream_latency_box_plot.map(bp=>bp.model.replace(/^https?:\/\//,'').split('/')[0]);
+  // 显示模型名称，不显示 IP 地址
+  const labels=D.upstream_latency_box_plot.map(bp=>bp.model||'未知模型');
   c.setOption({
     tooltip:{trigger:'axis',formatter:function(p){
       const bp=D.upstream_latency_box_plot[p[0].dataIndex];
-      return bp.model+'<br>最小: '+bp.min+'ms<br>Q1: '+bp.q1+'ms<br>中位: '+bp.median+'ms<br>Q3: '+bp.q3+'ms<br>最大: '+bp.max+'ms<br>样本: '+bp.count;
+      return (bp.model||'未知模型')+'<br>最小: '+bp.min+'ms<br>Q1: '+bp.q1+'ms<br>中位: '+bp.median+'ms<br>Q3: '+bp.q3+'ms<br>最大: '+bp.max+'ms<br>样本: '+bp.count;
     }},
     grid:{left:150,right:20,top:30,bottom:30},
     xAxis:{type:'category',data:labels,axisLabel:{fontSize:9}},
@@ -697,27 +623,6 @@ function initUpstreamLatency(){
       itemStyle:{color:'#66bb6a',borderColor:'#388e3c'},
       emphasis:{itemStyle:{shadowBlur:10,shadowColor:'rgba(0,0,0,0.5)'}}
     }]
-  });
-}
-
-function initModelRadar(){
-  const c=mkChart('chart-model-radar');if(!c||!D.model_radar_data||!D.model_radar_data.length)return;
-  const indicators=[
-    {name:'延迟',max:100},
-    {name:'成本',max:100},
-    {name:'吞吐',max:100},
-    {name:'可靠性',max:100},
-    {name:'采纳',max:100}
-  ];
-  const series=D.model_radar_data.map(m=>({
-    value:[m.latency_score,m.cost_score,m.throughput_score,m.reliability_score,m.adoption_score],
-    name:m.model
-  }));
-  c.setOption({
-    legend:{data:D.model_radar_data.map(m=>m.model),textStyle:{color:'#b0bec5'}},
-    tooltip:{trigger:'item'},
-    radar:{shape:'polygon',name:{textStyle:{color:'#b0bec5'}},splitNumber:4,name:{textStyle:{color:'#b0bec5'}},splitLine:{lineStyle:{color:['#1a1a4e','#2a2a5e','#3a3a7e','#4a4a9e'].reverse()}},splitArea:{areaStyle:{color:['rgba(79,195,247,0.1)','rgba(102,187,106,0.1)','rgba(255,112,67,0.1)','rgba(171,71,188,0.1)'].reverse()}},axisLine:{lineStyle:{color:'#555'}},indicator:indicators},
-    series:[{type:'radar',data:series,symbol:'circle',symbolSize:4,itemStyle:{color:'#4fc3f7',borderColor:'#0288d1'},areaStyle:{opacity:0.3},lineStyle:{width:2}}]
   });
 }
 
@@ -736,7 +641,7 @@ function initAdoptionRate(){
       label:{formatter:'{b|{b}}\n{per|{d}%}',rich:{b:{color:'#b0bec5',fontSize:11,fontWeight:'bold'},per:{color:'#b0bec5',fontSize:10}}},
       emphasis:{itemStyle:{shadowBlur:10,shadowOffsetX:0,shadowColor:'rgba(0,0,0,0.5)'}}
     }],
-    title:{text:'采纳率 '+ad.adoption_percent.toFixed(1)+'%',left:'center',top:'center',textStyle:{color:'#b0bec5',fontSize:16,fontWeight:'bold'}}
+    title:{text:'采纳率 '+(ad.adoption_percent||0).toFixed(1)+'%',left:'center',top:'center',textStyle:{color:'#b0bec5',fontSize:16,fontWeight:'bold'}}
   });
 }
 
@@ -745,7 +650,7 @@ function renderErrorTable(){
   if(!tbody)return;
   const rows=D.error_requests||[];
   if(!rows.length){
-    tbody.innerHTML='<tr><td colspan="8" style="text-align:center;color:#666">无错误记录</td></tr>';
+    tbody.innerHTML='<tr><td colspan="7" style="text-align:center;color:#666">无错误记录</td></tr>';
     document.getElementById('err-count-label').textContent='共 0 条';
     return;
   }
@@ -753,29 +658,24 @@ function renderErrorTable(){
   // Populate filter dropdowns (deduplicated)
   const statuses=[...new Set(rows.map(r=>r.status_code))].sort();
   const models=[...new Set(rows.map(r=>r.model))].sort();
-  const upstreams=[...new Set(rows.map(r=>r.upstream_url.replace(/^https?:\/\//,'').split('/')[0]))].sort();
 
   const selStatus=document.getElementById('err-filter-status');
   const selModel=document.getElementById('err-filter-model');
-  const selUpstream=document.getElementById('err-filter-upstream');
 
   if(selStatus.options.length===1){
     statuses.forEach(s=>{const o=document.createElement('option');o.value=s;o.textContent=s;selStatus.appendChild(o);});
     models.forEach(m=>{const o=document.createElement('option');o.value=m;o.textContent=m;selModel.appendChild(o);});
-    upstreams.forEach(u=>{const o=document.createElement('option');o.value=u;o.textContent=u;selUpstream.appendChild(o);});
-    [selStatus,selModel,selUpstream].forEach(s=>s.addEventListener('change',renderErrorTable));
+    [selStatus,selModel].forEach(s=>s.addEventListener('change',renderErrorTable));
   }
 
   const fStatus=selStatus.value;
   const fModel=selModel.value;
-  const fUpstream=selUpstream.value;
 
   const statusColor={429:'#ff7043',500:'#ef5350',503:'#ef5350',401:'#ab47bc',403:'#ab47bc'};
 
   const filtered=rows.filter(r=>{
     if(fStatus&&r.status_code!=fStatus)return false;
     if(fModel&&r.model!==fModel)return false;
-    if(fUpstream&&!r.upstream_url.includes(fUpstream))return false;
     return true;
   });
 
@@ -783,7 +683,6 @@ function renderErrorTable(){
 
   tbody.innerHTML=filtered.map(r=>{
     const col=statusColor[r.status_code]||'#ef5350';
-    const upShort=r.upstream_url.replace(/^https?:\/\//,'').split('/')[0];
     const rid=r.request_id.length>16?r.request_id.slice(0,16)+'…':r.request_id;
     return `<tr>
       <td>${r.created_at}</td>
@@ -792,7 +691,6 @@ function renderErrorTable(){
       <td><span style="color:${col};font-weight:600">${r.status_code}</span></td>
       <td>${fmt(r.duration_ms)}</td>
       <td>${fmt(r.input_tokens)}</td>
-      <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${r.upstream_url}">${upShort}</td>
       <td style="font-size:0.75rem;color:#888" title="${r.request_id}">${rid}</td>
     </tr>`;
   }).join('');
@@ -801,11 +699,11 @@ function renderErrorTable(){
 function renderSlowRequests(){
   const tbody=document.querySelector('#slow-table tbody');
   if(!tbody||!D.slow_requests||!D.slow_requests.length){
-    if(tbody)tbody.innerHTML='<tr><td colspan="8" style="text-align:center;color:#666">无数据</td></tr>';
+    if(tbody)tbody.innerHTML='<tr><td colspan="7" style="text-align:center;color:#666">无数据</td></tr>';
     return;
   }
   tbody.innerHTML=D.slow_requests.map(r=>
-    `<tr><td>${r.created_at}</td><td>${r.username}</td><td>${r.model}</td><td>${fmt(r.input_tokens)}</td><td>${fmt(r.output_tokens)}</td><td>${fmt(r.duration_ms)}</td><td>${r.status_code}</td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.upstream_url}</td></tr>`
+    `<tr><td>${r.created_at}</td><td>${r.username}</td><td>${r.model}</td><td>${fmt(r.input_tokens)}</td><td>${fmt(r.output_tokens)}</td><td>${fmt(r.duration_ms)}</td><td>${r.status_code}</td></tr>`
   ).join('');
 }
 
@@ -837,7 +735,6 @@ function renderQuotaTable(){
 
 document.addEventListener('DOMContentLoaded',function(){
   init();
-  renderQuotaTable();
   renderErrorTable();
 });
 
@@ -889,17 +786,6 @@ function initDailyRequests(){
   });
 }
 
-function initCostPerToken(){
-  const c=mkChart('chart-cost-per-token');if(!c||!D.cost_per_token_trend||!D.cost_per_token_trend.length)return;
-  c.setOption({
-    tooltip:{trigger:'axis',formatter:p=>{const v=p[0].value;return p[0].axisValue+'<br>每Token费用: '+(v<0.001?v.toExponential(3):v.toFixed(6));}},
-    grid:{left:80,right:20,top:30,bottom:30},
-    xAxis:{type:'category',data:D.cost_per_token_trend.map(r=>r.date),axisLabel:{fontSize:10}},
-    yAxis:{type:'value',axisLabel:{formatter:v=>v<0.001?v.toExponential(2):v.toFixed(5)}},
-    series:[{type:'line',data:D.cost_per_token_trend.map(r=>r.cost_per_token),areaStyle:{opacity:0.3,color:'#ffd54f'},itemStyle:{color:'#ffd54f'},lineStyle:{width:2}}]
-  });
-}
-
 function initIORatioTrend(){
   const c=mkChart('chart-io-ratio-trend');if(!c||!D.io_ratio_trend||!D.io_ratio_trend.length)return;
   c.setOption({
@@ -940,22 +826,6 @@ function initTokenHeatmap(){
   });
 }
 
-function initTopUsersByCost(){
-  const c=mkChart('chart-top-users-cost');if(!c||!D.top_users_by_cost||!D.top_users_by_cost.length)return;
-  const users=D.top_users_by_cost.map(u=>u.username).reverse();
-  const vals=D.top_users_by_cost.map(u=>parseFloat(u.cost_usd.toFixed(4))).reverse();
-  c.setOption({
-    tooltip:{trigger:'axis',axisPointer:{type:'shadow'},formatter:function(p){
-      const u=D.top_users_by_cost[D.top_users_by_cost.length-1-p[0].dataIndex];
-      return u.username+'<br>费用: $'+u.cost_usd.toFixed(4)+(u.group_name?'<br>分组: '+u.group_name:'');
-    }},
-    grid:{left:100,right:60,top:10,bottom:30},
-    xAxis:{type:'value',axisLabel:{formatter:v=>'$'+v.toFixed(3)}},
-    yAxis:{type:'category',data:users},
-    series:[{type:'bar',data:vals,itemStyle:{color:new echarts.graphic.LinearGradient(0,0,1,0,[{offset:0,color:'#7b3f00'},{offset:1,color:'#ffd54f'}])},barWidth:'60%',label:{show:true,position:'right',formatter:v=>'$'+v.value.toFixed(3)}}]
-  });
-}
-
 function initUpstreamShare(){
   const c=mkChart('chart-upstream-share');if(!c||!D.upstream_share||!D.upstream_share.length)return;
   const colors=['#4fc3f7','#66bb6a','#ff7043','#ab47bc','#ffd54f','#26c6da','#ef5350','#8d6e63'];
@@ -964,7 +834,7 @@ function initUpstreamShare(){
     legend:{orient:'vertical',right:10,top:'center',textStyle:{color:'#b0bec5'}},
     series:[{
       type:'pie',radius:['40%','70%'],center:['40%','50%'],
-      data:D.upstream_share.map((u,i)=>({name:u.url.replace(/^https?:\/\//,'').split('/')[0],value:u.requests,itemStyle:{color:colors[i%colors.length]}})),
+      data:D.upstream_share.map((u,i)=>({name:'上游-'+(i+1),value:u.requests,itemStyle:{color:colors[i%colors.length]}})),
       label:{color:'#b0bec5'},
       emphasis:{itemStyle:{shadowBlur:10,shadowOffsetX:0,shadowColor:'rgba(0,0,0,0.5)'}}
     }]
@@ -974,21 +844,26 @@ function initUpstreamShare(){
 function initUpstreamLatencyTrend(){
   const c=mkChart('chart-upstream-latency-trend');if(!c||!D.upstream_latency_trend||!D.upstream_latency_trend.length)return;
   const colors=['#4fc3f7','#66bb6a','#ff7043','#ab47bc','#ffd54f','#26c6da','#ef5350','#8d6e63'];
-  // Group by URL
+  // Group by URL，使用序号替代 IP
   const urlMap=new Map();
   const dateSet=new Set();
+  const urlList=[];
   D.upstream_latency_trend.forEach(r=>{
-    const key=r.url.replace(/^https?:\/\//,'').split('/')[0];
-    if(!urlMap.has(key))urlMap.set(key,new Map());
+    const key=r.url;
+    if(!urlMap.has(key)){
+      urlList.push(key);
+      urlMap.set(key,new Map());
+    }
     urlMap.get(key).set(r.date,r.avg_latency);
     dateSet.add(r.date);
   });
   const dates=[...dateSet].sort();
   const series=[];
   let ci=0;
-  urlMap.forEach((dateMap,url)=>{
+  urlList.forEach((url,idx)=>{
+    const dateMap=urlMap.get(url);
     series.push({
-      name:url,type:'line',
+      name:'上游-'+(idx+1),type:'line',
       data:dates.map(d=>dateMap.has(d)?Math.round(dateMap.get(d)):null),
       itemStyle:{color:colors[ci%colors.length]},lineStyle:{width:2},
       connectNulls:true
@@ -997,7 +872,7 @@ function initUpstreamLatencyTrend(){
   });
   c.setOption({
     tooltip:{trigger:'axis'},
-    legend:{data:[...urlMap.keys()],textStyle:{color:'#b0bec5'},bottom:0},
+    legend:{data:series.map(s=>s.name),textStyle:{color:'#b0bec5'},bottom:0},
     grid:{left:60,right:20,top:40,bottom:50},
     xAxis:{type:'category',data:dates,axisLabel:{fontSize:9}},
     yAxis:{type:'value',name:'平均延迟(ms)',axisLabel:{formatter:v=>v+'ms'}},
@@ -1094,7 +969,9 @@ function initSourceNodeDist(){
 
 function initStickinessGauge(){
   const c=mkChart('chart-stickiness-gauge');if(!c||!D.engagement)return;
-  const val=D.engagement.stickness*100;
+  const raw=D.engagement.stickiness??D.engagement.stickness;
+  if(raw==null)return;
+  const val=raw*100;
   c.setOption({
     series:[{
       type:'gauge',

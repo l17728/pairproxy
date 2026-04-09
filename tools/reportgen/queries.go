@@ -224,9 +224,9 @@ func (q *Querier) QueryKPI(from, to time.Time) (KPIData, error) {
 			COALESCE(SUM(total_tokens), 0)               AS total_tokens,
 			COALESCE(SUM(cost_usd), 0)                   AS total_cost,
 			COUNT(DISTINCT user_id)                      AS active_users,
-			SUM(CASE WHEN status_code NOT IN (200,201,204) THEN 1 ELSE 0 END) AS error_count,
+			COALESCE(SUM(CASE WHEN status_code NOT IN (200,201,204) THEN 1 ELSE 0 END), 0) AS error_count,
 			COALESCE(AVG(CASE WHEN status_code IN (200,201,204) THEN duration_ms END), 0) AS avg_latency,
-			SUM(CASE WHEN is_streaming = 1 THEN 1 ELSE 0 END) AS stream_cnt
+			COALESCE(SUM(CASE WHEN is_streaming = 1 THEN 1 ELSE 0 END), 0) AS stream_cnt
 		FROM usage_logs
 		WHERE created_at >= ? AND created_at < ?`, from, to)
 
@@ -261,7 +261,7 @@ func (q *Querier) QueryKPI(from, to time.Time) (KPIData, error) {
 			COALESCE(SUM(total_tokens),0),
 			COALESCE(SUM(cost_usd),0),
 			COUNT(DISTINCT user_id),
-			SUM(CASE WHEN status_code NOT IN (200,201,204) THEN 1 ELSE 0 END),
+			COALESCE(SUM(CASE WHEN status_code NOT IN (200,201,204) THEN 1 ELSE 0 END), 0),
 			COALESCE(AVG(CASE WHEN status_code IN (200,201,204) THEN duration_ms END),0)
 		FROM usage_logs WHERE created_at >= ? AND created_at < ?`, pf, pt)
 	_ = prow.Scan(&prevReqs, &prevTokens, &prevCost, &prevUsers, &prevErrors, &prevLatency)
@@ -313,7 +313,7 @@ func (q *Querier) QueryDailyTrend(from, to time.Time) ([]DailyRow, error) {
 			COALESCE(SUM(cost_usd),0),
 			COUNT(*),
 			COUNT(DISTINCT user_id),
-			SUM(CASE WHEN status_code NOT IN (200,201,204) THEN 1 ELSE 0 END),
+			COALESCE(SUM(CASE WHEN status_code NOT IN (200,201,204) THEN 1 ELSE 0 END), 0),
 			COALESCE(AVG(CASE WHEN status_code IN (200,201,204) THEN duration_ms END),0)
 		FROM usage_logs
 		WHERE created_at >= ? AND created_at < ?
@@ -407,40 +407,7 @@ func (q *Querier) QueryTopUsers(from, to time.Time, orderBy string, limit int) (
 	for rows.Next() {
 		var uid string
 		var r TopUserRow
-		if err := rows.Scan(&uid, &r.InputTokens, &r.CostUSD, &r.Requests, &r.InputTokens, &r.OutputTokens); err != nil {
-			continue
-		}
-		// Actually the first aggregated value is total_tokens, mapped to Value for ordering
-		// Let me re-scan properly
-		r.Username = q.username(uid)
-		r.GroupName = q.groupName(uid)
-		result = append(result, r)
-	}
-
-	// Fix: re-query with correct column mapping
-	result = nil
-	rows2, err := q.db.Query(q.rebind(fmt.Sprintf(`
-		SELECT
-			ul.user_id,
-			COALESCE(SUM(ul.total_tokens),0),
-			COALESCE(SUM(ul.cost_usd),0),
-			COUNT(*),
-			COALESCE(SUM(ul.input_tokens),0),
-			COALESCE(SUM(ul.output_tokens),0)
-		FROM usage_logs ul
-		WHERE ul.created_at >= ? AND ul.created_at < ?
-		GROUP BY ul.user_id
-		ORDER BY %s
-		LIMIT ?`, orderExpr)), from, to, limit)
-	if err != nil {
-		return nil, fmt.Errorf("query top users: %w", err)
-	}
-	defer rows2.Close()
-
-	for rows2.Next() {
-		var uid string
-		var r TopUserRow
-		if err := rows2.Scan(&uid, &r.Value, &r.CostUSD, &r.Requests, &r.InputTokens, &r.OutputTokens); err != nil {
+		if err := rows.Scan(&uid, &r.Value, &r.CostUSD, &r.Requests, &r.InputTokens, &r.OutputTokens); err != nil {
 			continue
 		}
 		r.Username = q.username(uid)
@@ -461,20 +428,23 @@ func (q *Querier) QueryTopUsers(from, to time.Time, orderBy string, limit int) (
 // ---------------------------------------------------------------------------
 
 // QueryModelDistribution returns per-model aggregates.
+// 优先用 llm_targets.name 做展示名称，若无匹配则直接使用 model 字段；
+// 同一 upstream_url 的所有请求合并为一个 target 名，避免因客户端传入不同模型名导致分裂。
 func (q *Querier) QueryModelDistribution(from, to time.Time) ([]ModelRow, error) {
 	rows, err := q.query(`
 		SELECT
-			model,
+			COALESCE(lt.name, ul.model, '未知模型')  AS model,
 			COUNT(*)                                 AS cnt,
-			COALESCE(SUM(input_tokens),0),
-			COALESCE(SUM(output_tokens),0),
-			COALESCE(SUM(total_tokens),0),
-			COALESCE(SUM(cost_usd),0),
-			COALESCE(AVG(CASE WHEN status_code IN (200,201,204) THEN duration_ms END),0),
-			SUM(CASE WHEN status_code NOT IN (200,201,204) THEN 1 ELSE 0 END)
-		FROM usage_logs
-		WHERE created_at >= ? AND created_at < ?
-		GROUP BY model
+			COALESCE(SUM(ul.input_tokens),0),
+			COALESCE(SUM(ul.output_tokens),0),
+			COALESCE(SUM(ul.total_tokens),0),
+			COALESCE(SUM(ul.cost_usd),0),
+			COALESCE(AVG(CASE WHEN ul.status_code IN (200,201,204) THEN ul.duration_ms END),0),
+			SUM(CASE WHEN ul.status_code NOT IN (200,201,204) THEN 1 ELSE 0 END)
+		FROM usage_logs ul
+		LEFT JOIN llm_targets lt ON lt.url = ul.upstream_url
+		WHERE ul.created_at >= ? AND ul.created_at < ?
+		GROUP BY COALESCE(lt.name, ul.model, '未知模型')
 		ORDER BY cnt DESC`, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("query model dist: %w", err)
@@ -549,7 +519,7 @@ func (q *Querier) QueryUpstreamStats(from, to time.Time) ([]UpstreamRow, error) 
 			upstream_url,
 			COUNT(*)                                 AS cnt,
 			COALESCE(AVG(CASE WHEN status_code IN (200,201,204) THEN duration_ms END),0),
-			SUM(CASE WHEN status_code NOT IN (200,201,204) THEN 1 ELSE 0 END),
+			COALESCE(SUM(CASE WHEN status_code NOT IN (200,201,204) THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(total_tokens),0),
 			COALESCE(SUM(cost_usd),0)
 		FROM usage_logs
@@ -649,8 +619,8 @@ func (q *Querier) QueryStreamingRatio(from, to time.Time) (StreamingRatioData, e
 	var s StreamingRatioData
 	row := q.queryRow(`
 		SELECT
-			SUM(CASE WHEN is_streaming = 1 THEN 1 ELSE 0 END),
-			SUM(CASE WHEN is_streaming = 0 OR is_streaming IS NULL THEN 1 ELSE 0 END),
+			COALESCE(SUM(CASE WHEN is_streaming = 1 THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN is_streaming = 0 OR is_streaming IS NULL THEN 1 ELSE 0 END), 0),
 			COALESCE(AVG(CASE WHEN is_streaming = 1 AND status_code IN (200,201,204) THEN duration_ms END),0),
 			COALESCE(AVG(CASE WHEN (is_streaming = 0 OR is_streaming IS NULL) AND status_code IN (200,201,204) THEN duration_ms END),0)
 		FROM usage_logs
@@ -948,10 +918,12 @@ func changeRate(curr, prev float64) float64 {
 // QueryLatencyBoxPlotByModel returns latency distribution by model (Q1, Median, Q3, etc.)
 func (q *Querier) QueryLatencyBoxPlotByModel(from, to time.Time) ([]LatencyBoxPlotRow, error) {
 	rows, err := q.db.Query(q.rebind(fmt.Sprintf(`
-		SELECT model, duration_ms FROM usage_logs
-		WHERE created_at >= ? AND created_at < ?
-		  AND status_code IN (200, 201, 204)
-		ORDER BY model, duration_ms
+		SELECT COALESCE(lt.name, ul.model, '未知模型') AS model, ul.duration_ms
+		FROM usage_logs ul
+		LEFT JOIN llm_targets lt ON lt.url = ul.upstream_url
+		WHERE ul.created_at >= ? AND ul.created_at < ?
+		  AND ul.status_code IN (200, 201, 204)
+		ORDER BY model, ul.duration_ms
 	`)), from, to)
 	if err != nil {
 		return nil, fmt.Errorf("query latency boxplot: %w", err)

@@ -18,6 +18,10 @@ func GenerateReport(params QueryParams, templatePath, outputPath string) error {
 	}
 	defer q.Close()
 
+	fmt.Fprintf(os.Stderr, "📊 开始生成报告...\n")
+	fmt.Fprintf(os.Stderr, "   数据库驱动: %s\n", params.Driver)
+	fmt.Fprintf(os.Stderr, "   查询时间范围: %s 至 %s\n", params.From.Format("2006-01-02 15:04:05"), params.To.Format("2006-01-02 15:04:05"))
+
 	var data ReportData
 	data.Title = "PairProxy 分析报告"
 	data.PeriodLabel = formatPeriodLabel(params.From, params.To)
@@ -30,55 +34,89 @@ func GenerateReport(params QueryParams, templatePath, outputPath string) error {
 
 	// Run all queries (best-effort: individual failures yield nil/zero, not abort)
 	data.KPI, _ = q.QueryKPI(params.From, params.To)
+	if data.KPI.TotalRequests > 0 {
+		fmt.Fprintf(os.Stderr, "✅ KPI 查询成功: 总请求 %d, 总 Token %d, 总费用 $%.2f\n",
+			data.KPI.TotalRequests, data.KPI.TotalTokens, data.KPI.TotalCost)
+	} else {
+		fmt.Fprintf(os.Stderr, "⚠️  KPI 查询结果为空: 请检查时间范围和数据库连接\n")
+	}
 	data.DailyTrend, _ = q.QueryDailyTrend(params.From, params.To)
+	fmt.Fprintf(os.Stderr, "   每日趋势: %d 天\n", len(data.DailyTrend))
 	data.HeatmapData, _ = q.QueryHeatmap(params.From, params.To)
+	fmt.Fprintf(os.Stderr, "   热力图数据点: %d\n", len(data.HeatmapData))
 	data.TopUsersByToken, _ = q.QueryTopUsers(params.From, params.To, "tokens", 10)
 	data.TopUsersByCost, _ = q.QueryTopUsers(params.From, params.To, "cost", 10)
 	data.TopUsersByRequest, _ = q.QueryTopUsers(params.From, params.To, "requests", 10)
+	fmt.Fprintf(os.Stderr, "   TOP用户: Token=%d Cost=%d Req=%d\n",
+		len(data.TopUsersByToken), len(data.TopUsersByCost), len(data.TopUsersByRequest))
 	data.ModelDistribution, _ = q.QueryModelDistribution(params.From, params.To)
+	fmt.Fprintf(os.Stderr, "   模型分布: %d 个模型\n", len(data.ModelDistribution))
 	data.GroupComparison, _ = q.QueryGroupComparison(params.From, params.To)
+	fmt.Fprintf(os.Stderr, "   分组对比: %d 个分组\n", len(data.GroupComparison))
 	data.UpstreamStats, _ = q.QueryUpstreamStats(params.From, params.To)
+	fmt.Fprintf(os.Stderr, "   上游状态: %d 个上游\n", len(data.UpstreamStats))
 	data.StatusCodeDist, _ = q.QueryStatusCodeDist(params.From, params.To)
+	fmt.Fprintf(os.Stderr, "   状态码分布: %d 种\n", len(data.StatusCodeDist))
 	data.SlowRequests, _ = q.QuerySlowRequests(params.From, params.To, 10)
+	fmt.Fprintf(os.Stderr, "   慢请求: %d 条\n", len(data.SlowRequests))
 	data.ErrorRequests, _ = q.QueryErrorRequests(params.From, params.To)
+	fmt.Fprintf(os.Stderr, "   错误请求: %d 条\n", len(data.ErrorRequests))
 	data.StreamingRatio, _ = q.QueryStreamingRatio(params.From, params.To)
+	fmt.Fprintf(os.Stderr, "   流式/非流式: %d/%d\n", data.StreamingRatio.StreamingCount, data.StreamingRatio.NonStreamingCount)
 
 	registeredUsers := q.CountRegisteredUsers()
 	data.Engagement, _ = q.QueryEngagement(params.From, params.To, registeredUsers)
+	fmt.Fprintf(os.Stderr, "   参与度: DAU=%d WAU=%d MAU=%d\n",
+		data.Engagement.DAU, data.Engagement.WAU, data.Engagement.MAU)
 
 	data.UserFreqBuckets, _ = q.QueryUserFreqBuckets(params.From, params.To)
 	data.IORatioBuckets, _ = q.QueryIORatioBuckets(params.From, params.To)
 	data.ParetoData, _ = q.QueryParetoData(params.From, params.To)
+	fmt.Fprintf(os.Stderr, "   频次桶=%d I/O桶=%d 帕累托=%d\n",
+		len(data.UserFreqBuckets), len(data.IORatioBuckets), len(data.ParetoData))
 
 	// Phase 2: Latency analysis
 	data.LatencyBoxPlots, _ = q.QueryLatencyBoxPlotByModel(params.From, params.To)
 	data.LatencyPercentiles, _ = q.QueryLatencyPercentileTrend(params.From, params.To)
 	data.DailyLatencyTrend, _ = q.QueryDailyLatencyTrend(params.From, params.To)
+	fmt.Fprintf(os.Stderr, "   延迟箱线=%d 百分位趋势=%d 每日延迟=%d\n",
+		len(data.LatencyBoxPlots), len(data.LatencyPercentiles), len(data.DailyLatencyTrend))
 
 	// Phase 3: Advanced analysis
 	data.RetentionData, _ = q.QueryRetentionData(params.From, params.To)
 	data.IOScatterPlot, _ = q.QueryIOScatterPlot(params.From, params.To, 1000)
 	data.ModelCostBreakdown, _ = q.QueryModelCostBreakdown(params.From, params.To)
+	fmt.Fprintf(os.Stderr, "   留存=%d IO散点=%d 模型费用=%d\n",
+		len(data.RetentionData), len(data.IOScatterPlot), len(data.ModelCostBreakdown))
 
 	// Phase 4: High-value supplements
 	data.EngagementTrend, _ = q.QueryEngagementTrend(params.From, params.To)
 	data.QuotaUsage, _ = q.QueryQuotaUsage(params.From, params.To)
 	data.UpstreamLatencyBoxPlot, _ = q.QueryLatencyBoxPlotByUpstream(params.From, params.To)
+	fmt.Fprintf(os.Stderr, "   参与趋势=%d 配额=%d 上游延迟箱=%d\n",
+		len(data.EngagementTrend), len(data.QuotaUsage), len(data.UpstreamLatencyBoxPlot))
 
 	// Phase 5: Medium-value supplements
 	data.GroupTokenBoxPlots, _ = q.QueryGroupTokenDistribution(params.From, params.To)
+	fmt.Fprintf(os.Stderr, "   分组Token箱=%d\n", len(data.GroupTokenBoxPlots))
 
 	// Phase 6: Low-frequency enhancements
 	data.ModelRadarData, _ = q.QueryModelRadarData(params.From, params.To)
-	data.AdoptionRate.TotalRegistered = q.CountRegisteredUsers()
+	data.AdoptionRate.TotalRegistered = registeredUsers
 	activeUsers, _ := q.QueryActiveUsersInPeriod(params.From, params.To)
 	data.AdoptionRate.TotalActive = activeUsers
 	if data.AdoptionRate.TotalRegistered > 0 {
 		data.AdoptionRate.AdoptionPercent = float64(activeUsers) / float64(data.AdoptionRate.TotalRegistered) * 100
 	}
+	fmt.Fprintf(os.Stderr, "   雷达=%d 采纳率=%.1f%%(活跃%d/注册%d)\n",
+		len(data.ModelRadarData), data.AdoptionRate.AdoptionPercent,
+		data.AdoptionRate.TotalActive, data.AdoptionRate.TotalRegistered)
 
 	// Phase 7: Request-count analytics
 	data.UserRequestBoxPlot, _ = q.QueryUserRequestBoxPlot(params.From, params.To)
+	fmt.Fprintf(os.Stderr, "   用户请求箱线: count=%d min=%d median=%d max=%d\n",
+		data.UserRequestBoxPlot.Count, data.UserRequestBoxPlot.Min,
+		data.UserRequestBoxPlot.Median, data.UserRequestBoxPlot.Max)
 
 	// Phase 8: Missing/partial features
 	data.LatencyHistogram, _ = q.QueryLatencyHistogram(params.From, params.To)
@@ -94,10 +132,17 @@ func GenerateReport(params QueryParams, templatePath, outputPath string) error {
 	data.StreamingBoxPlot, _ = q.QueryStreamingBoxPlot(params.From, params.To)
 	data.ModelDailyTrend, _ = q.QueryModelDailyTrend(params.From, params.To)
 	data.KPI.PeakRPM, _ = q.QueryPeakRPM(params.From, params.To)
+	fmt.Fprintf(os.Stderr, "   延迟直方图=%d 延迟散点=%d Token热力=%d 上游占比=%d 上游延迟趋势=%d\n",
+		len(data.LatencyHistogram), len(data.LatencyScatter), len(data.TokenThroughputHeatmap),
+		len(data.UpstreamShare), len(data.UpstreamLatencyTrend))
+	fmt.Fprintf(os.Stderr, "   I/O比率趋势=%d 模型每日趋势=%d 峰值RPM=%d\n",
+		len(data.IORatioTrend), len(data.ModelDailyTrend), data.KPI.PeakRPM)
 
 	// Phase 9: remaining gaps
 	data.UserTierDist, _ = q.QueryUserTierDist(params.From, params.To)
 	data.UserTokenPercentiles, _ = q.QueryUserTokenPercentiles(params.From, params.To)
+	fmt.Fprintf(os.Stderr, "   用户分层=%d Token百分位=%d\n",
+		len(data.UserTierDist), len(data.UserTokenPercentiles))
 
 	// Warn when no data was found (empty period or new deployment)
 	if data.KPI.TotalRequests == 0 {
@@ -142,7 +187,6 @@ func GenerateReport(params QueryParams, templatePath, outputPath string) error {
 	if err := os.WriteFile(outputPath, []byte(html), 0644); err != nil {
 		return fmt.Errorf("write output: %w", err)
 	}
-
 	return nil
 }
 

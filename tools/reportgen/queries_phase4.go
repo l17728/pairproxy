@@ -155,10 +155,12 @@ func (q *Querier) QueryQuotaUsage(from, to time.Time) ([]QuotaUsageRow, error) {
 // QueryLatencyBoxPlotByUpstream returns latency distribution by upstream endpoint.
 func (q *Querier) QueryLatencyBoxPlotByUpstream(from, to time.Time) ([]LatencyBoxPlotRow, error) {
 	rows, err := q.query(`
-		SELECT upstream_url, duration_ms FROM usage_logs
-		WHERE created_at >= ? AND created_at < ?
-		  AND status_code IN (200, 201, 204)
-		ORDER BY upstream_url, duration_ms
+		SELECT COALESCE(lt.name, ul.upstream_url, '未知上游') AS upstream, ul.duration_ms
+		FROM usage_logs ul
+		LEFT JOIN llm_targets lt ON lt.url = ul.upstream_url
+		WHERE ul.created_at >= ? AND ul.created_at < ?
+		  AND ul.status_code IN (200, 201, 204)
+		ORDER BY upstream, ul.duration_ms
 	`, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("query latency by upstream: %w", err)

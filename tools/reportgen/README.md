@@ -4,8 +4,8 @@
 
 reportgen 是 PairProxy 的可视化分析报告生成工具，能够从 SQLite 或 PostgreSQL 数据库中提取使用数据，生成交互式 HTML 报告。报告包含 16+ 个可视化卡片，覆盖用户、运维和管理三个视角的分析需求。
 
-**最新版本**: v2.24.3
-**发布日期**: 2026-04-08
+**最新版本**: v2.24.4
+**发布日期**: 2026-04-09
 **数据库支持**: SQLite（默认）| PostgreSQL
 
 ---
@@ -28,7 +28,8 @@ reportgen 是 PairProxy 的可视化分析报告生成工具，能够从 SQLite 
 ```bash
 # Linux/macOS 示例
 tar -xzf reportgen-v2.24.3-linux-amd64.tar.gz
-./reportgen -db /path/to/pairproxy.db -from 2026-04-01 -to 2026-04-05
+./reportgen -db /path/to/pairproxy.db          # 不加日期，默认分析过去30天
+./reportgen -db /path/to/pairproxy.db -from 2026-04-01 -to 2026-04-05  # 指定范围
 ```
 
 ### 方式二：从源码编译
@@ -39,7 +40,10 @@ tar -xzf reportgen-v2.24.3-linux-amd64.tar.gz
 # 在 tools/reportgen 目录
 go build -o reportgen
 
-# 生成报告
+# 生成报告（默认过去30天）
+./reportgen -db /path/to/pairproxy.db
+
+# 指定日期范围
 ./reportgen -db /path/to/pairproxy.db -from 2026-04-01 -to 2026-04-05
 ```
 
@@ -49,14 +53,14 @@ go build -o reportgen
 
 #### SQLite 模式
 ```bash
-./reportgen -db <数据库> -from <开始日期> -to <结束日期> [选项]
+./reportgen -db <数据库> [选项]
 
 必填参数:
   -db <path>        SQLite 数据库文件路径
-  -from <YYYY-MM-DD> 分析的开始日期 (包含)
-  -to <YYYY-MM-DD>   分析的结束日期 (包含)
 
 可选参数:
+  -from <YYYY-MM-DD> 分析的开始日期 (包含，默认: 30天前)
+  -to <YYYY-MM-DD>   分析的结束日期 (包含，默认: 今天)
   -output <path>    输出 HTML 文件路径 (默认: report.html)
   -template <path>  HTML 模板文件路径 (默认: templates/report.html)
   -llm-url <url>    LLM 端点 URL (如 http://localhost:9000，可选)
@@ -66,14 +70,14 @@ go build -o reportgen
 
 #### PostgreSQL 模式（方案一：完整 DSN）
 ```bash
-./reportgen -pg-dsn "postgres://user:password@host:5432/dbname" -from <开始日期> -to <结束日期> [选项]
+./reportgen -pg-dsn "postgres://user:password@host:5432/dbname" [选项]
 
 必填参数:
   -pg-dsn <DSN>     PostgreSQL 连接字符串，格式: postgres://user:password@host:port/dbname
-  -from <YYYY-MM-DD> 分析的开始日期 (包含)
-  -to <YYYY-MM-DD>   分析的结束日期 (包含)
 
 可选参数:
+  -from <YYYY-MM-DD> 分析的开始日期 (包含，默认: 30天前)
+  -to <YYYY-MM-DD>   分析的结束日期 (包含，默认: 今天)
   -output <path>    输出 HTML 文件路径 (默认: report.html)
   -template <path>  HTML 模板文件路径 (默认: templates/report.html)
   -llm-url <url>    LLM 端点 URL (可选)
@@ -84,7 +88,7 @@ go build -o reportgen
 #### PostgreSQL 模式（方案二：独立字段）
 ```bash
 ./reportgen -pg-host <host> -pg-user <user> -pg-password <password> -pg-dbname <dbname> \
-  -from <开始日期> -to <结束日期> [选项]
+  [选项]
 
 必填参数:
   -pg-host <host>       PostgreSQL 主机名 (默认: localhost)
@@ -92,10 +96,10 @@ go build -o reportgen
   -pg-user <user>       PostgreSQL 用户名
   -pg-password <pass>   PostgreSQL 密码
   -pg-dbname <dbname>   PostgreSQL 数据库名
-  -from <YYYY-MM-DD>    分析的开始日期 (包含)
-  -to <YYYY-MM-DD>      分析的结束日期 (包含)
 
 可选参数:
+  -from <YYYY-MM-DD>    分析的开始日期 (包含，默认: 30天前)
+  -to <YYYY-MM-DD>      分析的结束日期 (包含，默认: 今天)
   -pg-sslmode <mode>    SSL 模式: disable|require|verify-full (默认: disable)
   -output <path>        输出 HTML 文件路径 (默认: report.html)
   -template <path>      HTML 模板文件路径 (默认: templates/report.html)
@@ -105,6 +109,11 @@ go build -o reportgen
 ```
 
 ### 常见示例
+
+#### SQLite: 最简用法（默认过去30天）
+```bash
+./reportgen -db pairproxy.db
+```
 
 #### SQLite: 生成周报 (过去7天)
 ```bash
@@ -345,7 +354,7 @@ CREATE TABLE usage_logs (
 **参数说明**：
 - `-llm-url`: LLM 端点 URL（如 `http://localhost:9000`）
 - `-llm-key`: LLM API Key，Bearer token 格式
-- `-llm-model`: LLM 模型名（默认 `gpt-4o-mini`；Anthropic 端点推荐 `claude-haiku-4-5-20251001`）
+- `-llm-model`: LLM 模型名（默认 `gpt-4o-mini`；Anthropic 端点推荐 `claude-haiku-4-5`）
 
 #### 方案 2：数据库配置（生产环境推荐）
 
@@ -376,7 +385,7 @@ export KEY_ENCRYPTION_KEY="your-key-encryption-key"
 
 | Provider | 使用模型 | 说明 |
 |---|---|---|
-| Anthropic | `claude-haiku-4-5-20251001` | 速度快、成本低，适合分析任务 |
+| Anthropic | `claude-haiku-4-5` | 速度快、成本低，适合分析任务 |
 | OpenAI | `gpt-4o-mini` | 成本较低的替代方案 |
 
 **API 兼容性自动判断**：
@@ -471,24 +480,14 @@ done
 
 ## 生成测试报告
 
-### 快速生成测试数据和报告
-
+#### SQLite: 生成测试报告（mockdata）
 ```bash
-# 1. 生成测试数据库
-cd tools/reportgen/cmd/test_db
-go run main.go  # 生成 sample.db
+# 生成 mock 测试数据库
+cd cmd/mockdata && go run .
 
-# 2. 生成测试报告
-cd ..
-./reportgen -db cmd/test_db/sample.db \
-  -from 2026-03-28 -to 2026-04-04 \
-  -output test-report.html
+# 生成报告（默认过去30天，无需指定日期）
+cd ../.. && ./reportgen -db cmd/mockdata/mock.db
 ```
-
-### 查看示例报告
-
-- `sample-report.html`: 静态示例 (用于演示)
-- `test-report.html`: 动态生成的测试报告 (包含实时数据)
 
 ---
 
@@ -618,7 +617,7 @@ scp report.html user@server:/var/www/html/
 
 ```
 tools/reportgen/
-├── main.go              # 命令行入口
+├── main.go              # 命令行入口，-from/-to 默认最近30天
 ├── generator.go         # 报告生成核心
 ├── queries.go           # Phase 1-2 查询 (基础 + 延迟)
 ├── queries_phase3.go    # Phase 3 查询 (留存 + 成本)
@@ -627,10 +626,12 @@ tools/reportgen/
 ├── types.go             # 数据结构定义
 ├── insights.go          # 规则洞察计算 (分层、Pareto等)
 ├── insights_llm.go      # LLM 智能洞察 (Anthropic/OpenAI)
+├── integration_test.go  # 集成测试 (LLM路由、SQL、空库等)
+├── main_test.go         # 单元测试 (endOfDay、时间范围)
 ├── templates/
 │   └── report.html      # HTML 模板
-├── cmd/test_db/
-│   └── main.go          # 测试数据生成工具
+├── cmd/mockdata/
+│   └── main.go          # Mock 测试数据生成工具
 └── README.md            # 本文件
 ```
 
@@ -692,6 +693,17 @@ A: 当前报告是全局视角。扩展功能可参考"开发和扩展"章节。
 
 ## 变更日志
 
+### v2.24.4 (2026-04-09)
+- 🐛 修复 Anthropic 路由 bug：有 model 字段时错误走 OpenAI 协议（`/v1/chat/completions`），现已统一按 provider 判断
+- 🐛 修复无效模型 ID：`claude-haiku-4-5-20251001` → `claude-haiku-4-5`
+- 🐛 修复空库 NULL 崩溃：所有 `SUM(CASE WHEN...)` 列增加 `COALESCE(..., 0)` 保护
+- 🐛 修复 HTTP 413 不触发上下文裁剪重试（`isContextTooLong` 未处理 413 状态码）
+- ✨ 新增 `chart-upstream-share`（上游请求占比饼图），修复 3 列 Grid 布局
+- 🐛 修复 `stickness` 拼写错误 → `stickiness`，保留向后兼容 fallback
+- 🐛 修复 `initIORatio()` 在无对应 div 时被调用导致死图表
+- ✨ mockdata 生成器补全 `daily_limit`/`monthly_limit` 字段，model 字段改存友好名称
+- 🧪 新增 32 个测试用例：LLM 路由、空库查询、isContextTooLong、日期边界等全面覆盖
+
 ### v2.24.3 (2026-04-08)
 - ✨ 新增命令行 LLM 参数支持 (`-llm-url`, `-llm-key`, `-llm-model`)，无需数据库配置直接指定 LLM 端点
 - 🔧 完善 LLM API 兼容性支持 (OpenAI `/v1/chat/completions` vs Anthropic `/v1/messages` 自动判断)
@@ -728,4 +740,4 @@ A: 当前报告是全局视角。扩展功能可参考"开发和扩展"章节。
 
 ---
 
-**文档版本**: v2.24.3 | **最后更新**: 2026-04-08
+**文档版本**: v2.24.4 | **最后更新**: 2026-04-09

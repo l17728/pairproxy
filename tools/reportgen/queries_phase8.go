@@ -286,13 +286,17 @@ func (q *Querier) QueryPeakRPM(from, to time.Time) (int64, error) {
 // QueryModelDailyTrend returns per-model daily request counts and tokens.
 func (q *Querier) QueryModelDailyTrend(from, to time.Time) ([]ModelDailyRow, error) {
 	rows, err := q.query(fmt.Sprintf(`
-		SELECT %s AS day, model, COUNT(*) AS cnt, COALESCE(SUM(total_tokens),0) AS tok
-		FROM usage_logs
-		WHERE created_at >= ? AND created_at < ?
-		  AND model IS NOT NULL AND model != ''
-		GROUP BY day, model
+		SELECT %s AS day,
+		       COALESCE(lt.name, ul.model, '未知模型') AS model,
+		       COUNT(*) AS cnt,
+		       COALESCE(SUM(ul.total_tokens),0) AS tok
+		FROM usage_logs ul
+		LEFT JOIN llm_targets lt ON lt.url = ul.upstream_url
+		WHERE ul.created_at >= ? AND ul.created_at < ?
+		  AND ul.model IS NOT NULL AND ul.model != ''
+		GROUP BY day, COALESCE(lt.name, ul.model, '未知模型')
 		ORDER BY day, model
-	`, q.sqlDate("created_at")), from, to)
+	`, q.sqlDate("ul.created_at")), from, to)
 	if err != nil {
 		return nil, fmt.Errorf("query model daily trend: %w", err)
 	}

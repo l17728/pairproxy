@@ -12,19 +12,20 @@ import (
 
 // QueryModelRadarData returns multi-dimensional performance metrics for models.
 func (q *Querier) QueryModelRadarData(from, to time.Time) ([]ModelRadarData, error) {
-	// Get base stats per model
+	// Get base stats per model (join llm_targets to get display name)
 	rows, err := q.query(`
 		SELECT
-			model,
+			COALESCE(lt.name, ul.model, '未知模型') AS model,
 			COUNT(*) as cnt,
-			COALESCE(AVG(duration_ms), 0) as avg_lat,
-			COALESCE(SUM(cost_usd), 0) as total_cost,
-			COALESCE(SUM(total_tokens), 0) as total_tokens,
-			SUM(CASE WHEN status_code NOT IN (200,201,204) THEN 1 ELSE 0 END) as errors,
-			COUNT(DISTINCT user_id) as distinct_users
-		FROM usage_logs
-		WHERE created_at >= ? AND created_at < ?
-		GROUP BY model
+			COALESCE(AVG(ul.duration_ms), 0) as avg_lat,
+			COALESCE(SUM(ul.cost_usd), 0) as total_cost,
+			COALESCE(SUM(ul.total_tokens), 0) as total_tokens,
+			SUM(CASE WHEN ul.status_code NOT IN (200,201,204) THEN 1 ELSE 0 END) as errors,
+			COUNT(DISTINCT ul.user_id) as distinct_users
+		FROM usage_logs ul
+		LEFT JOIN llm_targets lt ON lt.url = ul.upstream_url
+		WHERE ul.created_at >= ? AND ul.created_at < ?
+		GROUP BY COALESCE(lt.name, ul.model, '未知模型')
 	`, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("query model radar: %w", err)
