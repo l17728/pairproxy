@@ -1,5 +1,47 @@
 # PairProxy Changelog
 
+## [v2.24.4] - 2026-04-09
+
+### 🐛 Bug Fixes
+
+#### SQLite 时区字符串比较 Bug（UsageLog 时间过滤全面修复）
+- **根因**：SQLite 对 `time.Time` 以 RFC3339 字符串存储，字符串比较是字典序，混合时区格式（`"2026-04-09T12:00:00Z"` vs `"2026-04-09T20:00:00+08:00"`）导致过滤结果完全错误
+- **修复 1 — 存储归一化**：`UsageLog.BeforeCreate` GORM hook，所有写入前强制 `CreatedAt.UTC()`，确保数据库中全部为 UTC 格式
+- **修复 2 — 查询归一化**：`usage_repo.go` 新增 `toUTC()` helper，所有带时间范围的方法（`Query`、`SumTokens`、`GlobalSumTokens`、`UserStats`、`ExportLogs`、`SumCostUSD`、`DailyTokens`、`DailyCost`、`DeleteBefore`）入口处统一转 UTC
+- **修复 3 — 测试数据归一化**：`test/e2e/sproxy_e2e_test.go` 和 `f10_features_e2e_test.go` 种子数据改用 `time.Now().UTC()`
+
+#### reportgen 静默错误丢弃修复
+- **`generator.go`**：原所有查询调用均 `_, _ =`，查询失败无任何日志；改为新增 `warnQueryErr()` 辅助函数，失败时输出 `WARNING: <QueryName> failed: <err>` 到 stderr
+- **`queries.go`**：`loadMaps()` 中 `Scan()` 错误被静默丢弃；改为 `fmt.Fprintf(os.Stderr, "WARNING: loadMaps scan ...")` 并 `continue`
+- **`integration_test.go`**：`sql.Open()`、`NewQuerier()` 错误均被 `_, _` 丢弃；改为 `t.Fatalf` 处理；schema 循环改用现有 `mustExec()` helper
+
+### 🧪 测试覆盖率提升
+
+#### reportgen 新增 26 个测试（`queries_extra_test.go`）
+原 39 个查询函数中仅 2 个（`QueryKPI`、`QueryModelDistribution`）有双驱动测试，36 个零覆盖。
+新增文件覆盖：
+- `QueryTopUsers` — 按 token 数量排名前 N 用户
+- `QueryGroupComparison` — 分组 token 汇总对比
+- `QueryStreamingRatio` — 流式 vs 非流式请求比例
+- `QueryDailyTrend` — 每日 token + 费用趋势
+- `QueryEngagement` — 用户活跃度（活跃用户数）
+- `QueryQuotaUsage` — 配额使用率查询
+- `QueryGroupTokenDistribution` — 分组 token 分布
+- `QueryModelTokenBoxPlots` — 模型 token 箱线图数据
+- `QuerySourceNodeDist` — 请求来源节点分布
+- `QueryUpstreamStats` — 上游节点统计
+- `QueryStatusCodeDist` — HTTP 状态码分布
+- `QueryPeakRPM` — 峰值请求速率（RPM）
+- `QuerySlowRequests` — 慢请求列表
+- `QueryErrorRequests` — 错误请求列表
+
+### 📊 Tests
+- 主模块测试：**2,078** 个（所有 25 个包，0 FAIL）
+- reportgen 测试：**43** 个（含新增 queries_extra_test.go + integration_test.go）
+- 总计：**2,121** 个测试，全部通过
+
+---
+
 ## [v2.24.3] - 2026-04-08
 
 ### 🐛 Bug Fixes

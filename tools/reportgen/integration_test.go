@@ -366,12 +366,12 @@ func TestQueryKPIWithData(t *testing.T) {
 		}
 	}
 	// Seed data
-	fileDB.Exec(`INSERT INTO groups (id, name) VALUES (1, 'eng')`)
-	fileDB.Exec(`INSERT INTO users (id, username, group_id, is_active) VALUES (1, 'alice', 1, 1)`)
-	fileDB.Exec(`INSERT INTO llm_targets (id, name, url, provider) VALUES (1, 'GPT-4o', 'https://api.openai.com', 'openai')`)
-	fileDB.Exec(`INSERT INTO usage_logs (request_id, user_id, model, input_tokens, output_tokens, total_tokens, upstream_url, status_code, duration_ms, cost_usd, created_at)
+	mustExec(t, fileDB, `INSERT INTO groups (id, name) VALUES (1, 'eng')`)
+	mustExec(t, fileDB, `INSERT INTO users (id, username, group_id, is_active) VALUES (1, 'alice', 1, 1)`)
+	mustExec(t, fileDB, `INSERT INTO llm_targets (id, name, url, provider) VALUES (1, 'GPT-4o', 'https://api.openai.com', 'openai')`)
+	mustExec(t, fileDB, `INSERT INTO usage_logs (request_id, user_id, model, input_tokens, output_tokens, total_tokens, upstream_url, status_code, duration_ms, cost_usd, created_at)
 		VALUES ('r1', '1', 'gpt-4o', 100, 50, 150, 'https://api.openai.com', 200, 500, 0.001, '2026-03-15 10:00:00')`)
-	fileDB.Exec(`INSERT INTO usage_logs (request_id, user_id, model, input_tokens, output_tokens, total_tokens, upstream_url, status_code, duration_ms, cost_usd, created_at)
+	mustExec(t, fileDB, `INSERT INTO usage_logs (request_id, user_id, model, input_tokens, output_tokens, total_tokens, upstream_url, status_code, duration_ms, cost_usd, created_at)
 		VALUES ('r2', '1', 'gpt-4o', 200, 100, 300, 'https://api.openai.com', 429, 50, 0.0, '2026-03-15 11:00:00')`)
 	fileDB.Close()
 
@@ -412,11 +412,11 @@ func TestQueryModelDistributionJoinsLLMTargets(t *testing.T) {
 		`CREATE TABLE api_keys (id INTEGER PRIMARY KEY, user_id INTEGER, key TEXT UNIQUE, daily_token_limit INTEGER DEFAULT 0, monthly_token_limit INTEGER DEFAULT 0, is_active BOOLEAN DEFAULT 1, encrypted_value TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
 		`CREATE TABLE usage_logs (id INTEGER PRIMARY KEY, request_id TEXT, user_id TEXT, model TEXT, input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0, total_tokens INTEGER DEFAULT 0, is_streaming BOOLEAN DEFAULT 0, upstream_url TEXT, status_code INTEGER DEFAULT 200, duration_ms INTEGER DEFAULT 0, cost_usd REAL DEFAULT 0, source_node TEXT, synced BOOLEAN DEFAULT 0, created_at DATETIME)`,
 	} {
-		fileDB.Exec(stmt)
+		mustExec(t, fileDB, stmt)
 	}
-	fileDB.Exec(`INSERT INTO llm_targets (id, name, url, provider) VALUES (1, 'Claude Sonnet', 'https://api.anthropic.com', 'anthropic')`)
+	mustExec(t, fileDB, `INSERT INTO llm_targets (id, name, url, provider) VALUES (1, 'Claude Sonnet', 'https://api.anthropic.com', 'anthropic')`)
 	// Insert with URL in upstream_url — name should be resolved via JOIN
-	fileDB.Exec(`INSERT INTO usage_logs (request_id, user_id, model, upstream_url, status_code, total_tokens, created_at)
+	mustExec(t, fileDB, `INSERT INTO usage_logs (request_id, user_id, model, upstream_url, status_code, total_tokens, created_at)
 		VALUES ('r1', '1', 'raw-model-id', 'https://api.anthropic.com', 200, 100, '2026-03-15 10:00:00')`)
 	fileDB.Close()
 
@@ -447,7 +447,10 @@ func TestQueryModelDistributionJoinsLLMTargets(t *testing.T) {
 
 func TestQueryModelDistributionNullModel(t *testing.T) {
 	dsn := tempDB(t)
-	fileDB, _ := sql.Open("sqlite", dsn)
+	fileDB, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatalf("open file db: %v", err)
+	}
 	for _, stmt := range []string{
 		`CREATE TABLE groups (id INTEGER PRIMARY KEY, name TEXT, daily_token_limit INTEGER DEFAULT 0, monthly_token_limit INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
 		`CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT, group_id INTEGER, is_active BOOLEAN DEFAULT 1, daily_limit INTEGER DEFAULT 0, monthly_limit INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, last_login_at DATETIME)`,
@@ -455,14 +458,17 @@ func TestQueryModelDistributionNullModel(t *testing.T) {
 		`CREATE TABLE api_keys (id INTEGER PRIMARY KEY, user_id INTEGER, key TEXT UNIQUE, daily_token_limit INTEGER DEFAULT 0, monthly_token_limit INTEGER DEFAULT 0, is_active BOOLEAN DEFAULT 1, encrypted_value TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
 		`CREATE TABLE usage_logs (id INTEGER PRIMARY KEY, request_id TEXT, user_id TEXT, model TEXT, input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0, total_tokens INTEGER DEFAULT 0, is_streaming BOOLEAN DEFAULT 0, upstream_url TEXT, status_code INTEGER DEFAULT 200, duration_ms INTEGER DEFAULT 0, cost_usd REAL DEFAULT 0, source_node TEXT, synced BOOLEAN DEFAULT 0, created_at DATETIME)`,
 	} {
-		fileDB.Exec(stmt)
+		mustExec(t, fileDB, stmt)
 	}
 	// NULL model AND no matching llm_targets — should fall back to '未知模型'
-	fileDB.Exec(`INSERT INTO usage_logs (request_id, user_id, model, upstream_url, status_code, total_tokens, created_at)
+	mustExec(t, fileDB, `INSERT INTO usage_logs (request_id, user_id, model, upstream_url, status_code, total_tokens, created_at)
 		VALUES ('r1', '1', NULL, 'https://unknown.example.com', 200, 100, '2026-03-15 10:00:00')`)
 	fileDB.Close()
 
-	q, _ := NewQuerier("sqlite", dsn)
+	q, err := NewQuerier("sqlite", dsn)
+	if err != nil {
+		t.Fatalf("NewQuerier: %v", err)
+	}
 	defer q.Close()
 
 	from := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
@@ -482,7 +488,10 @@ func TestQueryModelDistributionNullModel(t *testing.T) {
 
 func TestQueryKPIZeroTokenRequests(t *testing.T) {
 	dsn := tempDB(t)
-	fileDB, _ := sql.Open("sqlite", dsn)
+	fileDB, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatalf("open file db: %v", err)
+	}
 	for _, stmt := range []string{
 		`CREATE TABLE groups (id INTEGER PRIMARY KEY, name TEXT, daily_token_limit INTEGER DEFAULT 0, monthly_token_limit INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
 		`CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT, group_id INTEGER, is_active BOOLEAN DEFAULT 1, daily_limit INTEGER DEFAULT 0, monthly_limit INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, last_login_at DATETIME)`,
@@ -490,14 +499,17 @@ func TestQueryKPIZeroTokenRequests(t *testing.T) {
 		`CREATE TABLE api_keys (id INTEGER PRIMARY KEY, user_id INTEGER, key TEXT UNIQUE, daily_token_limit INTEGER DEFAULT 0, monthly_token_limit INTEGER DEFAULT 0, is_active BOOLEAN DEFAULT 1, encrypted_value TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
 		`CREATE TABLE usage_logs (id INTEGER PRIMARY KEY, request_id TEXT, user_id TEXT, model TEXT, input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0, total_tokens INTEGER DEFAULT 0, is_streaming BOOLEAN DEFAULT 0, upstream_url TEXT, status_code INTEGER DEFAULT 200, duration_ms INTEGER DEFAULT 0, cost_usd REAL DEFAULT 0, source_node TEXT, synced BOOLEAN DEFAULT 0, created_at DATETIME)`,
 	} {
-		fileDB.Exec(stmt)
+		mustExec(t, fileDB, stmt)
 	}
 	// Zero-token 401 request
-	fileDB.Exec(`INSERT INTO usage_logs (request_id, user_id, model, input_tokens, output_tokens, total_tokens, upstream_url, status_code, duration_ms, cost_usd, created_at)
+	mustExec(t, fileDB, `INSERT INTO usage_logs (request_id, user_id, model, input_tokens, output_tokens, total_tokens, upstream_url, status_code, duration_ms, cost_usd, created_at)
 		VALUES ('r1', '1', 'gpt-4o', 0, 0, 0, 'https://api.openai.com', 401, 30, 0.0, '2026-03-15 10:00:00')`)
 	fileDB.Close()
 
-	q, _ := NewQuerier("sqlite", dsn)
+	q, err := NewQuerier("sqlite", dsn)
+	if err != nil {
+		t.Fatalf("NewQuerier: %v", err)
+	}
 	defer q.Close()
 
 	from := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
@@ -523,7 +535,10 @@ func TestQueryKPIZeroTokenRequests(t *testing.T) {
 func TestNewQuerierDriverDefault(t *testing.T) {
 	dsn := tempDB(t)
 	// Create minimal schema
-	db, _ := sql.Open("sqlite", dsn)
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
 	for _, s := range []string{
 		`CREATE TABLE groups (id INTEGER PRIMARY KEY, name TEXT, daily_token_limit INTEGER DEFAULT 0, monthly_token_limit INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
 		`CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT, group_id INTEGER, is_active BOOLEAN DEFAULT 1, daily_limit INTEGER DEFAULT 0, monthly_limit INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, last_login_at DATETIME)`,

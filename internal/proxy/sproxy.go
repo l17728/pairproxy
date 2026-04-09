@@ -287,7 +287,7 @@ func (sp *SProxy) resolveAPIKeyID(apiKey, provider, targetURL string) (*string, 
 		Provider:       provider,
 		EncryptedValue: obfuscated,
 		IsActive:       true,
-		CreatedAt:      time.Now(),
+		CreatedAt:      time.Now().UTC(),
 	}
 
 	if err := sp.db.Create(newKey).Error; err != nil {
@@ -1574,7 +1574,7 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 		Model:       model,
 		UpstreamURL: firstInfo.URL,
 		SourceNode:  sp.sourceNode,
-		CreatedAt:   time.Now(),
+		CreatedAt:   time.Now().UTC(),
 	}
 	if usageRecord.Model != "" {
 		span.SetAttributes(attribute.String("model", usageRecord.Model))

@@ -116,7 +116,7 @@ func (w *UsageWriter) DroppedCount() int64 {
 // 如果 channel 已满，丢弃记录并记录警告（保证代理主路不阻塞）
 func (w *UsageWriter) Record(r UsageRecord) {
 	if r.CreatedAt.IsZero() {
-		r.CreatedAt = time.Now()
+		r.CreatedAt = time.Now().UTC()
 	}
 	// 没有 token 数据的记录仍然写入（记录错误请求），无需特殊处理
 	select {
@@ -292,6 +292,10 @@ func NewUsageRepo(db *gorm.DB, logger *zap.Logger) *UsageRepo {
 	return &UsageRepo{db: db, logger: logger.Named("usage_repo"), driver: DriverName(db)}
 }
 
+// toUTC normalises a time value to UTC so that SQLite string comparisons
+// (which are lexicographic) work correctly regardless of the caller's locale.
+func toUTC(t time.Time) time.Time { return t.UTC() }
+
 // dateExpr 返回将时间戳列截断到日期的 SQL 表达式。
 // SQLite: DATE(col)
 // PostgreSQL: DATE_TRUNC('day', col)::DATE
@@ -325,10 +329,12 @@ func (r *UsageRepo) Query(filter UsageFilter) ([]UsageLog, error) {
 		query = query.Where("model = ?", filter.Model)
 	}
 	if filter.From != nil {
-		query = query.Where("created_at >= ?", *filter.From)
+		f := toUTC(*filter.From)
+		query = query.Where("created_at >= ?", f)
 	}
 	if filter.To != nil {
-		query = query.Where("created_at <= ?", *filter.To)
+		t := toUTC(*filter.To)
+		query = query.Where("created_at <= ?", t)
 	}
 
 	limit := filter.Limit
@@ -352,6 +358,7 @@ func (r *UsageRepo) Query(filter UsageFilter) ([]UsageLog, error) {
 
 // SumTokens 聚合指定用户在时间范围内的 token 总量
 func (r *UsageRepo) SumTokens(userID string, from, to time.Time) (inputSum, outputSum int64, err error) {
+	from, to = toUTC(from), toUTC(to)
 	type result struct {
 		InputSum  int64
 		OutputSum int64
@@ -382,6 +389,7 @@ type GlobalStats struct {
 
 // GlobalSumTokens 计算时间段内所有用户的汇总统计
 func (r *UsageRepo) GlobalSumTokens(from, to time.Time) (GlobalStats, error) {
+	from, to = toUTC(from), toUTC(to)
 	type rawResult struct {
 		TotalInput   int64
 		TotalOutput  int64
@@ -419,6 +427,7 @@ type UserStatRow struct {
 
 // UserStats 按用户聚合 token 用量，按用量降序，最多 limit 条
 func (r *UsageRepo) UserStats(from, to time.Time, limit int) ([]UserStatRow, error) {
+	from, to = toUTC(from), toUTC(to)
 	if limit <= 0 {
 		limit = 50
 	}
@@ -446,6 +455,7 @@ func (r *UsageRepo) UserStats(from, to time.Time, limit int) ([]UserStatRow, err
 //
 // 参数 pageSize 为 0 时使用默认值 500。
 func (r *UsageRepo) ExportLogs(from, to time.Time, fn func(UsageLog) error) error {
+	from, to = toUTC(from), toUTC(to)
 	const defaultPageSize = 500
 	pageSize := defaultPageSize
 	offset := 0
@@ -500,7 +510,9 @@ func (r *UsageRepo) ExportLogs(from, to time.Time, fn func(UsageLog) error) erro
 }
 
 // SumCostUSD 计算时间段内的总估算费用（USD）
-func (r *UsageRepo) SumCostUSD(from, to time.Time) (float64, error) {	var result struct{ Total float64 }
+func (r *UsageRepo) SumCostUSD(from, to time.Time) (float64, error) {
+	from, to = toUTC(from), toUTC(to)
+	var result struct{ Total float64 }
 	err := r.db.Model(&UsageLog{}).
 		Select("COALESCE(SUM(cost_usd), 0) as total").
 		Where("created_at >= ? AND created_at <= ?", from, to).
@@ -514,7 +526,7 @@ func (r *UsageRepo) SumCostUSD(from, to time.Time) (float64, error) {	var result
 
 // DeleteBefore 删除 created_at < before 的使用日志，返回删除行数。
 func (r *UsageRepo) DeleteBefore(before time.Time) (int64, error) {
-	result := r.db.Where("created_at < ?", before).Delete(&UsageLog{})
+	result := r.db.Where("created_at < ?", toUTC(before)).Delete(&UsageLog{})
 	if result.Error != nil {
 		r.logger.Error("failed to delete old usage logs",
 			zap.Time("before", before),
@@ -577,6 +589,7 @@ type DailyTokenRow struct {
 // DailyTokens 返回指定时间段内按天聚合的 token 用量（全局或指定用户）
 // userID 为空时返回全局聚合，非空时返回该用户的聚合
 func (r *UsageRepo) DailyTokens(from, to time.Time, userID string) ([]DailyTokenRow, error) {
+	from, to = toUTC(from), toUTC(to)
 	dateExpr := r.dateExpr("created_at")
 	query := r.db.Model(&UsageLog{}).
 		Select(fmt.Sprintf(`%s as date,
@@ -703,6 +716,7 @@ func parseFlexTime(s string) (time.Time, error) {
 
 // DailyCost 返回指定时间段内按天聚合的费用（全局或指定用户）
 func (r *UsageRepo) DailyCost(from, to time.Time, userID string) ([]DailyCostRow, error) {
+	from, to = toUTC(from), toUTC(to)
 	dateExpr := r.dateExpr("created_at")
 	query := r.db.Model(&UsageLog{}).
 		Select(fmt.Sprintf(`%s as date,

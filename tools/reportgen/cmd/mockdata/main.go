@@ -390,7 +390,7 @@ func main() {
 	// Edge case: zero-token requests (rejected before processing, e.g. auth failures)
 	for j := 0; j < 20; j++ {
 		reqID++
-		ts := now.AddDate(0, 0, -rng.Intn(30)).Format("2006-01-02 10:00:00")
+		ts := now.AddDate(0, 0, -rng.Intn(30)).Format("2006-01-02") + " 10:00:00"
 		if _, err := stmt.Exec(fmt.Sprintf("req-%08d", reqID), "1",
 			"claude-sonnet-4-5", 0, 0, 0,
 			0, "https://api.anthropic.com/claude-sonnet",
@@ -401,7 +401,7 @@ func main() {
 	// Edge case: NULL model field (proxy may not always capture model)
 	for j := 0; j < 10; j++ {
 		reqID++
-		ts := now.AddDate(0, 0, -rng.Intn(30)).Format("2006-01-02 11:00:00")
+		ts := now.AddDate(0, 0, -rng.Intn(30)).Format("2006-01-02") + " 11:00:00"
 		if _, err := stmt.Exec(fmt.Sprintf("req-%08d", reqID), "2",
 			nil, 100, 50, 150,
 			0, "https://api.deepseek.com/v1",

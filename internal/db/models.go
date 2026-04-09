@@ -1,6 +1,10 @@
 package db
 
-import "time"
+import (
+	"time"
+
+	"gorm.io/gorm"
+)
 
 // Group 用户分组（配额管理）
 type Group struct {
@@ -54,6 +58,15 @@ type UsageLog struct {
 	SourceNode   string    `gorm:"default:'local'"` // 数据来源节点 ID
 	Synced       bool      `gorm:"default:false;index"` // sp-2+ 用：是否已上报给 sp-1
 	CreatedAt    time.Time `gorm:"index"`
+}
+
+// BeforeCreate normalises CreatedAt to UTC so that SQLite's string-based
+// timestamp comparisons are consistent regardless of the caller's local timezone.
+func (u *UsageLog) BeforeCreate(tx *gorm.DB) error {
+	if !u.CreatedAt.IsZero() {
+		u.CreatedAt = u.CreatedAt.UTC()
+	}
+	return nil
 }
 
 // Peer 集群中已注册的 s-proxy 节点（sp-1 专用）

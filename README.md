@@ -66,6 +66,9 @@
 | **LLM 故障转移增强（v2.17.0）** | 新增 `llm.retry_on_status` 配置，支持对指定 HTTP 状态码（如 429 配额耗尽）触发 try-next；遍历所有 target 一次，找到可用端点；空列表默认关闭，完全向后兼容；每次重试打印结构化日志（reason=HTTP 429 / connection error）；失败 target 加入 tried 列表防止重复尝试 |
 | **语义路由（v2.18.0）** | 根据请求 messages 语义意图缩窄 LLM 候选池；分类器复用现有 LB（防递归）；规则来自 YAML + DB（DB 优先，热更新）；`sproxy admin route` CLI + REST API `/api/admin/semantic-routes` 管理规则；任何分类失败自动降级到完整候选池；仅对无绑定用户生效；`semantic_router:` 配置段启用 |
 | **WebUI 健康检查运行时同步（v2.19.0）** | 修复通过 WebUI/API 添加目标后健康检查永远不健康的问题；`SyncLLMTargets()` 在每次 Create/Update/Delete/Enable/Disable 后同步 `llmBalancer` 和 `llmHC`；有 `HealthCheckPath` 的新节点以 `Healthy=false` 入场并立即触发单次主动检查（秒级，无需等 30s ticker）；无 `HealthCheckPath` 的节点乐观初始化依赖被动熔断；存量节点的健康/排水状态在 Sync 时完整保留；新增 `lb.UpdateHealthPaths()`、`lb.CheckTarget()`、`proxy.SyncLLMTargets()` |
+| **reportgen PostgreSQL 支持（v2.24.2）** | reportgen 工具支持 SQLite + PostgreSQL 双驱动；PostgreSQL 连接：`-pg-dsn` 或 `-pg-host/-pg-port/-pg-user/-pg-password/-pg-dbname/-pg-sslmode`；SQL 方言自动适配（占位符 `?`→`$N`、日期函数差异）；完全向后兼容 SQLite 工作流 |
+| **reportgen LLM 直连参数（v2.24.3）** | 新增 `-llm-url`、`-llm-key`、`-llm-model` 三个命令行参数；优先于数据库配置，便于本地开发；支持 OpenAI 兼容端点（`/v1/chat/completions`）和 Anthropic native 端点（`/v1/messages`）；连接失败自动降级为纯规则分析 |
+| **SQLite 时区修复（v2.24.4）** | `UsageLog.BeforeCreate` GORM hook 强制 `CreatedAt.UTC()`；`usage_repo.go` 9 个时间过滤方法统一 `toUTC()`；彻底修复非 UTC 系统上 token 统计返回 0 的 Bug；reportgen 查询失败从静默丢弃改为 stderr WARNING |
 
 ---
 

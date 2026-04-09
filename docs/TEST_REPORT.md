@@ -1,7 +1,7 @@
 # PairProxy 测试报告
 
-**生成时间**: 2026-04-08
-**测试版本**: v2.24.3 (Issue #6 修复 + reportgen 容错增强)
+**生成时间**: 2026-04-09
+**测试版本**: v2.24.4 (SQLite 时区修复 + reportgen 错误日志 + 测试覆盖率提升)
 **测试环境**: Windows 11, Go 1.24
 
 ---
@@ -12,7 +12,7 @@
 
 | 测试类型 | 状态 | 测试数 | 通过 | 跳过 | 失败 | 说明 |
 |---------|------|--------|------|------|------|------|
-| 单元测试 (UT) | ✅ PASS | 2,077+ | 2,077+ | 0 | 0 | 含 Issue #6 修复 + 复合约束一致性测试（v2.24.3 +50） |
+| 单元测试 (UT) | ✅ PASS | 2,078+ | 2,078+ | 0 | 0 | 含 SQLite 时区修复 + reportgen 错误日志（v2.24.4） |
 | 子测试 (subtests) | ✅ PASS | 580+ | 580+ | 0 | 0 | t.Run 表驱动子测试 |
 | 集成测试 | ✅ PASS | 8 | 8 | 0 | 0 | integration_by_GLM5_test.go |
 | E2E测试 (httptest) | ✅ PASS | 90+ | 90+ | 0 | 0 | 含 Direct Proxy E2E + 用户流量 + LLM Target |
@@ -56,6 +56,15 @@ go test ./...
 - ✅ github.com/l17728/pairproxy/cmd/mockllm
 - ✅ github.com/l17728/pairproxy/test/e2e
 - ✅ github.com/l17728/pairproxy/test/integration
+
+### reportgen 测试包 (tools/reportgen)
+
+- ✅ github.com/l17728/pairproxy/tools/reportgen（43 个测试）
+
+| 测试文件 | 测试数 | 说明 |
+|---------|--------|------|
+| `integration_test.go` | 17 | SQLite + PostgreSQL 双驱动 QueryKPI/QueryModelDistribution/... |
+| `queries_extra_test.go` | 26 | v2.24.4 新增：14 个原零覆盖查询函数测试 |
 
 ### 关键测试模块
 

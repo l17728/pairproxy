@@ -1,6 +1,6 @@
 # PairProxy 升级指南
 
-> 当前版本：**v2.24.3** | 更新日期：2026-04-08
+> 当前版本：**v2.24.4** | 更新日期：2026-04-09
 
 本文档描述各版本间的升级步骤、数据库 Schema 变更、回滚方法及不兼容变更。
 
@@ -51,6 +51,47 @@
 ---
 
 ## 版本变更记录
+
+### v2.24.4 — SQLite 时区 Bug 修复 + reportgen 错误日志 + 测试覆盖率提升
+
+**数据库 Schema 变更**
+
+无新增 Schema 变更。
+
+**代码修复（无需迁移）**
+
+| 修复 | 说明 |
+|------|------|
+| `UsageLog.BeforeCreate` GORM hook | 所有 UsageLog 写入前强制 `CreatedAt.UTC()`，解决 SQLite 字典序时区比较错误 |
+| `toUTC()` — `usage_repo.go` | 9 个带时间过滤的方法（`Query`、`SumTokens` 等）入口统一转 UTC，确保查询边界与存储格式一致 |
+| `warnQueryErr()` — `generator.go` | 所有查询失败从静默 `_, _` 改为 `WARNING: ...` 输出到 stderr |
+| `loadMaps` Scan 错误 — `queries.go` | 扫描错误从静默丢弃改为 `WARNING:` 日志 + continue |
+| E2E 测试种子数据时区 | `seedTokens`、`TestUserQuotaStatusE2E` 改用 `time.Now().UTC()` |
+
+**升级验证**
+
+```bash
+# 1. 验证时区过滤正确
+sproxy admin report --from 2026-04-01 --to 2026-04-09
+# 期望: 正确的 token 统计数据，而非 0
+
+# 2. 验证 reportgen 查询警告
+./reportgen -db ./pairproxy.db -from 2026-01-01 -to 2026-04-09 2>&1 | grep WARNING
+# 若数据正常，不应看到 WARNING
+
+# 3. 验证所有测试通过
+go test ./...
+cd tools/reportgen && go test ./...
+```
+
+**回滚注意**
+
+降级到 v2.24.3 时：
+- `BeforeCreate` hook 消失后，新写入的 UsageLog 可能以本地时区格式存储
+- 查询时区边界不再归一化，非 UTC 环境下过滤结果可能偏差
+- 数据功能不受影响，仅统计查询受影响
+
+---
 
 ### v2.24.3 — Issue #6 正式关闭 + 复合约束全面修复 + reportgen 容错增强
 

@@ -155,7 +155,7 @@ func (e *e2eEnv) seedTokens(userID string, inputTokens int) {
 		InputTokens: inputTokens,
 		TotalTokens: inputTokens,
 		StatusCode:  200,
-		CreatedAt:   time.Now(),
+		CreatedAt:   time.Now().UTC(),
 	}
 	if err := e.gormDB.Create(&log).Error; err != nil {
 		e.t.Fatalf("seed tokens for %s: %v", userID, err)

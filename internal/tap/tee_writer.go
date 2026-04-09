@@ -76,7 +76,7 @@ func NewTeeResponseWriter(
 			r.DurationMs = time.Since(tw.startTime).Milliseconds()
 		}
 		if r.CreatedAt.IsZero() {
-			r.CreatedAt = time.Now()
+			r.CreatedAt = time.Now().UTC()
 		}
 		usageWriter.Record(r)
 	})
@@ -153,7 +153,7 @@ func (tw *TeeResponseWriter) RecordNonStreaming(body []byte, statusCode int, dur
 	r.IsStreaming = false
 	r.DurationMs = durationMs
 	if r.CreatedAt.IsZero() {
-		r.CreatedAt = time.Now()
+		r.CreatedAt = time.Now().UTC()
 	}
 	tw.writer.Record(r)
 }

@@ -560,3 +560,60 @@ export CPROXY_DATABASE_MAX_OPEN_CONNS=10
    ```bash
    sudo systemctl start pairproxy
    ```
+
+---
+
+## reportgen 部署（tools/reportgen）
+
+reportgen 是一个独立的离线报表工具，无需长期运行，按需执行即可。
+
+### 编译
+
+```bash
+cd tools/reportgen
+go build -o reportgen .
+```
+
+### 基本用法
+
+```bash
+# 生成月报（SQLite）
+./reportgen \
+  -db /var/lib/pairproxy/pairproxy.db \
+  -from 2026-04-01 -to 2026-04-30 \
+  -out /var/reports/april-2026.html
+
+# 生成月报（PostgreSQL）
+./reportgen \
+  -pg-dsn "postgres://pairproxy:pass@db.internal:5432/pairproxy?sslmode=require" \
+  -from 2026-04-01 -to 2026-04-30 \
+  -out /var/reports/april-2026.html
+
+# 使用 LLM 生成 AI 洞察（v2.24.3+）
+./reportgen \
+  -db /var/lib/pairproxy/pairproxy.db \
+  -from 2026-04-01 -to 2026-04-30 \
+  -llm-url http://sproxy.internal:9000 \
+  -llm-key "sk-pp-xxxxxxxx" \
+  -llm-model claude-3-5-haiku-20241022 \
+  -out /var/reports/april-2026.html
+```
+
+### 定时报表（crontab）
+
+```bash
+# 每月1日凌晨2点生成上月报告
+0 2 1 * * /opt/reportgen/reportgen \
+  -db /var/lib/pairproxy/pairproxy.db \
+  -from $(date -d "$(date +%Y-%m-01) -1 month" +%Y-%m-%d) \
+  -to $(date -d "$(date +%Y-%m-01) -1 day" +%Y-%m-%d) \
+  -out /var/reports/$(date -d "$(date +%Y-%m-01) -1 month" +%Y-%m).html \
+  >> /var/log/reportgen.log 2>&1
+```
+
+### 容错说明
+
+- **LLM 连接失败**：自动降级为纯规则分析，仍可生成有意义报告
+- **查询失败**：`WARNING: <QueryName> failed: <err>` 到 stderr，不中断报告生成
+- **无数据**：自动生成 "暂无数据" 提示，不产生空白或错误页面
+- **模板缺失**：使用内置最小模板保证输出可用

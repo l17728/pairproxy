@@ -324,12 +324,12 @@ func (q *Querier) QueryModelTokenBoxPlots(from, to time.Time, column string) ([]
 	}
 
 	// Get distinct models
-	mrows, err := q.db.Query(`
+	mrows, err := q.db.Query(q.rebind(`
 		SELECT DISTINCT model FROM usage_logs
 		WHERE created_at >= ? AND created_at < ?
 		  AND model IS NOT NULL AND model != ''
 		ORDER BY model
-	`, from, to)
+	`), from, to)
 	if err != nil {
 		return nil, fmt.Errorf("query models: %w", err)
 	}
@@ -346,13 +346,13 @@ func (q *Querier) QueryModelTokenBoxPlots(from, to time.Time, column string) ([]
 	var result []TokenBoxPlotRow
 	for _, model := range models {
 		// Fetch all values for this model (sorted for percentile computation)
-		vrows, err := q.db.Query(fmt.Sprintf(`
+		vrows, err := q.db.Query(q.rebind(fmt.Sprintf(`
 			SELECT %s FROM usage_logs
 			WHERE created_at >= ? AND created_at < ?
 			  AND model = ?
 			  AND %s IS NOT NULL AND %s > 0
 			ORDER BY %s
-		`, column, column, column, column), from, to, model)
+		`, column, column, column, column)), from, to, model)
 		if err != nil {
 			continue
 		}

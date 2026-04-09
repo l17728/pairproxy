@@ -21,13 +21,32 @@ internal/
 │   ├── handler.go
 │   └── handler_test.go
 └── ...
+
+tools/reportgen/
+├── queries.go
+├── integration_test.go    # SQLite + PostgreSQL 双驱动集成测试
+└── queries_extra_test.go  # 26 个查询函数覆盖测试（v2.24.4 新增）
 ```
 
 ## Running Tests
 
-### All Tests
+### All Tests (主模块)
 ```bash
 go test ./...
+```
+
+### reportgen 测试（tools/reportgen）
+```bash
+cd tools/reportgen
+go test ./...
+# 输出: ok  github.com/l17728/pairproxy/tools/reportgen  (43 个测试)
+```
+
+### 运行特定 reportgen 测试
+```bash
+cd tools/reportgen
+go test -v -run TestQueryTopUsers
+go test -v -run TestIntegration_QueryKPI_SQLite
 ```
 
 ### Specific Package

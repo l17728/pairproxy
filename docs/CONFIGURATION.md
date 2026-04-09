@@ -458,3 +458,72 @@ pairproxy validate-config
 # Review changes
 diff cproxy.yaml.backup cproxy.yaml
 ```
+
+---
+
+## reportgen 工具参数（tools/reportgen）
+
+reportgen 是独立的报表生成工具，通过命令行参数配置，不使用 YAML 配置文件。
+
+### 基本参数
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `-db <path>` | — | SQLite 数据库文件路径（与 `-pg-dsn` 二选一） |
+| `-from <date>` | — | 报告开始日期（`YYYY-MM-DD`） |
+| `-to <date>` | — | 报告结束日期（`YYYY-MM-DD`） |
+| `-out <file>` | `report.html` | 输出 HTML 文件路径 |
+| `-top <n>` | `10` | Top N 用户数量 |
+
+### PostgreSQL 参数（v2.24.2+）
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `-pg-dsn <dsn>` | — | PostgreSQL DSN（如 `postgres://user:pass@host:5432/dbname`） |
+| `-pg-host <host>` | `localhost` | PostgreSQL 主机 |
+| `-pg-port <port>` | `5432` | PostgreSQL 端口 |
+| `-pg-user <user>` | — | PostgreSQL 用户名 |
+| `-pg-password <pw>` | — | PostgreSQL 密码 |
+| `-pg-dbname <db>` | — | PostgreSQL 数据库名 |
+| `-pg-sslmode <mode>` | `disable` | SSL 模式（`disable`/`require`/`verify-full`） |
+
+### LLM 参数（v2.24.3+）
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `-llm-url <url>` | — | LLM 端点 URL（如 `http://localhost:9000`），优先于数据库配置 |
+| `-llm-key <key>` | — | LLM API Key（Bearer token） |
+| `-llm-model <model>` | `gpt-4o-mini` | LLM 模型名 |
+
+### 用法示例
+
+```bash
+# SQLite 数据库 + 不使用 LLM（纯规则分析）
+./reportgen -db ./pairproxy.db -from 2026-01-01 -to 2026-04-01
+
+# SQLite + LLM 直连（跳过数据库中的 LLM 配置）
+./reportgen -db ./pairproxy.db \
+  -from 2026-03-01 -to 2026-04-01 \
+  -llm-url http://localhost:9000 \
+  -llm-key "sk-pp-xxxxxxxx" \
+  -llm-model claude-3-5-haiku-20241022
+
+# PostgreSQL 数据库（DSN 方式）
+./reportgen \
+  -pg-dsn "postgres://pairproxy:pass@db.example.com:5432/pairproxy?sslmode=require" \
+  -from 2026-04-01 -to 2026-04-09
+
+# PostgreSQL 数据库（独立字段方式）
+./reportgen \
+  -pg-host db.example.com -pg-port 5432 \
+  -pg-user pairproxy -pg-password secret \
+  -pg-dbname pairproxy -pg-sslmode require \
+  -from 2026-04-01 -to 2026-04-09 \
+  -llm-url http://llm.example.com -llm-key "sk-pp-xxxxxxxx"
+```
+
+### 容错行为
+
+- **LLM 连接失败**：自动降级为纯规则分析，生成不含 AI 洞察的报告
+- **查询失败**：输出 `WARNING: <QueryName> failed: <err>` 到 stderr，跳过该数据块继续渲染
+- **模板缺失**：自动使用内置最小模板

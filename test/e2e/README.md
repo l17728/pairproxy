@@ -11,6 +11,7 @@ go test -v ./test/e2e/...
 # 运行特定测试
 go test -v ./test/e2e/f10_features_e2e_test.go
 go test -v ./test/e2e/openai_compat_e2e_test.go
+go test -v ./test/e2e/group_target_set_e2e_test.go
 ```
 
 **特点**:
@@ -18,6 +19,28 @@ go test -v ./test/e2e/openai_compat_e2e_test.go
 - ✅ 稳定（无端口冲突）
 - ✅ 易于调试（可以打断点）
 - ✅ CI/CD 友好
+
+### 测试文件清单
+
+| 文件 | 主要覆盖范围 |
+|------|-------------|
+| `sproxy_e2e_test.go` | sproxy 核心认证、配额、token 统计 |
+| `cproxy_e2e_test.go` | cproxy 透明代理、JWT 注入 |
+| `fullchain_e2e_test.go` | 完整链路（cproxy→sproxy→mockllm）非流式 + 流式 |
+| `openai_compat_e2e_test.go` | OpenAI 兼容层（/v1/chat/completions）|
+| `direct_proxy_e2e_test.go` | sk-pp- API Key 直连模式 |
+| `user_traffic_e2e_test.go` | 用户流量统计、每日 token 累计 |
+| `llm_target_management_e2e_test.go` | LLM Target 增删改查、权重更新 |
+| `llm_reliability_e2e_test.go` | LLM 故障转移、retry_on_status |
+| `f10_features_e2e_test.go` | F-10 功能（趋势图、用户自助页面）|
+| `quota_enforcement_e2e_test.go` | 配额强制执行、429 返回 |
+| `cluster_multinode_e2e_test.go` | 多节点集群、ConfigSyncer |
+| `availability_e2e_test.go` | 健康检查、熔断、可用性 |
+| `cproxy_failover_e2e_test.go` | cproxy 故障转移 |
+| `drain_lb_e2e_test.go` | LB 排水（drain）测试 |
+| `track_e2e_test.go` | 对话追踪（track）功能 |
+| `group_target_set_e2e_test.go` | 分组目标集绑定、多 target set 管理 |
+| `fullchain_with_processes_test.go` | 进程级完整链路测试（手动/CI 专用）|
 
 ---
 

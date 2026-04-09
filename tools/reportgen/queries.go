@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"math"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -35,6 +36,22 @@ func NewQuerier(driver, dsn string) (*Querier, error) {
 	default:
 		driverName = "sqlite"
 		driver = "sqlite"
+	}
+
+	// PostgreSQL: inject TimeZone=UTC into DSN so all connections use UTC,
+	// ensuring date-group expressions match the UTC timestamps in the database.
+	if driver == "postgres" {
+		if !strings.Contains(dsn, "TimeZone") {
+			if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
+				sep := "?"
+				if strings.Contains(dsn, "?") {
+					sep = "&"
+				}
+				dsn = dsn + sep + "TimeZone=UTC"
+			} else {
+				dsn = dsn + " TimeZone=UTC"
+			}
+		}
 	}
 
 	db, err := sql.Open(driverName, dsn)
@@ -109,7 +126,7 @@ func (q *Querier) sqlYearMonth(col string) string {
 // sqlCurrentDate returns a SQL expression for the current date (driver-specific).
 func (q *Querier) sqlCurrentDate() string {
 	if q.driver == "postgres" {
-		return "CURRENT_DATE"
+		return "TO_CHAR(CURRENT_DATE, 'YYYY-MM-DD')"
 	}
 	return "DATE('now')"
 }
@@ -159,6 +176,7 @@ func (q *Querier) loadMaps() error {
 	for grows.Next() {
 		var id, name string
 		if err := grows.Scan(&id, &name); err != nil {
+			fmt.Fprintf(os.Stderr, "WARNING: loadMaps scan group row: %v\n", err)
 			continue
 		}
 		q.groupNameMap[id] = name
@@ -174,6 +192,7 @@ func (q *Querier) loadMaps() error {
 		var id, username string
 		var gid sql.NullString
 		if err := urows.Scan(&id, &username, &gid); err != nil {
+			fmt.Fprintf(os.Stderr, "WARNING: loadMaps scan user row: %v\n", err)
 			continue
 		}
 		q.userMap[id] = username
@@ -201,7 +220,7 @@ func (q *Querier) groupName(uid string) string {
 // CountRegisteredUsers returns the number of active registered users.
 func (q *Querier) CountRegisteredUsers() int {
 	var n int
-	row := q.db.QueryRow("SELECT COUNT(*) FROM users WHERE is_active = 1")
+	row := q.db.QueryRow("SELECT COUNT(*) FROM users WHERE is_active = TRUE")
 	if err := row.Scan(&n); err != nil {
 		return 0
 	}
@@ -226,7 +245,7 @@ func (q *Querier) QueryKPI(from, to time.Time) (KPIData, error) {
 			COUNT(DISTINCT user_id)                      AS active_users,
 			COALESCE(SUM(CASE WHEN status_code NOT IN (200,201,204) THEN 1 ELSE 0 END), 0) AS error_count,
 			COALESCE(AVG(CASE WHEN status_code IN (200,201,204) THEN duration_ms END), 0) AS avg_latency,
-			COALESCE(SUM(CASE WHEN is_streaming = 1 THEN 1 ELSE 0 END), 0) AS stream_cnt
+			COALESCE(SUM(CASE WHEN is_streaming = TRUE THEN 1 ELSE 0 END), 0) AS stream_cnt
 		FROM usage_logs
 		WHERE created_at >= ? AND created_at < ?`, from, to)
 
@@ -383,7 +402,7 @@ func (q *Querier) QueryTopUsers(from, to time.Time, orderBy string, limit int) (
 		orderExpr = "SUM(ul.total_tokens) DESC"
 	}
 
-	query := fmt.Sprintf(`
+	query := q.rebind(fmt.Sprintf(`
 		SELECT
 			ul.user_id,
 			COALESCE(SUM(ul.total_tokens),0) AS total_t,
@@ -395,7 +414,7 @@ func (q *Querier) QueryTopUsers(from, to time.Time, orderBy string, limit int) (
 		WHERE ul.created_at >= ? AND ul.created_at < ?
 		GROUP BY ul.user_id
 		ORDER BY %s
-		LIMIT ?`, orderExpr)
+		LIMIT ?`, orderExpr))
 
 	rows, err := q.db.Query(query, from, to, limit)
 	if err != nil {
@@ -483,7 +502,7 @@ func (q *Querier) QueryGroupComparison(from, to time.Time) ([]GroupRow, error) {
 			COALESCE(SUM(ul.output_tokens),0),
 			COUNT(DISTINCT ul.user_id)          AS active_users
 		FROM usage_logs ul
-		JOIN users u ON u.id = ul.user_id
+		JOIN users u ON CAST(u.id AS TEXT) = ul.user_id
 		WHERE ul.created_at >= ? AND ul.created_at < ?
 		GROUP BY u.group_id`, from, to)
 	if err != nil {
@@ -501,7 +520,7 @@ func (q *Querier) QueryGroupComparison(from, to time.Time) ([]GroupRow, error) {
 		r.GroupName = q.groupNameMap[r.GroupID]
 		// Count total users in group
 		var cnt int
-		_ = q.queryRow("SELECT COUNT(*) FROM users WHERE group_id = ? AND is_active = 1", r.GroupID).Scan(&cnt)
+		_ = q.queryRow("SELECT COUNT(*) FROM users WHERE group_id = ? AND is_active = TRUE", r.GroupID).Scan(&cnt)
 		r.Users = cnt
 		result = append(result, r)
 	}
@@ -557,7 +576,7 @@ func (q *Querier) QueryStatusCodeDist(from, to time.Time) ([]StatusCodeRow, erro
 		FROM usage_logs
 		WHERE created_at >= ? AND created_at < ?
 		GROUP BY status_code
-		ORDER BY cnt DESC`, from, to)
+		ORDER BY cnt DESC, status_code ASC`, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("query status codes: %w", err)
 	}
@@ -619,10 +638,10 @@ func (q *Querier) QueryStreamingRatio(from, to time.Time) (StreamingRatioData, e
 	var s StreamingRatioData
 	row := q.queryRow(`
 		SELECT
-			COALESCE(SUM(CASE WHEN is_streaming = 1 THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN is_streaming = 0 OR is_streaming IS NULL THEN 1 ELSE 0 END), 0),
-			COALESCE(AVG(CASE WHEN is_streaming = 1 AND status_code IN (200,201,204) THEN duration_ms END),0),
-			COALESCE(AVG(CASE WHEN (is_streaming = 0 OR is_streaming IS NULL) AND status_code IN (200,201,204) THEN duration_ms END),0)
+			COALESCE(SUM(CASE WHEN is_streaming = TRUE THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN is_streaming = FALSE OR is_streaming IS NULL THEN 1 ELSE 0 END), 0),
+			COALESCE(AVG(CASE WHEN is_streaming = TRUE AND status_code IN (200,201,204) THEN duration_ms END),0),
+			COALESCE(AVG(CASE WHEN (is_streaming = FALSE OR is_streaming IS NULL) AND status_code IN (200,201,204) THEN duration_ms END),0)
 		FROM usage_logs
 		WHERE created_at >= ? AND created_at < ?`, from, to)
 
@@ -728,7 +747,7 @@ func (q *Querier) QueryEngagement(from, to time.Time, registeredUsers int) (Enga
 	// New users this period
 	_ = q.queryRow(`
 		SELECT COUNT(*) FROM users
-		WHERE created_at >= ? AND created_at < ? AND is_active = 1`, from, to).Scan(&e.NewUsersThisPeriod)
+		WHERE created_at >= ? AND created_at < ? AND is_active = TRUE`, from, to).Scan(&e.NewUsersThisPeriod)
 
 	return e, nil
 }

@@ -277,7 +277,7 @@ func TestUserQuotaStatusE2E(t *testing.T) {
 	})
 
 	// Insert usage data for today
-	now := time.Now()
+	now := time.Now().UTC()
 	if err := gormDB.Create(&db.UsageLog{
 		RequestID:    "req-today-1",
 		UserID:       "user1",

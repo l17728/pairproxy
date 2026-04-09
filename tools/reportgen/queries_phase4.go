@@ -104,10 +104,10 @@ func (q *Querier) QueryQuotaUsage(from, to time.Time) ([]QuotaUsageRow, error) {
 			COALESCE(SUM(CASE WHEN %s = %s THEN ul.total_tokens ELSE 0 END), 0) AS daily_used,
 			COALESCE(SUM(CASE WHEN %s = %s THEN ul.total_tokens ELSE 0 END), 0) AS monthly_used
 		FROM users u
-		LEFT JOIN usage_logs ul ON u.id = ul.user_id AND ul.created_at >= ? AND ul.created_at < ?
-		WHERE u.is_active = 1
-		GROUP BY u.id
-		ORDER BY monthly_used DESC
+		LEFT JOIN usage_logs ul ON CAST(u.id AS TEXT) = ul.user_id AND ul.created_at >= ? AND ul.created_at < ?
+		WHERE u.is_active = TRUE
+		GROUP BY u.id, u.username, u.daily_limit, u.monthly_limit
+		ORDER BY monthly_used DESC, u.username ASC
 	`, q.sqlDate("ul.created_at"), q.sqlCurrentDate(),
 		q.sqlYearMonth("ul.created_at"), q.sqlCurrentYearMonth()), from, to)
 	if err != nil {
@@ -228,9 +228,9 @@ func (q *Querier) QueryGroupTokenDistribution(from, to time.Time) ([]GroupTokenD
 		SELECT g.id, g.name, u.id, SUM(ul.total_tokens) as total
 		FROM users u
 		LEFT JOIN groups g ON u.group_id = g.id
-		LEFT JOIN usage_logs ul ON u.id = ul.user_id AND ul.created_at >= ? AND ul.created_at < ?
-		WHERE u.is_active = 1
-		GROUP BY g.id, u.id
+		LEFT JOIN usage_logs ul ON CAST(u.id AS TEXT) = ul.user_id AND ul.created_at >= ? AND ul.created_at < ?
+		WHERE u.is_active = TRUE
+		GROUP BY g.id, g.name, u.id
 		ORDER BY g.id, total DESC
 	`, from, to)
 	if err != nil {
