@@ -2,6 +2,7 @@ package lb
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"strconv"
 	"sync"
@@ -13,10 +14,11 @@ import (
 )
 
 const (
-	defaultFailThreshold = 3            // 连续失败次数阈值
-	defaultCheckInterval = 30 * time.Second
-	defaultCheckTimeout  = 5 * time.Second
-	defaultHealthPath    = "/health"
+	defaultFailThreshold  = 3            // 连续失败次数阈值
+	defaultCheckInterval  = 30 * time.Second
+	defaultCheckTimeout   = 5 * time.Second
+	defaultHealthPath     = "/health"
+	defaultProbeCacheTTL  = 2 * time.Hour // 探活策略缓存有效期
 )
 
 // TargetCredential 健康检查认证凭证（按 provider 类型注入不同认证头）。
@@ -28,6 +30,8 @@ type TargetCredential struct {
 // HealthChecker 对 Balancer 中的目标节点进行主动健康检查。
 //
 // 主动检查：每隔 interval 对每个节点发 GET /health（或自定义路径），200 视为健康。
+// 智能探活：未配置 health_check_path 的 target 自动尝试多种探活策略（/health、
+//   /v1/models、/v1/messages 等），找到有效策略后缓存，后续直接复用。
 // 认证支持：支持 Bearer 认证（OpenAI/OpenAI-compatible）和 x-api-key 认证（Anthropic）。
 // 被动熔断：调用方通过 RecordSuccess/RecordFailure 上报结果，
 // 连续 failThreshold 次失败后将节点标记为不健康。
@@ -42,13 +46,19 @@ type HealthChecker struct {
 	failThreshold int
 	notifier      *alert.Notifier // 可选，nil 时不发告警
 	recoveryDelay time.Duration   // 0=禁用自动恢复；>0=熔断后自动恢复延迟
-	healthPaths   map[string]string // targetID → health check path（空=跳过主动检查）
-	credentials   map[string]TargetCredential // targetID → credential（用于主动健康检查认证）
+	healthPaths   map[string]string              // targetID → 用户显式配置的 health check path
+	credentials   map[string]TargetCredential    // targetID → credential（用于主动健康检查认证）
+	providers     map[string]string              // targetID → provider（用于探活策略选择）
+
+	// 智能探活：对未配置 health_check_path 的 target 自动发现有效探活策略
+	prober     *Prober
+	probeCache *ProbeCache
 
 	mu       sync.Mutex
 	failures map[string]int // 连续失败计数
 
-	wg sync.WaitGroup // tracks in-flight check goroutines
+	wg     sync.WaitGroup  // tracks in-flight check goroutines
+	stopCh chan struct{}    // closed when Start's ctx is cancelled; signals recovery goroutines to exit
 }
 
 // Wait blocks until all in-flight health check goroutines have finished.
@@ -68,6 +78,7 @@ func WithTimeout(d time.Duration) HealthCheckerOption {
 	return func(h *HealthChecker) {
 		h.timeout = d
 		h.client = &http.Client{Timeout: d}
+		h.prober = NewProber(d, h.logger)
 	}
 }
 
@@ -84,6 +95,8 @@ func WithHealthPath(p string) HealthCheckerOption {
 // WithRecoveryDelay 设置熔断后自动恢复延迟（默认 0=禁用）。
 // 当节点被标记为不健康后，经过 d 时长会自动重置为健康（半开状态）；
 // 若下次真实请求依然失败，节点会再次进入不健康状态。
+// 注意：recoveryDelay goroutine 依赖 Start() 关闭的 stopCh 信号来感知关闭；
+// 若仅使用被动熔断（不调用 Start），应将 recoveryDelay 设为 0（默认值）。
 func WithRecoveryDelay(d time.Duration) HealthCheckerOption {
 	return func(h *HealthChecker) { h.recoveryDelay = d }
 }
@@ -114,9 +127,10 @@ func WithCredentials(creds map[string]TargetCredential) HealthCheckerOption {
 
 // NewHealthChecker 创建并返回 HealthChecker。
 func NewHealthChecker(balancer Balancer, logger *zap.Logger, opts ...HealthCheckerOption) *HealthChecker {
+	named := logger.Named("health_checker")
 	hc := &HealthChecker{
 		balancer:      balancer,
-		logger:        logger.Named("health_checker"),
+		logger:        named,
 		interval:      defaultCheckInterval,
 		timeout:       defaultCheckTimeout,
 		healthPath:    defaultHealthPath,
@@ -125,6 +139,10 @@ func NewHealthChecker(balancer Balancer, logger *zap.Logger, opts ...HealthCheck
 		client:        &http.Client{Timeout: defaultCheckTimeout},
 		healthPaths:   make(map[string]string),
 		credentials:   make(map[string]TargetCredential),
+		providers:     make(map[string]string),
+		prober:        NewProber(defaultCheckTimeout, named),
+		probeCache:    NewProbeCache(defaultProbeCacheTTL),
+		stopCh:        make(chan struct{}),
 	}
 	for _, opt := range opts {
 		opt(hc)
@@ -140,9 +158,16 @@ func (hc *HealthChecker) SetNotifier(n *alert.Notifier) {
 
 // UpdateHealthPaths 在运行时原子替换 healthPaths 映射（targetID → health check path）。
 // 供目标列表变更（增删启停）时调用，无需重启进程。
+// 配置变更时同时清理失去显式路径的 target 的探活缓存，强制重新探活。
 func (hc *HealthChecker) UpdateHealthPaths(paths map[string]string) {
 	hc.mu.Lock()
 	defer hc.mu.Unlock()
+	// 失去显式路径的 target 将重新走智能探活；清理旧缓存避免用到过期策略
+	for id := range hc.healthPaths {
+		if _, stillExplicit := paths[id]; !stillExplicit {
+			hc.probeCache.invalidate(id)
+		}
+	}
 	hc.healthPaths = make(map[string]string, len(paths))
 	for k, v := range paths {
 		hc.healthPaths[k] = v
@@ -151,12 +176,30 @@ func (hc *HealthChecker) UpdateHealthPaths(paths map[string]string) {
 
 // UpdateCredentials 在运行时原子替换 credentials 映射（targetID → TargetCredential）。
 // 供目标列表变更（增删启停）时调用，无需重启进程。
+// 同时将 provider 信息同步到 providers map，供智能探活策略选择使用。
+// 配置变更时同时清理相关 target 的探活缓存，强制重新探测。
 func (hc *HealthChecker) UpdateCredentials(creds map[string]TargetCredential) {
 	hc.mu.Lock()
 	defer hc.mu.Unlock()
+
+	// 找出新旧 map 中有差异的 targetID（新增、删除、key 变更），清理其探活缓存
+	for id, oldCred := range hc.credentials {
+		newCred, exists := creds[id]
+		if !exists || newCred.APIKey != oldCred.APIKey || newCred.Provider != oldCred.Provider {
+			hc.probeCache.invalidate(id)
+		}
+	}
+	for id := range creds {
+		if _, exists := hc.credentials[id]; !exists {
+			hc.probeCache.invalidate(id) // 新 target：清理（以防万一）
+		}
+	}
+
 	hc.credentials = make(map[string]TargetCredential, len(creds))
+	hc.providers = make(map[string]string, len(creds))
 	for k, v := range creds {
 		hc.credentials[k] = v
+		hc.providers[k] = v.Provider
 	}
 	hc.logger.Info("credentials updated",
 		zap.Int("count", len(creds)),
@@ -165,20 +208,19 @@ func (hc *HealthChecker) UpdateCredentials(creds map[string]TargetCredential) {
 
 // Start 启动主动健康检查循环。
 // 调用方应在完成后通过取消 ctx 来停止循环，然后调用 Wait 等待所有 goroutine 完成。
-//
-// CRITICAL: hc.wg.Add(1) must be called here to track the main loop goroutine itself.
-// WaitGroup must account for ALL long-lived goroutines (main loop + child workers),
-// not just child workers. Failing to track the main loop causes data races in tests
-// when Wait() is called before the loop exits.
-// See: memory/concurrency_waitgroup_patterns.md
+// 每次调用 Start 会重置 stopCh，使本次循环启动的 recoveryDelay goroutine 可以感知关闭信号。
+// 不支持同时调用多次 Start（每次 Start 必须等待上一次停止后再调用）。
 func (hc *HealthChecker) Start(ctx context.Context) {
+	// 每次启动重新创建 stopCh，避免多次 Start 导致 close 已关闭 channel 的 panic。
+	hc.stopCh = make(chan struct{})
 	hc.wg.Add(1)
 	go hc.loop(ctx)
 }
 
 // CheckTarget 立即对指定 target 发起一次主动健康检查（异步，不阻塞调用方）。
 // 供新 target 加入时立即验证，无需等待下一个 ticker 周期（最长 30s）。
-// 若 target 不在 balancer 中或无对应 health path，则不做任何事。
+// 若 target 不在 balancer 中，则不做任何事。
+// 优先使用用户显式配置的 health_check_path；否则走智能探活。
 func (hc *HealthChecker) CheckTarget(id string) {
 	targets := hc.balancer.Targets()
 
@@ -187,28 +229,36 @@ func (hc *HealthChecker) CheckTarget(id string) {
 	for k, v := range hc.healthPaths {
 		paths[k] = v
 	}
+	creds := make(map[string]TargetCredential, len(hc.credentials))
+	for k, v := range hc.credentials {
+		creds[k] = v
+	}
+	providers := make(map[string]string, len(hc.providers))
+	for k, v := range hc.providers {
+		providers[k] = v
+	}
 	hc.mu.Unlock()
 
 	for _, t := range targets {
 		if t.ID != id {
 			continue
 		}
-		if len(paths) > 0 {
-			path, ok := paths[id]
-			if !ok || path == "" {
-				return // 该 target 无主动检查路径
-			}
+		cred := creds[id]
+		provider := providers[id]
+		explicitPath, hasExplicit := paths[id]
+
+		if hasExplicit && explicitPath != "" {
 			hc.wg.Add(1)
-			go func(tgt Target, p string) {
+			go func(tgt Target, p string, c TargetCredential) {
 				defer hc.wg.Done()
-				hc.checkOneWithPath(tgt, p)
-			}(t, path)
+				hc.checkOneExplicit(tgt, p, &c)
+			}(t, explicitPath, cred)
 		} else {
 			hc.wg.Add(1)
-			go func(tgt Target) {
+			go func(tgt Target, c TargetCredential, prov string) {
 				defer hc.wg.Done()
-				hc.checkOne(tgt)
-			}(t)
+				hc.checkOneSmart(tgt, &c, prov)
+			}(t, cred, provider)
 		}
 		return
 	}
@@ -219,6 +269,8 @@ func (hc *HealthChecker) loop(ctx context.Context) {
 	// This ensures the WaitGroup counter is decremented when the loop exits,
 	// allowing Wait() to return when all goroutines (main loop + children) are complete.
 	defer hc.wg.Done()
+	// Signal recovery goroutines to stop when the loop exits.
+	defer close(hc.stopCh)
 
 	ticker := time.NewTicker(hc.interval)
 	defer ticker.Stop()
@@ -239,38 +291,154 @@ func (hc *HealthChecker) loop(ctx context.Context) {
 func (hc *HealthChecker) checkAll() {
 	targets := hc.balancer.Targets()
 
-	// 持有锁期间拷贝 healthPaths，避免在 checkOneWithPath 期间持锁
+	// 持有锁期间拷贝 healthPaths/credentials/providers/healthPath，避免在检查期间持锁
 	hc.mu.Lock()
 	paths := make(map[string]string, len(hc.healthPaths))
 	for k, v := range hc.healthPaths {
 		paths[k] = v
 	}
+	creds := make(map[string]TargetCredential, len(hc.credentials))
+	for k, v := range hc.credentials {
+		creds[k] = v
+	}
+	providers := make(map[string]string, len(hc.providers))
+	for k, v := range hc.providers {
+		providers[k] = v
+	}
+	globalHealthPath := hc.healthPath // 在锁内拷贝，避免并发写入时的数据竞争
 	hc.mu.Unlock()
 
 	for _, t := range targets {
-		// 若 healthPaths 非空，仅检查其中有路径的 target
-		if len(paths) > 0 {
-			path, ok := paths[t.ID]
-			if !ok || path == "" {
-				continue // 无主动检查路径，依赖被动熔断
-			}
+		explicitPath, hasExplicit := paths[t.ID]
+		// WithHealthPath 设置的全局路径（非默认值）也视为显式配置
+		if !hasExplicit && globalHealthPath != "" && globalHealthPath != defaultHealthPath {
+			explicitPath = globalHealthPath
+			hasExplicit = true
+		}
+		cred := creds[t.ID]
+		provider := providers[t.ID]
+
+		if hasExplicit && explicitPath != "" {
+			// 用户显式配置了 health_check_path：直接使用，不走自动探测
 			hc.wg.Add(1)
-			go func(tgt Target, p string) {
+			go func(tgt Target, p string, c TargetCredential) {
 				defer hc.wg.Done()
-				hc.checkOneWithPath(tgt, p)
-			}(t, path)
+				hc.checkOneExplicit(tgt, p, &c)
+			}(t, explicitPath, cred)
 		} else {
+			// 无显式路径：走智能探活（缓存优先，缓存未命中则 discover）
 			hc.wg.Add(1)
-			go func(tgt Target) {
+			go func(tgt Target, c TargetCredential, prov string) {
 				defer hc.wg.Done()
-				hc.checkOne(tgt)
-			}(t)
+				hc.checkOneSmart(tgt, &c, prov)
+			}(t, cred, provider)
 		}
 	}
 }
 
-func (hc *HealthChecker) checkOne(t Target) {
-	hc.checkOneWithPath(t, hc.healthPath)
+// checkOneExplicit 使用用户显式配置的路径执行健康检查（注入认证）。
+func (hc *HealthChecker) checkOneExplicit(t Target, healthPath string, cred *TargetCredential) {
+	if cred == nil {
+		// 从 credentials 取
+		hc.mu.Lock()
+		c, ok := hc.credentials[t.ID]
+		hc.mu.Unlock()
+		if ok {
+			cred = &c
+		}
+	}
+	hc.checkOneWithPath(t, healthPath, cred)
+}
+
+// checkOneSmart 智能探活：优先使用缓存策略，缓存未命中则自动 discover。
+func (hc *HealthChecker) checkOneSmart(t Target, cred *TargetCredential, provider string) {
+	// 1. 查缓存
+	entry := hc.probeCache.get(t.ID)
+	if entry != nil {
+		if entry.method == nil {
+			// 遗留的 nil-method 缓存条目（旧版本写入）：
+			// 当前版本不再写入此类条目；若缓存中存在，清除后重新 Discover。
+			hc.probeCache.invalidate(t.ID)
+		} else {
+			// 缓存命中：直接用已知策略
+			hasCredential := cred != nil && cred.APIKey != ""
+			checkCtx, checkCancel := context.WithTimeout(context.Background(), hc.timeout)
+			result := hc.prober.CheckWithMethod(checkCtx, t.Addr, t.ID, entry.method, cred)
+			checkCancel() // 立即释放 timer，不用 defer（函数此后有多条路径，defer 会延迟释放）
+			if result.okWithAuth(hasCredential) {
+				hc.logger.Debug("health check ok", zap.String("target", t.ID))
+				hc.recordSuccess(t.ID)
+			} else if result.definitivelyUnhealthy() {
+				hc.logger.Debug("health check failed (connection error)",
+					zap.String("target", t.ID),
+					zap.Error(result.err),
+				)
+				hc.probeCache.invalidate(t.ID)
+				hc.recordFailure(t.ID)
+			} else {
+				// 非 ok 的 HTTP 状态：key 失效或路径变更，清缓存重新 discover
+				hc.logger.Debug("health check non-ok status",
+					zap.String("target", t.ID),
+					zap.Int("status", result.status),
+				)
+				hc.probeCache.invalidate(t.ID)
+				hc.recordFailure(t.ID)
+			}
+			return
+		}
+	}
+
+	// 2. 缓存未命中（或 unreachable 被清除）：自动发现有效策略
+	hc.logger.Info("smart probe: discovering health check method for target",
+		zap.String("target", t.ID),
+		zap.String("addr", t.Addr),
+		zap.String("provider", provider),
+	)
+
+	// 给 discover 足够的时间：每个策略 1 个 timeout
+	methods := selectMethods(provider) // 按 provider 过滤后的策略列表
+	discoverTimeout := hc.timeout * time.Duration(len(methods)+1)
+	ctx, cancel := context.WithTimeout(context.Background(), discoverTimeout)
+	found, unreachable := hc.prober.Discover(ctx, t.Addr, t.ID, provider, cred)
+	cancel() // 立即释放 timer（Discover 已返回，ctx 不再使用）
+
+	if unreachable {
+		// 连接层失败（拒绝连接/超时）：服务不可达
+		// 不缓存 unreachable 标记——下次心跳直接重试 Discover，
+		// 避免 2h TTL 内服务恢复后仍无法被重新探活（死锁）。
+		hc.recordFailure(t.ID)
+		return
+	}
+
+	if found == nil {
+		// 服务有 HTTP 响应但所有路径均不匹配（如全部 5xx）——
+		// 不缓存此结果：与 unreachable 一样，每次心跳重试 Discover，
+		// 以便服务路径恢复后（5xx→200）能及时被重新探活。
+		hc.logger.Warn("smart probe: no suitable health check method found, recording failure",
+			zap.String("target", t.ID),
+			zap.String("provider", provider),
+		)
+		hc.recordFailure(t.ID)
+		return
+	}
+
+	// 找到有效策略：写入缓存，然后用该策略执行一次实际健康检查
+	hc.probeCache.set(t.ID, found)
+	// 注意：Discover 阶段 401/403 视为"端点存在"，但心跳阶段需用真实凭证判断
+	hasCredential := cred != nil && cred.APIKey != ""
+	checkCtx, checkCancel := context.WithTimeout(context.Background(), hc.timeout)
+	result := hc.prober.CheckWithMethod(checkCtx, t.Addr, t.ID, found, cred)
+	checkCancel() // 立即释放 timer
+	if result.okWithAuth(hasCredential) {
+		hc.logger.Debug("smart probe: initial health check ok after discovery", zap.String("target", t.ID))
+		hc.recordSuccess(t.ID)
+	} else {
+		hc.logger.Debug("smart probe: initial health check failed after discovery",
+			zap.String("target", t.ID),
+			zap.Int("status", result.status),
+		)
+		hc.recordFailure(t.ID)
+	}
 }
 
 // injectAuth 根据 provider 类型将认证信息注入 HTTP 请求。
@@ -285,16 +453,11 @@ func (hc *HealthChecker) injectAuth(req *http.Request, targetID string) {
 		hc.logger.Debug("no credential for target", zap.String("target", targetID))
 		return
 	}
-
+	injectCredential(req, &cred)
 	switch cred.Provider {
 	case "anthropic":
-		// Anthropic 使用 x-api-key 而非标准 Bearer，且需要 anthropic-version 版本头
-		req.Header.Set("x-api-key", cred.APIKey)
-		req.Header.Set("anthropic-version", "2023-06-01")
 		hc.logger.Debug("injected Anthropic auth", zap.String("target", targetID))
 	default:
-		// OpenAI、OpenAI-compatible（DashScope、Ark 等）、ollama、空字符串等
-		req.Header.Set("Authorization", "Bearer "+cred.APIKey)
 		hc.logger.Debug("injected Bearer auth",
 			zap.String("target", targetID),
 			zap.String("provider", cred.Provider),
@@ -302,8 +465,8 @@ func (hc *HealthChecker) injectAuth(req *http.Request, targetID string) {
 	}
 }
 
-func (hc *HealthChecker) checkOneWithPath(t Target, healthPath string) {
-	url := t.Addr + healthPath
+func (hc *HealthChecker) checkOneWithPath(t Target, healthPath string, cred *TargetCredential) {
+	url := buildProbeURL(t.Addr, healthPath)
 
 	// 使用带超时的 context，避免健康检查无限阻塞
 	ctx, cancel := context.WithTimeout(context.Background(), hc.timeout)
@@ -319,8 +482,12 @@ func (hc *HealthChecker) checkOneWithPath(t Target, healthPath string) {
 		return
 	}
 
-	// 注入认证信息（根据 provider 类型）
-	hc.injectAuth(req, t.ID)
+	// 注入认证信息
+	if cred != nil {
+		injectCredential(req, cred)
+	} else {
+		hc.injectAuth(req, t.ID)
+	}
 
 	resp, err := hc.client.Do(req)
 	if err != nil {
@@ -331,7 +498,8 @@ func (hc *HealthChecker) checkOneWithPath(t Target, healthPath string) {
 		hc.recordFailure(t.ID)
 		return
 	}
-	resp.Body.Close()
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body) //nolint:errcheck
 
 	if resp.StatusCode == http.StatusOK {
 		hc.logger.Debug("health check ok", zap.String("target", t.ID))
@@ -398,8 +566,15 @@ func (hc *HealthChecker) recordFailure(id string) {
 		}
 		// 自动恢复（半开状态）：经过 recoveryDelay 后自动重置为健康
 		if hc.recoveryDelay > 0 {
+			hc.wg.Add(1)
 			go func() {
-				time.Sleep(hc.recoveryDelay)
+				defer hc.wg.Done()
+				select {
+				case <-time.After(hc.recoveryDelay):
+				case <-hc.stopCh:
+					// 主循环已停止（进程关闭），跳过恢复——避免 Wait() 阻塞整个 recoveryDelay
+					return
+				}
 				hc.mu.Lock()
 				// 若失败计数已被 RecordSuccess 重置（表示已被另一路径恢复），跳过
 				if hc.failures[id] < hc.failThreshold {

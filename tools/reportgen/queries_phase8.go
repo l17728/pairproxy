@@ -11,6 +11,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func (q *Querier) QueryLatencyHistogram(from, to time.Time) ([]LatencyHistogramBucket, error) {
+	from, to = toUTC(from), toUTC(to)
 	rows, err := q.query(`
 		SELECT
 		  CASE
@@ -55,6 +56,7 @@ func (q *Querier) QueryLatencyHistogram(from, to time.Time) ([]LatencyHistogramB
 // ---------------------------------------------------------------------------
 
 func (q *Querier) QueryLatencyScatter(from, to time.Time, limit int) ([]LatencyScatterPoint, error) {
+	from, to = toUTC(from), toUTC(to)
 	rows, err := q.query(`
 		SELECT total_tokens, duration_ms
 		FROM usage_logs
@@ -85,6 +87,7 @@ func (q *Querier) QueryLatencyScatter(from, to time.Time, limit int) ([]LatencyS
 // ---------------------------------------------------------------------------
 
 func (q *Querier) QueryTokenThroughputHeatmap(from, to time.Time) ([]TokenThroughputCell, error) {
+	from, to = toUTC(from), toUTC(to)
 	rows, err := q.query(fmt.Sprintf(`
 		SELECT
 		  %s AS hour,
@@ -115,6 +118,7 @@ func (q *Querier) QueryTokenThroughputHeatmap(from, to time.Time) ([]TokenThroug
 // ---------------------------------------------------------------------------
 
 func (q *Querier) QueryUpstreamShare(from, to time.Time) ([]UpstreamShareRow, error) {
+	from, to = toUTC(from), toUTC(to)
 	rows, err := q.query(`
 		SELECT upstream_url, COUNT(*) AS cnt
 		FROM usage_logs
@@ -144,6 +148,7 @@ func (q *Querier) QueryUpstreamShare(from, to time.Time) ([]UpstreamShareRow, er
 // ---------------------------------------------------------------------------
 
 func (q *Querier) QueryUpstreamLatencyTrend(from, to time.Time) ([]UpstreamLatencyTrendRow, error) {
+	from, to = toUTC(from), toUTC(to)
 	rows, err := q.query(fmt.Sprintf(`
 		SELECT upstream_url, %s AS day, AVG(duration_ms) AS avg_lat
 		FROM usage_logs
@@ -202,6 +207,7 @@ func (q *Querier) QueryUpstreamLatencyTrend(from, to time.Time) ([]UpstreamLaten
 // ---------------------------------------------------------------------------
 
 func (q *Querier) QueryCostPerTokenTrend(from, to time.Time) ([]CostPerTokenRow, error) {
+	from, to = toUTC(from), toUTC(to)
 	rows, err := q.query(fmt.Sprintf(`
 		SELECT %s AS day,
 		       CASE WHEN SUM(total_tokens) > 0
@@ -233,6 +239,7 @@ func (q *Querier) QueryCostPerTokenTrend(from, to time.Time) ([]CostPerTokenRow,
 // ---------------------------------------------------------------------------
 
 func (q *Querier) QueryIORatioTrend(from, to time.Time) ([]IORatioTrendRow, error) {
+	from, to = toUTC(from), toUTC(to)
 	rows, err := q.query(fmt.Sprintf(`
 		SELECT %s AS day,
 		       AVG(CAST(input_tokens AS REAL) / NULLIF(output_tokens, 0)) AS io_ratio
@@ -264,6 +271,7 @@ func (q *Querier) QueryIORatioTrend(from, to time.Time) ([]IORatioTrendRow, erro
 
 // QueryPeakRPM returns the maximum requests-per-minute in the period.
 func (q *Querier) QueryPeakRPM(from, to time.Time) (int64, error) {
+	from, to = toUTC(from), toUTC(to)
 	row := q.queryRow(fmt.Sprintf(`
 		SELECT COALESCE(MAX(cnt), 0) FROM (
 		  SELECT COUNT(*) AS cnt
@@ -285,6 +293,7 @@ func (q *Querier) QueryPeakRPM(from, to time.Time) (int64, error) {
 
 // QueryModelDailyTrend returns per-model daily request counts and tokens.
 func (q *Querier) QueryModelDailyTrend(from, to time.Time) ([]ModelDailyRow, error) {
+	from, to = toUTC(from), toUTC(to)
 	rows, err := q.query(fmt.Sprintf(`
 		SELECT %s AS day,
 		       COALESCE(lt.name, ul.model, '未知模型') AS model,
@@ -388,6 +397,7 @@ func (q *Querier) QueryModelTokenBoxPlots(from, to time.Time, column string) ([]
 // ---------------------------------------------------------------------------
 
 func (q *Querier) QuerySourceNodeDist(from, to time.Time) ([]SourceNodeRow, error) {
+	from, to = toUTC(from), toUTC(to)
 	rows, err := q.query(`
 		SELECT COALESCE(source_node, 'unknown'), COUNT(*) AS cnt
 		FROM usage_logs

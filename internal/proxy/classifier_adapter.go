@@ -28,7 +28,7 @@ func NewSProxyClassifierTarget(sp *SProxy, logger *zap.Logger) router.Classifier
 // Pick 从现有 LB 池中选取一个健康 target，用于分类器调用。
 // 使用空 userID/groupID（无绑定），直接走 LB 负载均衡路径。
 func (a *SProxyClassifierTarget) Pick(ctx context.Context) (targetURL, apiKey string, err error) {
-	info, err := a.sp.pickLLMTarget("/v1/messages", "", "", nil, nil)
+	info, err := a.sp.pickLLMTarget("/v1/messages", "", "", "", nil, nil)
 	if err != nil {
 		a.logger.Warn("classifier_target: failed to pick LLM target",
 			zap.Error(err),

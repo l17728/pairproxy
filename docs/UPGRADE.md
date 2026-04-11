@@ -1,6 +1,6 @@
 # PairProxy 升级指南
 
-> 当前版本：**v2.24.4** | 更新日期：2026-04-09
+> 当前版本：**v2.24.5** | 更新日期：2026-04-11
 
 本文档描述各版本间的升级步骤、数据库 Schema 变更、回滚方法及不兼容变更。
 
@@ -151,6 +151,62 @@ sproxy admin llm target list  # 应显示两条记录
 reportgen -db ./pairproxy.db -from 2026-03-01 -to 2026-04-01 -llm-url http://localhost:9000 -llm-key "test"
 # 应生成报告，即使 LLM 连接失败也能降级输出纯规则分析
 ```
+
+---
+
+### v2.24.5 — 智能探活（Smart Probe）
+
+**无数据库 Schema 变更**。纯代码功能增强。
+
+**新增功能**
+
+健康检查系统升级为**智能探活**模式，无需手动配置 `health_check_path`：
+
+- 新增 `internal/lb/probe.go`：`ProbeMethod`、`ProbeCache`、`Prober` 实现
+- `HealthChecker` 自动为所有未配置显式路径的 target 执行策略发现与缓存
+- 发现阶段与心跳阶段语义分离：401 在发现阶段 = "端点存在"，在心跳阶段 = "key 无效"
+- 华为云、小米等在 key 无效时仅返回 401 的服务，现已支持主动探活
+
+**行为变更**
+
+| 场景 | v2.24.4 及之前 | v2.24.5 |
+|------|--------------|---------|
+| 未配置 `health_check_path` | 仅被动熔断 | **主动智能探活** |
+| 已配置 `health_check_path` | 直接使用该路径 | 同左（向后兼容） |
+| Anthropic/OpenAI 等 target | 需手动配置 `/v1/models` | **全自动** |
+| 华为云 / 小米 | 探活失败（401 被拒绝） | **修复，自动发现** |
+
+**向后兼容性**
+
+- ✅ 已配置 `health_check_path` 的 target：行为完全不变
+- ✅ 无配置的 target：升级后自动获得主动健康检查能力
+- ✅ 无 Schema 变更，无配置文件变更
+
+**升级验证**
+
+```bash
+# 1. 验证服务正常
+curl http://localhost:9000/health
+
+# 2. 查看智能探活日志（需 log.level: debug）
+journalctl -u sproxy -f | grep "smart probe:\|probe:"
+
+# 期望看到类似以下内容：
+# INFO  smart probe: discovering health check method  {target: anthropic-api, ...}
+# INFO  probe: discovered working health check method  {method: GET /v1/models, status: 401}
+
+# 3. 验证 Dashboard 中 target 健康状态正常更新
+curl -H "Authorization: Bearer $ADMIN_TOKEN" \
+  http://localhost:9000/api/admin/llm/targets | jq '.[] | {url, healthy}'
+```
+
+**回滚说明**
+
+降级到 v2.24.4 时：
+- 未配置 `health_check_path` 的 target 回退到纯被动熔断（与 v2.24.4 行为一致）
+- `probe.go` 中的代码会被移除，但无任何数据库或配置依赖
+
+---
 
 ---
 

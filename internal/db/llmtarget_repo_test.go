@@ -20,16 +20,16 @@ func TestLLMTargetRepo_Create(t *testing.T) {
 	repo := NewLLMTargetRepo(gormDB, logger)
 
 	target := &LLMTarget{
-		ID:       uuid.NewString(),
-		URL:      "http://test.local:8080",
-		Provider: "anthropic",
-		Name:     "Test Target",
-		Weight:   1,
-		Source:   "database",
+		ID:         uuid.NewString(),
+		URL:        "http://test.local:8080",
+		Provider:   "anthropic",
+		Name:       "Test Target",
+		Weight:     1,
+		Source:     "database",
 		IsEditable: true,
-		IsActive: true,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
+		IsActive:   true,
+		CreatedAt:  time.Now(),
+		UpdatedAt:  time.Now(),
 	}
 
 	err = repo.Create(target)
@@ -99,10 +99,10 @@ func TestLLMTargetRepo_GetByURL(t *testing.T) {
 	repo := NewLLMTargetRepo(gormDB, logger)
 
 	target := &LLMTarget{
-		ID:  uuid.NewString(),
-		URL: "http://test.local:8080",
+		ID:       uuid.NewString(),
+		URL:      "http://test.local:8080",
 		Provider: "anthropic",
-		Source: "database",
+		Source:   "database",
 	}
 	err = repo.Create(target)
 	require.NoError(t, err)
@@ -136,10 +136,10 @@ func TestLLMTargetRepo_GetByID(t *testing.T) {
 	repo := NewLLMTargetRepo(gormDB, logger)
 
 	target := &LLMTarget{
-		ID:  uuid.NewString(),
-		URL: "http://test.local:8080",
+		ID:       uuid.NewString(),
+		URL:      "http://test.local:8080",
 		Provider: "anthropic",
-		Source: "database",
+		Source:   "database",
 	}
 	err = repo.Create(target)
 	require.NoError(t, err)
@@ -198,8 +198,8 @@ func TestLLMTargetRepo_URLExists(t *testing.T) {
 	repo := NewLLMTargetRepo(gormDB, logger)
 
 	target := &LLMTarget{
-		ID:  uuid.NewString(),
-		URL: "http://test.local:8080",
+		ID:     uuid.NewString(),
+		URL:    "http://test.local:8080",
 		Source: "database",
 	}
 	err = repo.Create(target)
@@ -911,22 +911,22 @@ func TestLLMTargetRepo_ListByURL_MultipleKeys(t *testing.T) {
 
 	// 创建两个同 URL 但不同 APIKeyID 的 target
 	target1 := &LLMTarget{
-		ID:        uuid.NewString(),
-		URL:       url,
-		APIKeyID:  &keyA,
-		Provider:  "anthropic",
-		Source:    "database",
+		ID:         uuid.NewString(),
+		URL:        url,
+		APIKeyID:   &keyA,
+		Provider:   "anthropic",
+		Source:     "database",
 		IsEditable: true,
-		IsActive:  true,
+		IsActive:   true,
 	}
 	target2 := &LLMTarget{
-		ID:        uuid.NewString(),
-		URL:       url,
-		APIKeyID:  &keyB,
-		Provider:  "anthropic",
-		Source:    "database",
+		ID:         uuid.NewString(),
+		URL:        url,
+		APIKeyID:   &keyB,
+		Provider:   "anthropic",
+		Source:     "database",
 		IsEditable: true,
-		IsActive:  true,
+		IsActive:   true,
 	}
 
 	require.NoError(t, repo.Create(target1))
@@ -961,22 +961,22 @@ func TestLLMTargetRepo_ListByURL_WithNilKey(t *testing.T) {
 	gormDB.Create(&APIKey{ID: keyA, Name: "keyA", Provider: "anthropic", EncryptedValue: "sk-A", IsActive: true})
 
 	targetNil := &LLMTarget{
-		ID:        uuid.NewString(),
-		URL:       url,
-		APIKeyID:  nil,
-		Provider:  "anthropic",
-		Source:    "database",
+		ID:         uuid.NewString(),
+		URL:        url,
+		APIKeyID:   nil,
+		Provider:   "anthropic",
+		Source:     "database",
 		IsEditable: true,
-		IsActive:  true,
+		IsActive:   true,
 	}
 	targetWithKey := &LLMTarget{
-		ID:        uuid.NewString(),
-		URL:       url,
-		APIKeyID:  &keyA,
-		Provider:  "anthropic",
-		Source:    "database",
+		ID:         uuid.NewString(),
+		URL:        url,
+		APIKeyID:   &keyA,
+		Provider:   "anthropic",
+		Source:     "database",
 		IsEditable: true,
-		IsActive:  true,
+		IsActive:   true,
 	}
 
 	require.NoError(t, repo.Create(targetNil))
@@ -1005,4 +1005,124 @@ func TestLLMTargetRepo_ListByURL_Empty(t *testing.T) {
 	results, err := repo.ListByURL("https://nonexistent.com")
 	require.NoError(t, err)
 	assert.Len(t, results, 0, "不存在的 URL 应返回空列表")
+}
+
+// --- Seed 方法测试（F1: Config-as-Seed）---
+
+func TestLLMTargetRepo_Seed_InsertNew(t *testing.T) {
+	logger := zap.NewNop()
+	gormDB, err := Open(logger, ":memory:")
+	require.NoError(t, err)
+	require.NoError(t, Migrate(logger, gormDB))
+
+	repo := NewLLMTargetRepo(gormDB, logger)
+
+	target := &LLMTarget{
+		ID:        uuid.NewString(),
+		URL:       "https://api.anthropic.com",
+		Provider:  "anthropic",
+		Name:      "Anthropic Main",
+		Weight:    1,
+		Source:    "config",
+		IsActive:  true,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+
+	err = repo.Seed(target)
+	require.NoError(t, err)
+
+	// Verify: target was inserted
+	found, err := repo.GetByURL("https://api.anthropic.com")
+	require.NoError(t, err)
+	assert.Equal(t, "https://api.anthropic.com", found.URL)
+	assert.Equal(t, "anthropic", found.Provider)
+	assert.Equal(t, "config", found.Source)
+	// Seed sets IsEditable=true on first insert (F1 design goal: allow WebUI modifications)
+	assert.True(t, found.IsEditable, "Seed should set IsEditable=true on first insert")
+}
+
+func TestLLMTargetRepo_Seed_SkipExisting(t *testing.T) {
+	logger := zap.NewNop()
+	gormDB, err := Open(logger, ":memory:")
+	require.NoError(t, err)
+	require.NoError(t, Migrate(logger, gormDB))
+
+	repo := NewLLMTargetRepo(gormDB, logger)
+
+	// First: create a target with Weight=2 (simulating WebUI modification)
+	existing := &LLMTarget{
+		ID:        uuid.NewString(),
+		URL:       "https://api.anthropic.com",
+		Provider:  "anthropic",
+		Weight:    2,
+		Source:    "config",
+		IsActive:  true,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	require.NoError(t, repo.Create(existing))
+
+	// Second: Seed with same URL but Weight=1 (config file value)
+	seedTarget := &LLMTarget{
+		ID:        uuid.NewString(),
+		URL:       "https://api.anthropic.com",
+		Provider:  "anthropic",
+		Weight:    1,
+		Source:    "config",
+		IsActive:  true,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	err = repo.Seed(seedTarget)
+	require.NoError(t, err)
+
+	// Verify: Weight is still 2 (Seed skipped, preserved original)
+	found, err := repo.GetByURL("https://api.anthropic.com")
+	require.NoError(t, err)
+	assert.Equal(t, 2, found.Weight, "Seed should skip existing target, preserving WebUI modifications")
+}
+
+func TestLLMTargetRepo_Seed_SkipExistingWithWebUIModifications(t *testing.T) {
+	logger := zap.NewNop()
+	gormDB, err := Open(logger, ":memory:")
+	require.NoError(t, err)
+	require.NoError(t, Migrate(logger, gormDB))
+
+	repo := NewLLMTargetRepo(gormDB, logger)
+
+	// First: create a target with SupportedModelsJSON and Weight=1 (WebUI modified values)
+	existing := &LLMTarget{
+		ID:                  uuid.NewString(),
+		URL:                 "https://api.anthropic.com",
+		Provider:            "anthropic",
+		Weight:              1,
+		SupportedModelsJSON: `["gpt-4o"]`,
+		Source:              "config",
+		IsActive:            true,
+		CreatedAt:           time.Now(),
+		UpdatedAt:           time.Now(),
+	}
+	require.NoError(t, repo.Create(existing))
+
+	// Second: Seed with same URL but different values (config file defaults)
+	seedTarget := &LLMTarget{
+		ID:                  uuid.NewString(),
+		URL:                 "https://api.anthropic.com",
+		Provider:            "anthropic",
+		Weight:              5,
+		SupportedModelsJSON: `[]`,
+		Source:              "config",
+		IsActive:            true,
+		CreatedAt:           time.Now(),
+		UpdatedAt:           time.Now(),
+	}
+	err = repo.Seed(seedTarget)
+	require.NoError(t, err)
+
+	// Verify: WebUI modifications preserved
+	found, err := repo.GetByURL("https://api.anthropic.com")
+	require.NoError(t, err)
+	assert.Equal(t, 1, found.Weight, "Weight should be preserved from WebUI modification")
+	assert.Equal(t, `["gpt-4o"]`, found.SupportedModelsJSON, "SupportedModelsJSON should be preserved from WebUI modification")
 }

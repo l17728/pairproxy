@@ -378,7 +378,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// ---------------------------------------------------------------------------
 
 	{
-		// 构建 LLM lb.Target 列表（ID = URL，Weight 来自数据库）
+		// 构建 LLM lb.Target 列表（BUG-1 修复：ID 使用 UUID，与 SyncLLMTargets 保持一致）
 		lbLLMTargets := make([]lb.Target, 0, len(loadedTargets))
 		healthPaths := make(map[string]string, len(loadedTargets))
 		credentials := make(map[string]lb.TargetCredential, len(loadedTargets))
@@ -387,18 +387,24 @@ func runStart(cmd *cobra.Command, args []string) error {
 			if w <= 0 {
 				w = 1
 			}
+			// BUG-1 修复：使用 UUID 做 targetID，config-sourced target 无 ID 时回退到 URL
+			// 与 SyncLLMTargets（sproxy.go）保持一致，避免同 URL 多 key 时 ID/credentials 被覆盖
+			targetID := t.ID
+			if targetID == "" {
+				targetID = t.URL
+			}
 			lbLLMTargets = append(lbLLMTargets, lb.Target{
-				ID:      t.URL,
+				ID:      targetID,
 				Addr:    t.URL,
 				Weight:  w,
 				Healthy: true,
 			})
 			if t.HealthCheckPath != "" {
-				healthPaths[t.URL] = t.HealthCheckPath
+				healthPaths[targetID] = t.HealthCheckPath
 			}
 			// 构建认证凭证（用于主动健康检查）
 			if t.APIKey != "" {
-				credentials[t.URL] = lb.TargetCredential{
+				credentials[targetID] = lb.TargetCredential{
 					APIKey:   t.APIKey,
 					Provider: t.Provider,
 				}
@@ -573,16 +579,11 @@ func runStart(cmd *cobra.Command, args []string) error {
 			return auth.Decrypt(encrypted, cfg.Admin.KeyEncryptionKey)
 		}
 		adminHandler.SetAPIKeyRepo(apiKeyRepo, encryptFn)
+		// BUG-4 修复：配置了 key_encryption_key 时，resolveAPIKey 使用 AES 解密（而非 obfuscateKey）
+		sp.SetKeyDecryptFn(decryptFn)
 		// 在 Director 中动态查找并使用 DB 里的 API Key
-		sp.SetAPIKeyResolver(func(userID string) (string, bool) {
-			user, err := userRepo.GetByID(userID)
-			if err != nil || user == nil {
-				return "", false
-			}
-			groupID := ""
-			if user.GroupID != nil {
-				groupID = *user.GroupID
-			}
+		// BUG-2 修复：groupID 直接来自 JWT claims，无需再查询 UserRepo（消除每请求一次额外 DB 查询）
+		sp.SetAPIKeyResolver(func(userID, groupID string) (string, bool) {
 			key, err := apiKeyRepo.FindForUser(userID, groupID)
 			if err != nil || key == nil {
 				return "", false

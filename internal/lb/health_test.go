@@ -371,12 +371,14 @@ func TestWithHealthPath_CustomPath(t *testing.T) {
 // WithHealthPaths — 验证仅有 path 的节点被主动检查
 // ---------------------------------------------------------------------------
 
-// TestWithHealthPaths_OnlyConfiguredTargetsChecked 验证使用 WithHealthPaths 后，
-// 仅有显式 path 的 target 被主动检查。
+// TestWithHealthPaths_OnlyConfiguredTargetsChecked 验证使用 WithHealthPaths 后：
+// - 显式配置 health_check_path 的 target（a）使用该路径主动检查
+// - 未配置 health_check_path 的 target（b）走智能探活（自动发现）
+// 两者都会被主动探活，行为不同只在于使用路径的来源。
 func TestWithHealthPaths_OnlyConfiguredTargetsChecked(t *testing.T) {
-	checkedTargets := make(chan string, 10)
+	checkedTargets := make(chan string, 20)
 
-	// srv-a 有显式 path，srv-b 没有
+	// srv-a 有显式 path，srv-b 没有（走 smart probe）
 	srvA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		checkedTargets <- "a"
 		w.WriteHeader(http.StatusOK)
@@ -398,8 +400,8 @@ func TestWithHealthPaths_OnlyConfiguredTargetsChecked(t *testing.T) {
 		WithInterval(30*time.Millisecond),
 		WithTimeout(2*time.Second),
 		WithHealthPaths(map[string]string{
-			"a": "/health", // 只为 a 配置主动检查路径
-			// b 不配置 path，不参与主动检查
+			"a": "/health", // 只为 a 配置显式路径
+			// b 不配置 path → 走 smart probe（自动发现）
 		}),
 	)
 
@@ -422,12 +424,13 @@ func TestWithHealthPaths_OnlyConfiguredTargetsChecked(t *testing.T) {
 		}
 	}
 
-	// a 应被检查，b 不应被检查
+	// a 应被检查（显式路径）
 	if !seenTargets["a"] {
-		t.Error("target 'a' should have been actively checked")
+		t.Error("target 'a' should have been actively checked (explicit path)")
 	}
-	if seenTargets["b"] {
-		t.Error("target 'b' should NOT be actively checked (no path configured)")
+	// b 也应被检查（smart probe 自动发现 /health 返回 200）
+	if !seenTargets["b"] {
+		t.Error("target 'b' should have been checked by smart probe (auto-discovered /health)")
 	}
 }
 
@@ -454,7 +457,8 @@ func TestPick_AllDrainingAndUnhealthyMixed(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestUpdateHealthPaths_OnlyNewTargetChecked 验证 UpdateHealthPaths 后，
-// 只有更新后 paths 中的 target 被主动检查，旧 paths 中的 target 不再被检查。
+// 新配置显式 path 的 target 使用该 path，其余走 smart probe（而非跳过）。
+// 本测试验证：UpdateHealthPaths 不会禁止 smart probe，只是影响显式路径的优先级。
 func TestUpdateHealthPaths_OnlyNewTargetChecked(t *testing.T) {
 	checkedTargets := make(chan string, 20)
 
@@ -479,7 +483,7 @@ func TestUpdateHealthPaths_OnlyNewTargetChecked(t *testing.T) {
 		WithInterval(30*time.Millisecond),
 		WithTimeout(2*time.Second),
 		WithHealthPaths(map[string]string{
-			"a": "/health", // 初始只检查 a
+			"a": "/health", // 初始只为 a 配置显式路径；b 走 smart probe
 		}),
 	)
 
@@ -490,7 +494,7 @@ func TestUpdateHealthPaths_OnlyNewTargetChecked(t *testing.T) {
 	// 等待初始检查完成
 	time.Sleep(60 * time.Millisecond)
 
-	// 确认初始阶段只有 a 被检查
+	// 在新设计下，a 走显式路径，b 走 smart probe —— 两者都会被访问
 	seenBefore := map[string]int{}
 	drained := false
 	for !drained {
@@ -501,29 +505,30 @@ func TestUpdateHealthPaths_OnlyNewTargetChecked(t *testing.T) {
 			drained = true
 		}
 	}
-	if seenBefore["b"] > 0 {
-		t.Errorf("before UpdateHealthPaths, 'b' should not be checked, but was checked %d times", seenBefore["b"])
-	}
 	if seenBefore["a"] == 0 {
-		t.Error("before UpdateHealthPaths, 'a' should have been checked at least once")
+		t.Error("before UpdateHealthPaths, 'a' (explicit path) should have been checked")
+	}
+	// b 也应被 smart probe 访问（/health 返回 200）
+	if seenBefore["b"] == 0 {
+		t.Error("before UpdateHealthPaths, 'b' should have been smart-probed")
 	}
 
-	// 运行时切换：只检查 b
+	// 运行时切换：只为 b 配置显式路径（a 变为 smart probe）
 	hc.UpdateHealthPaths(map[string]string{
 		"b": "/health",
 	})
 
-	// 等待"切换后稳定期"：3 个完整 interval，让飞行中的旧检查排干
+	// 等待稳定期
 	time.Sleep(120 * time.Millisecond)
-	// 排空切换过渡期产生的检查结果（可能有 1 次 a 的尾巴）
+	// 排空过渡期结果
 	for len(checkedTargets) > 0 {
 		<-checkedTargets
 	}
 
-	// 再等 2 个 interval，观察切换后的稳定状态
+	// 再等 2 个 interval
 	time.Sleep(80 * time.Millisecond)
 
-	// 统计切换后稳定期被检查的 target
+	// 切换后 b 应继续被检查（显式路径），a 也应被 smart probe（缓存命中）
 	seenAfter := map[string]int{}
 	drained = false
 	for !drained {
@@ -536,10 +541,11 @@ func TestUpdateHealthPaths_OnlyNewTargetChecked(t *testing.T) {
 	}
 
 	if seenAfter["b"] == 0 {
-		t.Error("after UpdateHealthPaths, 'b' should have been checked at least once")
+		t.Error("after UpdateHealthPaths, 'b' (explicit path) should have been checked")
 	}
-	if seenAfter["a"] > 0 {
-		t.Errorf("after UpdateHealthPaths (stable), 'a' should no longer be checked, but was checked %d times", seenAfter["a"])
+	// a 通过 smart probe（缓存）继续被检查
+	if seenAfter["a"] == 0 {
+		t.Error("after UpdateHealthPaths, 'a' should still be checked by smart probe (cached)")
 	}
 }
 

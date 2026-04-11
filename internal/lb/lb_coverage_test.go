@@ -360,7 +360,7 @@ func TestCoverage_CheckOneWithPath_Non200(t *testing.T) {
 
 	// 直接调用 checkOneWithPath
 	target := Target{ID: "target-503", Addr: srv.URL, Weight: 1, Healthy: true}
-	hc.checkOneWithPath(target, "/health")
+	hc.checkOneWithPath(target, "/health", nil)
 
 	// 失败计数应达到阈值，节点标记不健康
 	if _, err := b.Pick(); err != ErrNoHealthyTarget {
@@ -383,7 +383,7 @@ func TestCoverage_CheckOneWithPath_InvalidURL(t *testing.T) {
 
 	// 无效 URL 导致请求创建失败
 	target := Target{ID: "bad-url", Addr: "://invalid", Weight: 1, Healthy: true}
-	hc.checkOneWithPath(target, "/health")
+	hc.checkOneWithPath(target, "/health", nil)
 
 	// 失败计数应达到阈值
 	if _, err := b.Pick(); err != ErrNoHealthyTarget {

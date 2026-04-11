@@ -908,22 +908,51 @@ curl -H "Authorization: Bearer $CLUSTER_SECRET" \
 **排查步骤**：
 
 ```bash
-# 1. 确认 target 的 HealthCheckPath 配置
+# 1. 查看智能探活的发现日志（v2.24.5+，无需手动配置路径）
+journalctl -u sproxy | grep "smart probe:\|probe:" | tail -20
+
+# 2. 确认 target 的 health_check_path 配置（显式路径优先于智能探活）
 curl -H "Authorization: Bearer $ADMIN_TOKEN" \
-     http://localhost:9000/api/admin/llm-targets | jq '.[] | {url, health_check_path}'
+     http://localhost:9000/api/admin/llm-targets | jq '.[] | {url, health_check_path, provider}'
 
-# 2. 手动测试健康检查端点
+# 3. 若有显式 health_check_path，手动测试该路径
 curl -v http://<target-url><health_check_path>
-# 应返回 HTTP 200，否则 target 会保持 Healthy=false
 
-# 3. 查看日志中的 CheckTarget 记录
-grep -i "health check" sproxy.log | tail -20
+# 4. 若无显式路径，手动测试智能探活的候选路径
+curl -v -H "Authorization: Bearer <your-api-key>" http://<target-url>/v1/models
+curl -v http://<target-url>/health
 ```
 
-**可能原因**：
-- `health_check_path` 指向的端点返回非 200 → 修复后端或更正路径
-- 后端服务未启动 → 启动后端，CheckTarget 会在下次 30s ticker 时重试
-- 无 `health_check_path` 配置但 target 仍不健康 → 检查被动熔断日志
+**可能原因与解决方案**：
+
+| 原因 | 诊断 | 解决方法 |
+|------|------|---------|
+| API Key 无效（401 持续） | 日志中 `smart probe: initial health check failed, status: 401` | 更新 API Key |
+| 服务不可达（连接拒绝） | 日志中 `probe: target unreachable during discovery` | 检查网络连通性 |
+| 所有内置策略均不匹配 | 日志中 `smart probe: no suitable health check method found` | 配置显式 `health_check_path` |
+| 显式路径返回非 200 | 日志中 `health check failed` | 修正路径或等待后端恢复 |
+
+**智能探活日志含义（v2.24.5+）**：
+
+```bash
+# 正常：发现路径（401 表示端点存在，key 无效）
+INFO  probe: discovered working health check method  {method: GET /v1/models, status: 401}
+DEBUG smart probe: initial health check failed after discovery  {status: 401}
+# → target 当前标记为 Healthy=false，更换有效 key 后下次心跳将恢复
+
+# 正常：key 有效
+INFO  probe: discovered working health check method  {method: GET /v1/models, status: 200}
+DEBUG smart probe: initial health check ok after discovery
+# → target 标记为 Healthy=true
+
+# 异常：完全不可达
+WARN  probe: target unreachable during discovery  {error: connection refused}
+# → 检查防火墙、网络配置
+
+# 异常：无合适路径（阿里 DashScope /coding/v1 等特殊路径）
+WARN  smart probe: no suitable health check method found, recording failure
+# → 需要配置 health_check_path，或接受纯被动熔断模式
+```
 
 ### 16.2 Sync 后已熔断 target 被意外复活
 
@@ -941,7 +970,41 @@ grep "SyncLLMTargets\|balancer and health checker updated" sproxy.log | tail -10
 
 **症状**：添加了一个坏 target（无法连接），前几个用户请求失败后才被熔断。
 
-**原因**：target 未配置 `health_check_path`，以 Healthy=true 乐观入场，依赖被动熔断。
+**原因（v2.24.5 前）**：target 未配置 `health_check_path`，以 Healthy=true 乐观入场，依赖被动熔断。
+
+**v2.24.5 之后**：新 target 加入后，智能探活会在下一个心跳周期（默认 30s）自动发现其状态。若服务不可达，会在用户请求消耗前被标记为 Healthy=false。
+
+**保证**（v2.24.6+）：
+- 连接拒绝 / DNS 失败 → Discover 立即返回 `unreachable=true`，**同一心跳周期内**被标记为不健康
+- HTTP 超时 → Discover 继续尝试下一路径，不立即标记为不可达；若所有路径均超时，本次心跳记录一次失败，但不标记 `unreachable`
+
+### 16.4 智能探活缓存相关问题
+
+**症状**：更换了 API Key，但健康检查行为没有及时更新。
+
+**原因**：探活策略缓存有 TTL（默认 2h），更换 key 后缓存应自动失效。
+
+**排查**：
+```bash
+# 查看凭证更新日志
+grep "credentials updated" sproxy.log | tail -5
+
+# 凭证更新后应触发缓存失效
+INFO  health_checker  credentials updated  {count: 3}
+# 下次心跳将重新 discover
+```
+
+若日志中没有 `credentials updated`，可能是 `UpdateCredentials()` 未被调用，检查配置热重载是否生效。
+
+**症状**：删除了目标的 `health_check_path` 配置，但探活路径没有变化。
+
+**原因（v2.24.6 前）**：`UpdateHealthPaths` 仅更新显式路径映射表，不清除 probe 缓存，缓存中的旧策略会持续沿用直到 TTL 过期（最多 2h）。
+
+**v2.24.6 修复**：`UpdateHealthPaths` 现在对失去显式路径的目标立即调用 `probeCache.invalidate()`，确保配置变更在下一个心跳周期生效。
+
+**症状**：智能探活 2 小时后开始重新探活，产生大量 discover 日志。
+
+**原因**：缓存 TTL 到期（正常行为），系统自动重新发现探活策略。这不影响服务可用性。若希望减少此现象，当前版本无 TTL 配置项（固定 2h）。
 
 ---
 

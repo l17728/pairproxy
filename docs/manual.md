@@ -1,6 +1,6 @@
 ﻿# PairProxy 用户手册
 
-**版本 v2.24.3**
+**版本 v2.24.5**
 
 ---
 
@@ -58,6 +58,7 @@
 - [§42 v2.23.0 更新说明：APIKey 号池 + 健康检查认证 + 文档修正](#42-v2230-更新说明)
 - [§43 v2.24.0 更新说明：Model-Aware Routing（模型感知路由）](#43-v2240-更新说明)
 - [§44 v2.24.3 更新说明：多 API Key 共用同一 URL（Issue #6）](#44-v2243-更新说明)
+- [§45 v2.24.5 更新说明：智能探活（Smart Probe）](#45-v2245-更新说明智能探活smart-probe)
 
 ---
 
@@ -2613,7 +2614,8 @@ semantic_router:
 - **多 LLM target 加权负载均衡**（加权随机）
 - **被动熔断**：连续 3 次请求失败 → 自动标记目标为不健康
 - **自动恢复（半开）**：经过 `recovery_delay` 后自动重置为健康
-- **主动健康检查**：为有 `health_check_path` 的目标定期 GET 检查
+- **智能探活**（v2.24.5+）：自动发现并缓存每个 target 的最优健康检查策略，无需手动配置路径
+- **主动健康检查**：为有 `health_check_path` 的目标定期 GET 检查（显式配置优先于智能探活）
 - **带重试的代理**：首个目标失败时自动切换到下一个健康目标（最多 `max_retries` 次）
 - **用户/分组级 LLM 绑定**：为特定用户或分组绑定专用 LLM target
 - **一键均分**：将所有活跃用户按轮询方式均匀分配到所有 target
@@ -2636,14 +2638,15 @@ llm:
       provider: "anthropic"
       name: "Anthropic Claude"    # 可选显示名（Dashboard 展示）
       weight: 70                  # 负载均衡权重（默认 1）
-      health_check_path: ""       # 留空=仅被动熔断；填写路径=启用主动 GET 检查
+      # health_check_path 留空（或省略）→ 智能探活自动发现最优探测路径（推荐）
+      # health_check_path: "/v1/models"   # 若已知路径，可显式指定跳过自动探测
 
     - url: "https://api.openai.com"
       api_key: "${OPENAI_API_KEY}"
       provider: "openai"
       name: "OpenAI GPT"
       weight: 30
-      health_check_path: ""       # 公共 LLM API 通常无 /health 端点，建议留空
+      # health_check_path 留空 → 智能探活自动发现 GET /v1/models
 ```
 
 **关键参数说明**：
@@ -2654,7 +2657,7 @@ llm:
 | `retry_on_status` | `[]` | 除5xx/连接错误外触发 try-next 的状态码，如 `[429]` 可实现配额耗尽自动切换 |
 | `recovery_delay` | 60s | 熔断后多久自动重置为健康（0=不自动恢复） |
 | `weight` | 1 | 负载均衡权重；权重越高被选中概率越大 |
-| `health_check_path` | 空 | 主动健康检查路径；空=不主动检查，依赖被动熔断 |
+| `health_check_path` | 空 | **显式**健康检查路径；留空 = 智能探活（推荐）；填写路径 = 跳过自动探测直接使用 |
 | `name` | 空（显示 URL） | Dashboard 中的显示名称 |
 
 ### 15.3 被动熔断与自动恢复
@@ -2668,7 +2671,92 @@ s-proxy 对每个 LLM target 维护连续失败计数：
 
 > **注意**：4xx 响应不触发熔断（客户端错误由客户端自身处理）。
 
-### 15.4 用户/分组 LLM 绑定
+### 15.4 智能探活（Smart Probe）
+
+> 自 v2.24.5 起，当 `health_check_path` 留空时，所有 target 均自动进行主动健康检查，无需手动配置探测路径。
+
+**工作原理**：
+
+每个 target 的第一次健康检查时，系统按优先级依次尝试以下策略，找到第一个有效的后缓存（默认 2 小时）：
+
+**通用 target（provider 非 anthropic）的探测顺序**：
+
+| 顺序 | 策略 | 适合服务 | 视为"端点存在"的状态码 |
+|------|------|----------|----------------------|
+| 1 | `GET /health` | vLLM、sglang、自建代理 | 200 |
+| 2 | `GET /v1/models` | OpenAI 兼容服务 | 200、401、403 |
+| 3 | `POST /v1/chat/completions` | 通用兜底 | 200、401、403、400 |
+
+**Anthropic provider target 的探测顺序**（provider-specific 策略优先）：
+
+| 顺序 | 策略 | 适合服务 | 视为"端点存在"的状态码 |
+|------|------|----------|----------------------|
+| 1 | `GET /v1/models`（Anthropic 专用） | Anthropic 兼容（含华为云） | 200、401、403、400 |
+| 2 | `POST /v1/messages`（Anthropic 专用） | Anthropic 兼容 | 200、401、403、400 |
+| 3 | `GET /health` | vLLM、sglang、自建代理 | 200 |
+| 4 | `GET /v1/models` | OpenAI 兼容服务 | 200、401、403 |
+| 5 | `POST /v1/chat/completions` | 通用兜底 | 200、401、403、400 |
+
+**两阶段语义**：
+
+- **发现阶段**：401/403 表示"端点存在、有认证机制" → 记录为有效探测路径
+- **正式心跳**：401/403 表示"API Key 无效" → 标记 target 为不健康
+
+这意味着：即使是只返回 401 的服务（如使用错误 key 的华为云、小米），也能被成功发现探测路径；但一旦进入正式心跳周期，401 仍会触发熔断计数。
+
+**缓存失效时机**：
+
+| 触发条件 | 行为 |
+|----------|------|
+| 凭证（API Key）变更 | 立即清除缓存，下次重新探测 |
+| 目标失去显式 `health_check_path`（路径被清除） | 立即清除缓存，下次重新探测 |
+| 心跳返回连接错误 | 清除缓存，下次重新探测 |
+| 心跳返回非预期状态码 | 清除缓存，下次重新探测 |
+| TTL 到期（默认 2h） | 自然过期，下次重新探测 |
+
+> **不变量**：`unreachable` 状态（连接拒绝/DNS 失败）**不会**被缓存。每次心跳周期均会重新尝试 Discover，确保服务恢复后能在下一个心跳周期内被重新探活，不存在"2h 锁死"问题。
+
+**Discover 三种结果**：
+
+| 结果 | 触发条件 | 含义 |
+|------|----------|------|
+| `method, unreachable=false` | 找到有效探测路径 | 缓存策略，立即执行初次心跳 |
+| `nil, unreachable=true` | 硬连接失败（拒绝连接/DNS 错误） | 标记本次不健康，下次重新 Discover |
+| `nil, unreachable=false` | 所有路径均超时，或 context 预算耗尽 | 不标记 unreachable，下次重新 Discover |
+
+**各厂商实测结果**：
+
+| 服务 | 自动发现的探测策略 |
+|------|-------------------|
+| Anthropic API | `GET /v1/models`（401 → 端点存在） |
+| OpenAI API | `GET /v1/models`（200 → 健康） |
+| 火山引擎 Ark（OpenAI 兼容） | `GET /v1/models`（200 → 健康） |
+| 火山引擎 Ark（Anthropic 兼容） | `GET /v1/models`（401 → 端点存在） |
+| 腾讯 LKEAP（OpenAI 兼容） | `GET /v1/models`（200 → 健康） |
+| 腾讯 LKEAP（Anthropic 兼容） | `POST /v1/messages`（401 → 端点存在） |
+| 华为云 ModelArts | `GET /v1/models`（401 → 端点存在） |
+| 小米 MiMo | `GET /v1/models`（401 → 端点存在） |
+| vLLM / sglang | `GET /health`（200 → 健康） |
+| Ollama | `GET /health`（200 → 健康） |
+
+> **注**：阿里云 DashScope（`/coding/v1` 路径）的 `/v1/models` 返回 404，所有内置策略均不匹配，当前无法主动探活，退化为纯被动熔断。
+
+**何时手动指定 `health_check_path`**：
+
+- 您有自建服务，已知健康检查路径（如 `/api/health`），希望跳过自动探测节省启动延迟
+- 您需要使用与内置策略不同的路径（如 `/ping`）
+- 您希望固定探测行为不受缓存 TTL 影响
+
+```yaml
+# 显式指定路径（优先于智能探活）
+targets:
+  - url: "https://my-custom-llm.company.com"
+    api_key: "${MY_KEY}"
+    provider: "openai"
+    health_check_path: "/api/health"    # 显式指定，跳过自动探测
+```
+
+### 15.5 用户/分组 LLM 绑定
 
 #### 通过 Dashboard
 
@@ -2724,7 +2812,7 @@ curl -XPOST -H "Authorization: Bearer $ADMIN_TOKEN" \
   http://localhost:9000/api/admin/llm/distribute
 ```
 
-### 15.5 路由优先级
+### 15.6 路由优先级
 
 当请求到达时，路由目标按以下顺序决定：
 
@@ -2733,7 +2821,7 @@ curl -XPOST -H "Authorization: Bearer $ADMIN_TOKEN" \
 3. **负载均衡**：从健康目标中按权重随机选取
 4. **回退**：若均衡器无配置，简单轮询
 
-### 15.6 结构化日志
+### 15.7 结构化日志
 
 所有 LLM 路由相关事件均有结构化 zap 日志：
 
@@ -2747,7 +2835,7 @@ curl -XPOST -H "Authorization: Bearer $ADMIN_TOKEN" \
 | `target recovered` | INFO | 主动健康检查恢复 |
 | `target auto-recovered after delay` | INFO | 半开延迟恢复 |
 
-### 15.7 滚动升级（Drain/Undrain）
+### 15.8 滚动升级（Drain/Undrain）
 
 多节点集群支持通过排水（Drain）机制实现零停机滚动升级。
 
@@ -5878,77 +5966,64 @@ Please add it to your configuration: admin.key_encryption_key: "<32+ char secret
 
 Anthropic、OpenAI 等主流 LLM 提供商没有公开的 `/health` 端点。之前版本中，即使配置了健康检查路径（如 `/v1/models`），请求因缺少认证头而返回 401，导致 target 被错误标记为不健康。
 
-#### 解决方案：使用推理 API 替代健康检查
+#### 解决方案（v2.23.0）：认证注入
 
-健康检查现在自动注入 provider 对应的认证头：
+健康检查自动注入 provider 对应的认证头：
 
-| Provider | 健康检查端点（建议） | 注入的请求头 |
-|----------|---------------------|-------------|
-| `anthropic` | `/v1/models` | `x-api-key: <key>` + `anthropic-version: 2023-06-01` |
-| `openai` / 其他 | `/v1/models` | `Authorization: Bearer <key>` |
-| 无 provider 或本地 | `/health` | 无（向后兼容） |
+| Provider | 注入的请求头 |
+|----------|-------------|
+| `anthropic` | `x-api-key: <key>` + `anthropic-version: 2023-06-01` |
+| `openai` / 其他 | `Authorization: Bearer <key>` |
+| 无 provider / 本地 | 无（向后兼容） |
 
-#### 配置示例
+v2.23.0 修复后，手动配置 `health_check_path: "/v1/models"` 可使探活正常工作。
+
+#### 进一步增强（v2.24.5）：智能探活完全解决
+
+v2.24.5 根本性解决了此问题：即使不配置任何 `health_check_path`，系统也会自动发现并缓存最优探测路径（详见 §15.4）。
+
+**关键修复**：发现阶段与心跳阶段语义分离——发现阶段 401/403 = "端点存在"，心跳阶段 401 = "key 无效"。华为云、小米等在 key 无效时仅返回 401 的服务，现已能被正确发现并持续探活。
+
+#### 推荐配置（v2.24.5+）
 
 ```yaml
 llm:
   targets:
-    # Anthropic — 健康检查自动注入认证
+    # 推荐：不配置 health_check_path，智能探活自动处理
     - url: "https://api.anthropic.com"
       api_key: "${ANTHROPIC_API_KEY}"
       provider: "anthropic"
-      health_path: "/v1/models"       # ← 使用 /v1/models 替代 /health
 
-    # OpenAI — 健康检查自动注入 Bearer token
     - url: "https://api.openai.com"
       api_key: "${OPENAI_API_KEY}"
       provider: "openai"
-      health_path: "/v1/models"
 
-    # 阿里云百炼（DashScope）
-    - url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
-      api_key: "${DASHSCOPE_KEY}"
-      provider: "openai"
-      health_path: "/v1/models"
-
-    # 火山引擎（Ark）
+    # 火山引擎、腾讯、华为云、小米等 — 同样不需要配置路径
     - url: "https://ark.cn-beijing.volces.com/api/v3"
       api_key: "${ARK_KEY}"
       provider: "openai"
-      health_path: "/v1/models"
 
-    # 华为云 MaaS（框架就绪）
-    - url: "https://infer-modelarts-cn-southwest-2.modelarts-infer.com"
-      api_key: "${HUAWEI_KEY}"
-      provider: "openai"
-      health_path: "/v1/models"
-
-    # vLLM / sglang / Ollama — 无认证，向后兼容
+    # vLLM / sglang / Ollama — 智能探活发现 GET /health
     - url: "http://localhost:11434"
       api_key: "ollama"
-      health_path: "/health"
 ```
-
-#### 支持的 Provider 列表
-
-| Provider 值 | 代表服务 | 认证方式 |
-|------------|---------|---------|
-| `anthropic` | Anthropic Claude API | `x-api-key` + `anthropic-version` |
-| `openai` | OpenAI, Azure OpenAI, DashScope, Ark, 华为云 MaaS 等 | `Authorization: Bearer` |
-| 空字符串 / 其他 | vLLM, sglang, Ollama, 自建服务 | 无认证（向后兼容） |
 
 #### 可观测性
 
-启用 DEBUG 日志后，可以在日志中观察认证注入行为：
+启用 DEBUG 日志查看探活过程：
 
 ```bash
-# 查看健康检查认证日志
-grep "injecting.*auth\|health check" /var/log/sproxy.log | head -20
+# 查看智能探活日志
+journalctl -u sproxy -f | grep -E "probe:|smart probe:"
 
-# 示例输出
-DEBUG   health: injecting Anthropic auth   {"target": "https://api.anthropic.com"}
-DEBUG   health: injecting Bearer auth      {"target": "https://api.openai.com", "provider": "openai"}
-DEBUG   health: no credential for target  {"target": "http://localhost:11434"}
+# 示例输出（首次探活）
+INFO  health_checker  smart probe: discovering health check method  {"target": "anthropic-api", "addr": "https://api.anthropic.com"}
+INFO  health_checker  probe: discovered working health check method  {"target": "anthropic-api", "method": "GET /v1/models", "status": 401}
+DEBUG health_checker  smart probe: initial health check failed after discovery  {"target": "anthropic-api", "status": 401}
+
+# 示例输出（key 有效时）
+INFO  health_checker  probe: discovered working health check method  {"target": "openai-api", "method": "GET /v1/models", "status": 200}
+DEBUG health_checker  smart probe: initial health check ok after discovery  {"target": "openai-api"}
 ```
 
 ---
@@ -5970,7 +6045,7 @@ DEBUG   health: no credential for target  {"target": "http://localhost:11434"}
    cp sproxy-v2.23.0 /usr/local/bin/sproxy
    ```
 
-4. **（可选）更新配置**：为 LLM target 添加 `health_path: "/v1/models"` 和正确的 `provider` 字段
+4. **（可选）更新配置**：为 LLM target 添加 `health_check_path: "/v1/models"` 和正确的 `provider` 字段
 
 5. **启动 sproxy**（Schema 自动迁移）
    ```bash
@@ -5992,7 +6067,7 @@ DEBUG   health: no credential for target  {"target": "http://localhost:11434"}
 
 - v2.22.0 配置文件直接可用，无需修改
 - 现有 API Key 数据库记录不受影响
-- 未设置 `health_path` 的 target 健康检查行为不变
+- 未设置 `health_check_path` 的 target 健康检查行为不变
 
 ---
 
@@ -6385,3 +6460,134 @@ A: 是的。在 WebUI 或 CLI 上进行 disable，该 target 从 balancer 移除
 
 **Q: 多个 Key 的配额/速率限制如何处理？**  
 A: 每个 Key 独立走配额系统，互不影响。系统会分别统计每个 target 的 token 使用。
+
+---
+
+## 45. v2.24.5 更新说明：智能探活（Smart Probe）
+
+**版本**：v2.24.5  
+**类型**：功能增强（健康检查）
+
+### 45.1 背景
+
+Issue #4 在 v2.23.0 中已修复了健康检查认证注入问题，但仍要求用户手动配置 `health_check_path`。对于没有公开 `/health` 端点的大型 LLM 服务商（Anthropic、OpenAI、火山引擎、华为云等），用户需要查阅文档才知道应该配置什么路径。
+
+此外，v2.23.0 的修复存在一个边界问题：在带有真实 API Key 的情况下，若服务对 `/v1/models` 返回 401（如华为云、小米，因为 Key 格式不同），系统会误判为"无合适探活路径"，导致这些服务仍然无法被主动探活。
+
+### 45.2 新增功能：自动发现探活策略
+
+v2.24.5 引入**智能探活（Smart Probe）**机制，核心特性：
+
+#### 全自动：无需配置路径
+
+所有 target 默认启用主动健康检查，无需配置 `health_check_path`：
+
+```yaml
+# v2.24.5 — 以下配置即可启用所有健康检查功能，无需额外字段
+llm:
+  targets:
+    - url: "https://api.anthropic.com"
+      api_key: "${ANTHROPIC_API_KEY}"
+      provider: "anthropic"
+
+    - url: "https://api.openai.com"
+      api_key: "${OPENAI_API_KEY}"
+      provider: "openai"
+```
+
+#### 策略自动发现与缓存
+
+首次探活时按优先级尝试 5 种内置策略，找到第一个有效的后缓存（默认 2 小时），后续直接复用：
+
+| 优先级 | 策略 | 视为"端点存在" |
+|--------|------|---------------|
+| 1（Anthropic 专用） | `GET /v1/models` | 200、401、403、400 |
+| 2（Anthropic 专用） | `POST /v1/messages` | 200、401、403、400 |
+| 3（通用） | `GET /health` | 200 |
+| 4（通用） | `GET /v1/models` | 200、401、403 |
+| 5（通用） | `POST /v1/chat/completions` | 200、401、403、400 |
+
+> `provider=anthropic` 的 target 优先尝试 Anthropic 专用策略（优先级 1、2），然后再尝试通用策略（3、4、5）。
+
+#### 发现阶段 vs 心跳阶段语义分离
+
+这是此版本的核心修复：
+
+| 阶段 | 401/403 含义 | 处理方式 |
+|------|-------------|---------|
+| **发现阶段**（首次探活） | "端点存在，有认证机制" | ✅ 记录为有效探测路径 |
+| **心跳阶段**（后续定期） | "API Key 无效" | ❌ 记录为 failure，累计熔断 |
+
+这确保了：华为云、小米等在 key 无效时返回 401 的服务，能被成功发现探测路径；一旦进入正式心跳周期，401 仍会正确触发熔断。
+
+### 45.3 配置说明
+
+#### 无需修改现有配置
+
+- 已配置 `health_check_path` 的 target：沿用显式路径，不走智能探活（向后兼容）
+- 未配置 `health_check_path` 的 target：自动启用智能探活（行为变更：之前依赖被动熔断，现在主动探活）
+
+#### 可选：显式指定路径
+
+若您已知路径且希望固定探测行为，可继续使用 `health_check_path`：
+
+```yaml
+targets:
+  - url: "https://my-custom-llm.company.com"
+    api_key: "${MY_KEY}"
+    provider: "openai"
+    health_check_path: "/api/health"   # 显式指定，优先于智能探活
+```
+
+### 45.4 可观测性
+
+启用 `log.level: debug` 后可观察完整探活过程：
+
+```bash
+# 查看智能探活日志
+journalctl -u sproxy -f | grep "probe:\|smart probe:"
+```
+
+**首次探活（缓存冷启动）**：
+```
+INFO  smart probe: discovering health check method  {target: anthropic-api, addr: https://api.anthropic.com, provider: anthropic}
+INFO  probe: discovered working health check method  {target: anthropic-api, method: GET /v1/models (anthropic), status: 401}
+DEBUG smart probe: initial health check failed after discovery  {target: anthropic-api, status: 401}
+```
+（401 表示 key 无效，正确标记为不健康；一旦替换为有效 key，下次心跳将返回 200 并标记为健康）
+
+**缓存命中（正常心跳）**：
+```
+DEBUG health check ok  {target: openai-api}
+```
+
+**凭证更新后重新发现**：
+```
+INFO  credentials updated  {count: 2}
+INFO  smart probe: discovering health check method  {target: anthropic-api, ...}
+```
+
+### 45.5 各厂商兼容性
+
+| 服务 | 自动发现策略 | 首次探活状态码 | 有效 key 时健康状态 |
+|------|------------|--------------|------------------|
+| Anthropic API | `GET /v1/models` | 401 | ✅ 200 |
+| OpenAI API | `GET /v1/models` | 200 | ✅ 200 |
+| 火山引擎 Ark（OpenAI） | `GET /v1/models` | 200 | ✅ 200 |
+| 火山引擎 Ark（Anthropic） | `GET /v1/models` | 401 | ✅ 200 |
+| 腾讯 LKEAP（OpenAI） | `GET /v1/models` | 200 | ✅ 200 |
+| 腾讯 LKEAP（Anthropic） | `POST /v1/messages` | 401 | ✅ 200 |
+| 华为云 ModelArts | `GET /v1/models` | 401 | ✅ 200（key 正确时） |
+| 小米 MiMo | `GET /v1/models` | 401 | ✅ 200（key 正确时） |
+| vLLM / sglang | `GET /health` | 200 | ✅ 200 |
+| Ollama | `GET /health` | 200 | ✅ 200 |
+| 阿里云 DashScope（/coding/v1） | ❌ 无合适路径 | 404 | 退化为纯被动熔断 |
+
+### 45.6 不兼容变更
+
+**无破坏性变更**。唯一的行为变更：
+
+- **之前**：未配置 `health_check_path` 的 target 仅依赖被动熔断（不主动探活）
+- **之后**：所有 target 均参与主动健康检查（智能探活自动发现路径）
+
+若某个 target 的服务在探活路径上有副作用（如收费），建议显式配置 `health_check_path: ""` 并在代码层面等待后续版本支持完全关闭主动探活的选项（当前版本无此开关）。

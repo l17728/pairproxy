@@ -133,18 +133,65 @@ sproxy:
 
 ### Health Check Configuration
 
+> **Scope note**: Health check configuration described here applies to **sproxy** (server-side)
+> LLM target management. The `cproxy.yaml` client config does not have health check settings —
+> sproxy handles all target health checking internally. For the authoritative sproxy health check
+> reference, see [§15.4 of the manual](manual.md#154-智能探活smart-probe) and `config/sproxy.yaml.example`.
+
+PairProxy uses **Smart Probe** (v2.24.5+) to automatically discover the best health check strategy for each target. No manual path configuration is required.
+
+#### Smart Probe (Recommended)
+
+Leave `health_check_path` empty (or omit it). The system will automatically try the following strategies in priority order and cache the first one that works (default TTL: 2 hours):
+
+| Priority | Strategy | OK Status Codes | Best For |
+|----------|----------|-----------------|----------|
+| 1 (Anthropic) | `GET /v1/models` | 200, 401, 403, 400 | Anthropic-compatible APIs |
+| 2 (Anthropic) | `POST /v1/messages` | 200, 401, 403, 400 | Anthropic-compatible APIs |
+| 3 (Generic) | `GET /health` | 200 | vLLM, sglang, self-hosted |
+| 4 (Generic) | `GET /v1/models` | 200, 401, 403 | OpenAI-compatible APIs |
+| 5 (Generic) | `POST /v1/chat/completions` | 200, 401, 403, 400 | Universal fallback |
+
+**Two-phase semantics**: During discovery, 401/403 means "endpoint found" (service is online). During regular health checks, 401/403 means "API key invalid" (mark unhealthy).
+
+> **Note** (v2.24.6+): The `health_check_timeout` setting now correctly applies to the Smart Probe HTTP client as well. Prior to v2.24.6, `WithTimeout` only updated the regular heartbeat client; the Discover client retained the default timeout regardless of configuration.
+
+> **Note** (v2.24.6+): A whitespace-only `api_key` (spaces, tabs) is treated as absent — no `Authorization` header is injected. This matches the behavior of omitting the key entirely.
+
 ```yaml
-health_check:
-  interval: 30s      # Check interval
-  timeout: 5s        # Request timeout
-  path: "/health"    # Health check endpoint
-  enabled: true      # Enable/disable checks
+# Recommended: omit health_check_path — Smart Probe handles discovery automatically
+llm:
+  targets:
+    - url: "https://api.anthropic.com"
+      api_key: "${ANTHROPIC_API_KEY}"
+      provider: "anthropic"
+      # No health_check_path needed — Smart Probe discovers GET /v1/models
+
+    - url: "https://api.openai.com"
+      api_key: "${OPENAI_API_KEY}"
+      provider: "openai"
+      # No health_check_path needed — Smart Probe discovers GET /v1/models
 ```
 
-**Environment Variables:**
-- `CPROXY_HEALTH_CHECK_INTERVAL`
-- `CPROXY_HEALTH_CHECK_TIMEOUT`
-- `CPROXY_HEALTH_CHECK_PATH`
+#### Explicit Path (Advanced)
+
+If you know the exact health check path, you can set it explicitly on a per-target basis in `sproxy.yaml` to skip auto-discovery:
+
+```yaml
+# In sproxy.yaml — per-target explicit health check path
+llm:
+  targets:
+    - url: "https://my-custom-llm.company.com"
+      api_key: "${MY_KEY}"
+      provider: "openai"
+      health_check_path: "/api/health"   # Explicit path — bypasses Smart Probe
+```
+
+**Path priority**: per-target `health_check_path` > Smart Probe auto-discovery
+
+> **Note**: The `health_check_path` field is specific to `sproxy.yaml` (server-side LLM target configuration).
+> There is no global `health_check.interval`/`health_check.path` block in the cproxy config — those parameters
+> are internal to sproxy and not exposed as cproxy client settings.
 
 ### Request Configuration
 

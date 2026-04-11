@@ -91,6 +91,15 @@ func (q *Querier) rebind(query string) string {
 	return b.String()
 }
 
+// toUTC normalises a time value to UTC so that SQLite string comparisons
+// (which are lexicographic) work correctly regardless of the caller's locale.
+// This is critical for queries using WHERE created_at >= ? conditions:
+// SQLite compares timestamps as strings, so "2026-04-09 10:00:00" vs "2026-04-09 00:00:00"
+// will fail if one is in local time and the other is in UTC.
+func toUTC(t time.Time) time.Time {
+	return t.UTC()
+}
+
 // sqlDate returns a SQL expression that casts created_at to a date string 'YYYY-MM-DD'.
 func (q *Querier) sqlDate(col string) string {
 	if q.driver == "postgres" {
@@ -233,6 +242,7 @@ func (q *Querier) CountRegisteredUsers() int {
 
 // QueryKPI computes the key performance indicators for the period and the previous period.
 func (q *Querier) QueryKPI(from, to time.Time) (KPIData, error) {
+	from, to = toUTC(from), toUTC(to)
 	var k KPIData
 
 	row := q.queryRow(`
@@ -323,6 +333,7 @@ func (q *Querier) queryDurations(from, to time.Time) []int64 {
 
 // QueryDailyTrend returns per-day aggregates.
 func (q *Querier) QueryDailyTrend(from, to time.Time) ([]DailyRow, error) {
+	from, to = toUTC(from), toUTC(to)
 	query := q.rebind(fmt.Sprintf(`
 		SELECT
 			%s AS day,
@@ -361,6 +372,7 @@ func (q *Querier) QueryDailyTrend(from, to time.Time) ([]DailyRow, error) {
 
 // QueryHeatmap returns request counts grouped by hour (0-23) and day-of-week (0-6).
 func (q *Querier) QueryHeatmap(from, to time.Time) ([]HeatmapCell, error) {
+	from, to = toUTC(from), toUTC(to)
 	query := q.rebind(fmt.Sprintf(`
 		SELECT
 			%s AS hour,
@@ -936,6 +948,7 @@ func changeRate(curr, prev float64) float64 {
 
 // QueryLatencyBoxPlotByModel returns latency distribution by model (Q1, Median, Q3, etc.)
 func (q *Querier) QueryLatencyBoxPlotByModel(from, to time.Time) ([]LatencyBoxPlotRow, error) {
+	from, to = toUTC(from), toUTC(to)
 	rows, err := q.db.Query(q.rebind(fmt.Sprintf(`
 		SELECT COALESCE(lt.name, ul.model, '未知模型') AS model, ul.duration_ms
 		FROM usage_logs ul
@@ -997,6 +1010,7 @@ func (q *Querier) QueryLatencyBoxPlotByModel(from, to time.Time) ([]LatencyBoxPl
 
 // QueryLatencyPercentileTrend returns P50/P95/P99 latency per day.
 func (q *Querier) QueryLatencyPercentileTrend(from, to time.Time) ([]LatencyPercentileRow, error) {
+	from, to = toUTC(from), toUTC(to)
 	rows, err := q.db.Query(q.rebind(fmt.Sprintf(`
 		SELECT %s AS day, duration_ms
 		FROM usage_logs
@@ -1056,6 +1070,7 @@ func (q *Querier) QueryLatencyPercentileTrend(from, to time.Time) ([]LatencyPerc
 
 // QueryDailyLatencyTrend returns average latency per day (for trend chart).
 func (q *Querier) QueryDailyLatencyTrend(from, to time.Time) ([]DailyLatencyRow, error) {
+	from, to = toUTC(from), toUTC(to)
 	rows, err := q.db.Query(q.rebind(fmt.Sprintf(`
 		SELECT
 			%s AS day,
@@ -1098,6 +1113,7 @@ func (q *Querier) QueryDailyLatencyTrend(from, to time.Time) ([]DailyLatencyRow,
 
 // QueryUserRequestBoxPlot computes box plot statistics over per-user request counts.
 func (q *Querier) QueryUserRequestBoxPlot(from, to time.Time) (UserRequestBoxPlotData, error) {
+	from, to = toUTC(from), toUTC(to)
 	var result UserRequestBoxPlotData
 
 	rows, err := q.query(`

@@ -74,13 +74,29 @@ Routes requests to appropriate backends:
 - **Load Balancing**: Distribute across healthy targets
 - **Fallback**: Retry on failure
 
-### 3. Health Monitor (`internal/alert/target_health_monitor.go`)
+### 3. Health Monitor (`internal/lb/health.go`, `internal/lb/probe.go`)
 
-Monitors target health:
-- **Periodic Checks**: Health check intervals
-- **Status Tracking**: Healthy/unhealthy states
-- **Alert Generation**: Create alerts on status changes
-- **Recovery Detection**: Detect when targets recover
+Monitors upstream LLM target health using **Smart Probe** (v2.24.5+):
+
+- **Smart Probe Discovery**: Automatically discovers the best health check strategy for each target on first check — no manual path configuration required
+- **Strategy Cache**: Caches discovered probe strategies per target (default TTL: 2h) to avoid repeated discovery overhead; **`unreachable` is never cached** — connection-refused targets are retried on every heartbeat cycle so recovery is detected promptly
+- **Two-phase Semantics**: During discovery, 401/403 = "endpoint found"; during health checks, 401/403 = "key invalid"
+- **Credential Injection**: Provider-aware auth injection (`x-api-key` for Anthropic, `Authorization: Bearer` for OpenAI-compatible); whitespace-only keys treated as absent
+- **Passive Circuit Breaking**: Tracks consecutive failures; marks targets unhealthy after threshold reached
+- **Alert Generation**: Creates alerts on status changes
+- **Recovery Detection**: Marks targets healthy again after recovery delay; recovery goroutines respond to shutdown signal within milliseconds (no blocking on the full delay at exit)
+
+**Supported probe strategies (in priority order for generic targets):**
+
+```
+GET /health                  → 200 (vLLM, sglang, self-hosted)
+GET /v1/models               → 200/401/403 (OpenAI-compatible)
+POST /v1/chat/completions    → 200/401/403/400 (universal fallback)
+
+Additional for provider=anthropic:
+GET /v1/models (anthropic)   → 200/401/403/400
+POST /v1/messages            → 200/401/403/400
+```
 
 ### 4. Database Layer (`internal/db/`)
 
@@ -136,25 +152,33 @@ Converts between API formats:
 8. Return to Client
 ```
 
-### Health Check Flow
+### Health Check Flow (Smart Probe)
 
 ```
-1. Periodic Timer (every 30s)
-   ↓
-2. For Each Target
-   ├─ Send health check request
-   ├─ Measure response time
-   └─ Check status code
-   ↓
-3. Update Status
-   ├─ Mark healthy/unhealthy
-   ├─ Track consecutive failures
-   └─ Update database
-   ↓
-4. Generate Alerts
-   ├─ Detect status changes
-   ├─ Create alert records
-   └─ Notify subscribers
+Periodic Timer (every 30s)
+  ↓
+For Each Target
+  ├─ Has explicit health_check_path?
+  │   ├─ Yes → Send request to that path with auth injection
+  │   └─ No  → Smart Probe
+  │              ├─ ProbeCache hit?
+  │              │   ├─ unreachable → recordFailure() (no HTTP request)
+  │              │   └─ has method  → CheckWithMethod() + okWithAuth()
+  │              └─ Cache miss → Discover()
+  │                              ├─ Try strategies in priority order
+  │                              │   (okForDiscovery: 401=found)
+  │                              ├─ Found → cache + CheckWithMethod() + okWithAuth()
+  │                              ├─ Unreachable → cache unreachable + recordFailure()
+  │                              └─ No path → recordFailure() (no cache)
+  ↓
+Update Status
+  ├─ recordSuccess() → mark healthy, reset failure count
+  └─ recordFailure() → increment count; at threshold → mark unhealthy
+  ↓
+Generate Alerts
+  ├─ Detect status changes
+  ├─ Create alert records
+  └─ Notify subscribers
 ```
 
 ## Multi-Tenancy

@@ -83,10 +83,10 @@ if target == nil {
 
 **代码验证**:
 ```go
-// internal/lb/health.go:activeCheck()
+// internal/lb/health.go:checkOneWithPath()
 ctx, cancel := context.WithTimeout(context.Background(), hc.timeout)
 defer cancel()
-req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
+req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 ```
 
 **风险评估**: ✅ **低风险** - 非流式请求有重试保护，流式请求断开符合预期
@@ -296,22 +296,27 @@ for len(bucket.timestamps) > 0 && bucket.timestamps[0].Before(cutoff) {
 **场景**: 多个 goroutine 同时检测到节点故障，触发熔断
 
 **系统行为**:
-- ✅ **原子计数**: `atomic.Int32` 保证 `failCount` 原子递增
-- ✅ **CAS 操作**: `atomic.CompareAndSwap` 保证状态切换原子性
+- ✅ **互斥锁保护**: `sync.Mutex` 保证 `failures` 计数器原子递增
+- ✅ **阈值检查**: `count >= hc.failThreshold` 保证状态切换只发生一次（锁内读取）
 - ✅ **无重复熔断**: 即使并发触发，只会熔断一次
 
 **代码验证**:
 ```go
-// internal/lb/health.go:RecordFailure()
-newCount := atomic.AddInt32(&state.failCount, 1)
-if newCount >= int32(hc.failThreshold) {
-    if atomic.CompareAndSwapInt32(&state.healthy, 1, 0) {
-        hc.logger.Warn("target marked unhealthy (passive)")
+// internal/lb/health.go:recordFailure()
+func (hc *HealthChecker) recordFailure(id string) {
+    hc.mu.Lock()
+    hc.failures[id]++
+    count := hc.failures[id]
+    hc.mu.Unlock()
+
+    if count >= hc.failThreshold {
+        hc.logger.Warn("target marked unhealthy", ...)
+        hc.balancer.MarkUnhealthy(id)
     }
 }
 ```
 
-**风险评估**: ✅ **低风险** - 原子操作保证并发安全
+**风险评估**: ✅ **低风险** - 互斥锁保证并发安全，阈值检查在锁内完成
 
 ---
 

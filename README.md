@@ -37,7 +37,7 @@
 | **用户配额** | 按分组设置每日/每月 token 上限，超额返回 429 |
 | **速率限制** | 每用户每分钟请求数（RPM）限制，滑动窗口算法 |
 | **负载均衡** | cproxy↔sproxy、sproxy↔LLM 两级负载均衡，加权随机策略 |
-| **健康检查** | 主动（GET /health）+ 被动（连续失败熔断）双重检查；WebUI/API 变更后运行时同步（v2.19.0） |
+| **健康检查** | 主动（Smart Probe 自动发现 + GET /health 显式路径）+ 被动（连续失败熔断）双重检查；WebUI/API 变更后运行时同步（v2.19.0）；Smart Probe（v2.24.5+）无需配置路径自动探活 |
 | **集群模式** | primary + worker 多节点（SQLite），或 peer 对等节点（PostgreSQL），路由表自动下发给 cproxy |
 | **Web Dashboard** | Go 模板 + Tailwind CSS，内嵌二进制，无需前端构建 |
 | **Admin CLI** | 命令行管理用户、分组、配额、统计 |

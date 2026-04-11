@@ -525,7 +525,7 @@ func TestSProxyRejectsRequestWhenBoundTargetUnhealthy(t *testing.T) {
 	})
 
 	// 直接测试 pickLLMTarget 在 tried 包含 boundURL 时返回 ErrBoundTargetUnavailable
-	_, err := sp.pickLLMTarget("/v1/messages", "user1", "", []string{boundURL}, nil)
+	_, err := sp.pickLLMTarget("/v1/messages", "user1", "", "", []string{boundURL}, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -882,14 +882,14 @@ func TestAutoModelFromBalancer_ExplicitAutoModel(t *testing.T) {
 	bal := lb.NewWeightedRandom(lbTargets)
 	sp.SetLLMHealthChecker(bal, nil)
 
-	got1 := sp.autoModelFromBalancer("http://target1")
+	got1 := sp.autoModelFromURL("http://target1")
 	if got1 != "claude-3-sonnet-20250219" {
-		t.Errorf("autoModelFromBalancer for target1 = %q, want claude-3-sonnet-20250219", got1)
+		t.Errorf("autoModelFromURL for target1 = %q, want claude-3-sonnet-20250219", got1)
 	}
 
-	got2 := sp.autoModelFromBalancer("http://target2")
+	got2 := sp.autoModelFromURL("http://target2")
 	if got2 != "gpt-4-turbo" {
-		t.Errorf("autoModelFromBalancer for target2 = %q, want gpt-4-turbo", got2)
+		t.Errorf("autoModelFromURL for target2 = %q, want gpt-4-turbo", got2)
 	}
 }
 
@@ -903,9 +903,9 @@ func TestAutoModelFromBalancer_FallbackToFirst(t *testing.T) {
 	bal := lb.NewWeightedRandom(lbTargets)
 	sp.SetLLMHealthChecker(bal, nil)
 
-	got := sp.autoModelFromBalancer("http://target1")
+	got := sp.autoModelFromURL("http://target1")
 	if got != "claude-3-opus-20250119" {
-		t.Errorf("autoModelFromBalancer fallback = %q, want claude-3-opus-20250119", got)
+		t.Errorf("autoModelFromURL fallback = %q, want claude-3-opus-20250119", got)
 	}
 }
 
@@ -919,9 +919,9 @@ func TestAutoModelFromBalancer_EmptyFallback(t *testing.T) {
 	bal := lb.NewWeightedRandom(lbTargets)
 	sp.SetLLMHealthChecker(bal, nil)
 
-	got := sp.autoModelFromBalancer("http://target1")
+	got := sp.autoModelFromURL("http://target1")
 	if got != "" {
-		t.Errorf("autoModelFromBalancer with no config = %q, want empty string", got)
+		t.Errorf("autoModelFromURL with no config = %q, want empty string", got)
 	}
 }
 
@@ -935,9 +935,9 @@ func TestAutoModelFromBalancer_NotFound(t *testing.T) {
 	bal := lb.NewWeightedRandom(lbTargets)
 	sp.SetLLMHealthChecker(bal, nil)
 
-	got := sp.autoModelFromBalancer("http://nonexistent")
+	got := sp.autoModelFromURL("http://nonexistent")
 	if got != "" {
-		t.Errorf("autoModelFromBalancer for nonexistent target = %q, want empty string", got)
+		t.Errorf("autoModelFromURL for nonexistent target = %q, want empty string", got)
 	}
 }
 
@@ -946,9 +946,8 @@ func TestAutoModelFromBalancer_NoBalancer(t *testing.T) {
 	sp, _ := newTestSProxy(t, "http://mock")
 	// 不设置 llmBalancer
 
-	got := sp.autoModelFromBalancer("http://target1")
+	got := sp.autoModelFromURL("http://target1")
 	if got != "" {
-		t.Errorf("autoModelFromBalancer with no balancer = %q, want empty string", got)
+		t.Errorf("autoModelFromURL with no balancer = %q, want empty string", got)
 	}
 }
-

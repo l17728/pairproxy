@@ -53,11 +53,47 @@ llm:
   # 多 Provider 支持：sproxy 根据请求路径自动路由到对应 provider 的 target
   #   /v1/messages         → 路由到 provider: anthropic 的 target
   #   /v1/chat/completions → 路由到 provider: openai 的 target
+  #
+  # ── 健康检查说明（智能探活） ──────────────────────────────────────────────
+  #
+  # sproxy 默认为每个 target 自动发现最合适的健康检查方式（智能探活）：
+  #
+  #   第一次检查时按 provider 类型依次尝试以下策略，找到第一个有效的后缓存（默认 2h）：
+  #
+  #   【通用 target（provider 非 anthropic）】
+  #     1. GET /health             → 200 视为健康（适合 vLLM/sglang/自建代理）
+  #     2. GET /v1/models          → 200/401/403 均视为"服务在线"（适合 OpenAI 兼容）
+  #     3. POST /v1/chat/completions → 200/401/403/400 均视为"服务在线"（通用兜底）
+  #
+  #   【Anthropic provider（provider: "anthropic"）】专属策略优先
+  #     1. GET /v1/models          → 200/401/403/400（含华为云 400 空 auth）
+  #     2. POST /v1/messages       → 200/401/403/400
+  #     3. GET /health             → 200（通用兜底）
+  #     4. GET /v1/models          → 200/401/403（通用）
+  #     5. POST /v1/chat/completions → 200/401/403/400（通用）
+  #
+  #   重要：发现阶段 401/403 仅表示"端点存在"；正式心跳时 401 仍视为 key 无效→失败
+  #
+  # 若您已知目标的健康检查路径，可以通过 health_check_path 显式指定，跳过自动探测：
+  #   health_check_path: "/health"      # 直接使用，不走自动探测
+  #   health_check_path: "/v1/models"   # 对 Anthropic/OpenAI 适用
+  #
+  # 各厂商推荐配置（无需手动指定，智能探活会自动发现）：
+  #   Anthropic API        → 自动发现 GET /v1/models
+  #   OpenAI API           → 自动发现 GET /v1/models
+  #   火山引擎 Ark         → 自动发现 GET /v1/models
+  #   腾讯 LKEAP           → 自动发现 GET /v1/models（OpenAI）/ POST /v1/messages（Anthropic）
+  #   华为云 ModelArts     → 自动发现 GET /v1/models（key 无效时 401，仍视为端点存在）
+  #   小米 MiMo            → 自动发现 GET /v1/models
+  #   vLLM / sglang        → 自动发现 GET /health（无需配置 key）
+  #   Ollama               → 自动发现 GET /health
+  # ─────────────────────────────────────────────────────────────────────────
   targets:
     - url: "https://api.anthropic.com"
       api_key: "${ANTHROPIC_API_KEY_1}"   # 从环境变量读取，不要明文写 key
       weight: 1
       provider: "anthropic"               # 可省略，默认即为 anthropic
+      # health_check_path 留空（或不填）→ 智能探活自动发现 GET /v1/models
 
     - url: "https://api.anthropic.com"
       api_key: "${ANTHROPIC_API_KEY_2}"
@@ -70,18 +106,61 @@ llm:
     #   weight: 1
     #   provider: "openai"
     #   name: "OpenAI GPT"                # 可选显示名（Dashboard 展示）
+    #   # 智能探活会自动发现 GET /v1/models，无需手动配置 health_check_path
 
     # 示例：接入 Ollama 本地推理（与 OpenAI 格式兼容）
     # - url: "http://localhost:11434"
     #   api_key: "ollama"                 # Ollama 不需要真实 key，随意填写
     #   weight: 1
     #   provider: "ollama"
+    #   # 智能探活会自动发现 GET /health
 
     # 示例：接入其他兼容 Anthropic API 的服务（如 AWS Bedrock 中转层）
     # - url: "https://bedrock-proxy.company.com"
     #   api_key: "${BEDROCK_API_KEY}"
     #   weight: 2   # 权重更高，分配更多流量
     #   provider: "anthropic"
+
+    # 示例：火山引擎 Ark（OpenAI 兼容）
+    # - url: "https://ark.cn-beijing.volces.com/api/v3"
+    #   api_key: "${ARK_API_KEY}"
+    #   weight: 1
+    #   provider: "openai"
+    #   # 智能探活发现 GET /v1/models（200 表示健康）
+
+    # 示例：华为云 ModelArts / MaaS（OpenAI 兼容）
+    # - url: "https://api.modelarts-maas.com/openai/v1"
+    #   api_key: "${HUAWEI_API_KEY}"
+    #   weight: 1
+    #   provider: "openai"
+    #   # 智能探活发现 GET /v1/models（401 仅表示端点存在，key 有效时返回 200）
+
+    # 示例：腾讯 LKEAP（Anthropic 兼容）
+    # - url: "https://api.lkeap.cloud.tencent.com/v1"
+    #   api_key: "${TENCENT_API_KEY}"
+    #   weight: 1
+    #   provider: "anthropic"
+    #   # 智能探活发现 POST /v1/messages
+
+    # 示例：带模型过滤的 target（仅路由指定模型的请求到此 target）
+    # - url: "https://api.anthropic.com"
+    #   api_key: "${ANTHROPIC_API_KEY}"
+    #   provider: "anthropic"
+    #   weight: 2
+    #   supported_models:                    # 该 target 支持的模型列表（支持通配符，空=支持所有）
+    #     - "claude-sonnet-4-*"
+    #     - "claude-opus-4-*"
+    #   auto_model: "claude-sonnet-4-20250514"  # auto 模式下使用的模型名
+
+    # 示例：带模型过滤的 OpenAI target
+    # - url: "https://api.openai.com"
+    #   api_key: "${OPENAI_API_KEY}"
+    #   provider: "openai"
+    #   weight: 1
+    #   supported_models:
+    #     - "gpt-4o"
+    #     - "gpt-4o-mini"
+    #   auto_model: "gpt-4o"
 
 
 # ------------------------------------------------------------------------------

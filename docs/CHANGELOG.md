@@ -1,5 +1,59 @@
 # PairProxy Changelog
 
+## [v2.24.6] - 2026-04-10
+
+### 🐛 Bug Fixes
+
+#### 智能探活（Smart Probe）行为修复
+
+- **`WithTimeout` 未同步更新 prober 客户端**：调用 `WithTimeout` 仅更新了 `hc.client` 和 `hc.timeout`，但 `hc.prober` 持有自己独立的 `http.Client`，导致智能探活仍使用旧超时值。修复：`WithTimeout` 现同时重建 `hc.prober = NewProber(d, h.logger)`，确保三者超时一致。
+
+- **空白 API Key 被当作有效凭证**：`injectCredential` 原先检查 `cred.APIKey == ""`，空格或制表符组成的 key 会通过检查并注入无效的 `Authorization` header，导致向上游发出带噪声认证头的请求。修复：先 `strings.TrimSpace()` 再判空，空白字符串视为"无凭证"。
+
+- **`UpdateHealthPaths` 不触发缓存失效**：目标从显式健康检查路径改为全局路径时，旧的 probe 缓存仍存在，导致继续使用已失效的探活策略。修复：`UpdateHealthPaths` 现遍历旧路径集合，对不再拥有显式路径的目标调用 `probeCache.invalidate()`，与 `UpdateCredentials` 行为对齐。
+
+- **`buildProbeURL` 未过滤查询参数和 Fragment**：当目标地址（`addr`）包含 `?query` 或 `#fragment` 时，探活 URL 会被拼接成无效路径（如 `/v1?key=val/models`）。修复：使用 `url.Parse` 提取路径，并在构建 addrBase 前用 `strings.IndexAny(addrBase, "?#")` 截断。
+
+#### Discover 状态机修复
+
+- **端点超时 vs 连接拒绝区分**：原 Discover 将所有 `definitivelyUnhealthy()` 错误均视为连接拒绝（`unreachable=true`），但 HTTP 请求超时也会触发此分支，导致临时超时的目标被错误地标记为不可达并缓存。修复：新增 `isEndpointTimeout()` helper，在 Discover 循环内区分两类失败：端点超时 → `continue` 尝试下一路径；硬连接失败（拒绝/DNS）→ 返回 `unreachable=true`。
+
+- **所有路径均超时时错误标记不可达**：若 Discover 期间所有探活路径均超时（无 HTTP 响应），原实现会返回 `nil, false`，但语义不清晰。修复：通过 `gotHTTPResponse` 标志明确区分三种结果——有响应但不匹配（服务在线）vs 所有超时（网络不确定）vs 硬失败（连接拒绝），后两者均不缓存。
+
+- **Context 取消被误认为 unreachable**：Discover 循环的上层 context 超时（预算耗尽）会导致 `ctx.Err() != nil`，若处理不当会与硬连接失败混淆。修复：循环顶部检查 `ctx.Err()`，设置 `budgetExhausted = true` 并 break，post-loop 返回 `nil, false`（非 unreachable）。
+
+#### 并发安全与生命周期修复
+
+- **`Start()` 重复调用导致 `close(stopCh)` panic**：`loop()` 退出时关闭 `stopCh`，若再次调用 `Start()` 使用同一已关闭的 channel，recovery goroutine 的 `select` 会在关闭的 channel 上立即返回，错误退出。修复：`Start()` 首行重建 `stopCh = make(chan struct{})`。
+
+- **`recoveryDelay` goroutine 无法及时响应关闭信号**：进程关闭时，等待 `recoveryDelay`（可达数分钟）的 goroutine 会阻塞 `wg.Wait()`。修复：使用 `select { case <-time.After(delay): case <-hc.stopCh: return }` 替代 `time.Sleep`，关闭信号到达后毫秒级退出。
+
+- **`checkAll()` 在锁释放后读取 `globalHealthPath`**：`hc.healthPath` 快照原在锁外读取，存在数据竞争。修复：在持有 `hc.mu` 时将其赋给局部变量 `globalHealthPath`，之后使用该快照。
+
+### 🧪 测试覆盖率提升
+
+新增 12 个单元/集成测试（`probe_unit_test.go`、`probe_real_test.go`）：
+
+- `TestInjectCredential_WhitespaceKey` — 纯空格 key 不产生认证头
+- `TestInjectCredential_TabWhitespaceKey` — 制表符 key 不产生认证头
+- `TestBuildProbeURL_QueryParams` — 含查询参数、Fragment 的地址正确构建探活 URL
+- `TestWithTimeout_UpdatesProberClient` — WithTimeout 同步更新 prober 的 HTTP 客户端超时
+- `TestWithTimeout_Default` — 默认超时下 hc.client 与 prober 一致
+- `TestIsEndpointTimeout` — 6 种错误类型的分类正确性
+- `TestUpdateHealthPaths_InvalidatesCache` — 失去显式路径的目标缓存被清除
+- `TestUpdateHealthPaths_NoInvalidationForNewTargets` — 新增目标不触发无效缓存清除
+- `TestDiscover_CtxExpiry_NotUnreachable` — 预取消 context → nil,false 而非 unreachable
+- `TestIsEndpointTimeout_ContextCanceled` — context.Canceled 文档化语义
+- `TestProbe_Discover_ContinuesPastEndpointTimeout` — 端点超时后继续尝试下一路径
+- `TestProbe_Discover_ConnectionRefusedIsUnreachable` — 连接拒绝 → unreachable=true
+- `TestProbe_Discover_AllMethodsTimeout_NotUnreachable` — 全部超时 → unreachable=false
+
+### 📊 Tests
+
+- 主模块测试：**2,090+** 个（含新增 12 个 lb 包测试，0 FAIL）
+
+---
+
 ## [v2.24.4] - 2026-04-09
 
 ### 🐛 Bug Fixes

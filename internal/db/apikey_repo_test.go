@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap/zaptest"
 )
@@ -367,4 +368,144 @@ func TestAPIKeyRepo_FindByProviderAndValue_DifferentProvider(t *testing.T) {
 	found, err = repo.FindByProviderAndValue("openai", "same-encrypted-value")
 	require.NoError(t, err)
 	require.NotNil(t, found, "正确 provider 应该匹配")
+}
+
+// ---------------------------------------------------------------------------
+// BUG-3: findByAssignment 只取第一个 — 号池无法 key 轮换
+// ---------------------------------------------------------------------------
+
+// TestAPIKeyRepo_FindForUser_OnlyReturnsFirst 验证 BUG-3 的当前行为:
+// 一个 group 分配了多个 key，FindForUser 只返回第一个（按插入顺序）。
+// 这个测试描述当前的"错误行为"——在 BUG-3 修复前，此测试通过；
+// BUG-3 完整修复（引入轮换）后，此测试将被替换为轮换验证测试。
+func TestAPIKeyRepo_FindForUser_OnlyReturnsFirst_CurrentBehavior(t *testing.T) {
+	repo, _, groupRepo, cleanup := setupAPIKeyTest(t)
+	defer cleanup()
+
+	grp := &Group{ID: "grp-multi", Name: "multi-key-group"}
+	require.NoError(t, groupRepo.Create(grp))
+
+	// 创建 3 个 key，都分配给同一 group
+	key1, err := repo.Create("pool-key-1", "enc-pool-1", "openai")
+	require.NoError(t, err)
+	key2, err := repo.Create("pool-key-2", "enc-pool-2", "openai")
+	require.NoError(t, err)
+	key3, err := repo.Create("pool-key-3", "enc-pool-3", "openai")
+	require.NoError(t, err)
+
+	gid := grp.ID
+	require.NoError(t, repo.Assign(key1.ID, nil, &gid))
+	require.NoError(t, repo.Assign(key2.ID, nil, &gid))
+	require.NoError(t, repo.Assign(key3.ID, nil, &gid))
+
+	// 当前行为：FindForUser 每次都返回同一个 key（第一条分配记录）
+	results := map[string]int{}
+	for i := 0; i < 10; i++ {
+		found, err := repo.FindForUser("", grp.ID)
+		require.NoError(t, err)
+		require.NotNil(t, found, "应找到至少一个 key")
+		results[found.ID]++
+	}
+
+	// BUG-3 现状：10 次调用只返回同一个 key（无轮换）
+	t.Logf("BUG-3 当前行为：10 次 FindForUser 只返回 %d 个不同的 key（预期 3 个，应轮换）",
+		len(results))
+	if len(results) == 1 {
+		t.Log("BUG-3 确认存在：FindForUser 始终返回同一个 key，无法轮换")
+	}
+}
+
+// TestAPIKeyRepo_FindAllForGroup_ReturnsAllKeys 验证 BUG-3 的修复：
+// FindAllForGroup 返回分配给指定 group 的所有活跃 key。
+func TestAPIKeyRepo_FindAllForGroup_ReturnsAllKeys(t *testing.T) {
+	repo, _, groupRepo, cleanup := setupAPIKeyTest(t)
+	defer cleanup()
+
+	grp := &Group{ID: "grp-all", Name: "all-keys-group"}
+	require.NoError(t, groupRepo.Create(grp))
+
+	key1, err := repo.Create("all-key-1", "enc-all-1", "openai")
+	require.NoError(t, err)
+	key2, err := repo.Create("all-key-2", "enc-all-2", "openai")
+	require.NoError(t, err)
+	key3, err := repo.Create("all-key-3", "enc-all-3", "openai")
+	require.NoError(t, err)
+
+	gid := grp.ID
+	require.NoError(t, repo.Assign(key1.ID, nil, &gid))
+	require.NoError(t, repo.Assign(key2.ID, nil, &gid))
+	require.NoError(t, repo.Assign(key3.ID, nil, &gid))
+
+	keys, err := repo.FindAllForGroup(grp.ID)
+	require.NoError(t, err)
+	require.Len(t, keys, 3, "FindAllForGroup 应返回所有 3 个分配的 key")
+
+	keyIDs := map[string]bool{}
+	for _, k := range keys {
+		keyIDs[k.ID] = true
+	}
+	assert.True(t, keyIDs[key1.ID], "应包含 key1")
+	assert.True(t, keyIDs[key2.ID], "应包含 key2")
+	assert.True(t, keyIDs[key3.ID], "应包含 key3")
+}
+
+// TestAPIKeyRepo_FindAllForGroup_ExcludesRevoked 验证 FindAllForGroup 不返回已吊销的 key。
+func TestAPIKeyRepo_FindAllForGroup_ExcludesRevoked(t *testing.T) {
+	repo, _, groupRepo, cleanup := setupAPIKeyTest(t)
+	defer cleanup()
+
+	grp := &Group{ID: "grp-revoke", Name: "revoke-group"}
+	require.NoError(t, groupRepo.Create(grp))
+
+	keyActive, err := repo.Create("active-key", "enc-active", "openai")
+	require.NoError(t, err)
+	keyRevoked, err := repo.Create("revoked-key", "enc-revoked", "openai")
+	require.NoError(t, err)
+
+	gid := grp.ID
+	require.NoError(t, repo.Assign(keyActive.ID, nil, &gid))
+	require.NoError(t, repo.Assign(keyRevoked.ID, nil, &gid))
+	require.NoError(t, repo.Revoke(keyRevoked.ID))
+
+	keys, err := repo.FindAllForGroup(grp.ID)
+	require.NoError(t, err)
+	require.Len(t, keys, 1, "已吊销的 key 不应出现在结果中")
+	assert.Equal(t, keyActive.ID, keys[0].ID)
+}
+
+// TestAPIKeyRepo_FindAllForGroup_EmptyGroup 验证空 group 返回空列表。
+func TestAPIKeyRepo_FindAllForGroup_EmptyGroup(t *testing.T) {
+	repo, _, _, cleanup := setupAPIKeyTest(t)
+	defer cleanup()
+
+	keys, err := repo.FindAllForGroup("nonexistent-group")
+	require.NoError(t, err)
+	assert.Empty(t, keys, "不存在的 group 应返回空列表")
+}
+
+// TestAPIKeyRepo_FindAllForGroup_IgnoresUserAssignments 验证 FindAllForGroup
+// 只返回分组级分配，不混入同 key 的用户级分配。
+func TestAPIKeyRepo_FindAllForGroup_IgnoresUserAssignments(t *testing.T) {
+	repo, userRepo, groupRepo, cleanup := setupAPIKeyTest(t)
+	defer cleanup()
+
+	grp := &Group{ID: "grp-sep", Name: "sep-group"}
+	require.NoError(t, groupRepo.Create(grp))
+	user := &User{ID: "usr-sep", Username: "sep-user", PasswordHash: "x"}
+	require.NoError(t, userRepo.Create(user))
+
+	groupKey, err := repo.Create("group-only-key", "enc-grp", "openai")
+	require.NoError(t, err)
+	userKey, err := repo.Create("user-only-key", "enc-usr", "openai")
+	require.NoError(t, err)
+
+	gid := grp.ID
+	uid := user.ID
+	require.NoError(t, repo.Assign(groupKey.ID, nil, &gid))  // 分组级
+	require.NoError(t, repo.Assign(userKey.ID, &uid, nil))   // 用户级
+
+	keys, err := repo.FindAllForGroup(grp.ID)
+	require.NoError(t, err)
+	require.Len(t, keys, 1, "FindAllForGroup 只应返回分组级分配的 key")
+	assert.Equal(t, groupKey.ID, keys[0].ID, "应返回分组级 key，不含用户级 key")
 }

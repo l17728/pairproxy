@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,12 +17,14 @@ func TestHealthChecker_Anthropic_Auth(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 
 	// Mock server 验证 Anthropic 认证头
+	var mu sync.Mutex
 	var capturedHeaders http.Header
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		capturedHeaders = r.Header.Clone()
+		mu.Unlock()
 		w.WriteHeader(http.StatusOK)
 	}))
-	defer server.Close()
 
 	// 创建 balancer 和 health checker
 	target := Target{ID: "anthropic-api", Addr: server.URL, Weight: 1, Healthy: true}
@@ -39,24 +42,31 @@ func TestHealthChecker_Anthropic_Auth(t *testing.T) {
 	// 执行健康检查
 	hc.CheckTarget("anthropic-api")
 	hc.Wait()
+	server.Close() // 确保 handler goroutine 已完成写入
+
+	mu.Lock()
+	hdrs := capturedHeaders
+	mu.Unlock()
 
 	// 验证请求头
-	assert.Equal(t, "sk-ant-test-key-12345", capturedHeaders.Get("x-api-key"))
-	assert.Equal(t, "2023-06-01", capturedHeaders.Get("anthropic-version"))
+	assert.Equal(t, "sk-ant-test-key-12345", hdrs.Get("x-api-key"))
+	assert.Equal(t, "2023-06-01", hdrs.Get("anthropic-version"))
 	// 确保没有使用 Bearer 认证
-	assert.NotContains(t, capturedHeaders.Get("Authorization"), "Bearer")
+	assert.NotContains(t, hdrs.Get("Authorization"), "Bearer")
 }
 
 // TestHealthChecker_OpenAI_Auth 验证 OpenAI/OpenAI-compatible 请求携带 Authorization: Bearer 头
 func TestHealthChecker_OpenAI_Auth(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 
+	var mu sync.Mutex
 	var capturedHeaders http.Header
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		capturedHeaders = r.Header.Clone()
+		mu.Unlock()
 		w.WriteHeader(http.StatusOK)
 	}))
-	defer server.Close()
 
 	target := Target{ID: "openai-api", Addr: server.URL, Weight: 1, Healthy: true}
 	bal := NewWeightedRandom([]Target{target})
@@ -72,24 +82,31 @@ func TestHealthChecker_OpenAI_Auth(t *testing.T) {
 
 	hc.CheckTarget("openai-api")
 	hc.Wait()
+	server.Close()
+
+	mu.Lock()
+	hdrs := capturedHeaders
+	mu.Unlock()
 
 	// 验证 Bearer 认证头
-	assert.Equal(t, "Bearer sk-proj-test-key-67890", capturedHeaders.Get("Authorization"))
+	assert.Equal(t, "Bearer sk-proj-test-key-67890", hdrs.Get("Authorization"))
 	// 确保没有使用 Anthropic 的 x-api-key
-	assert.Empty(t, capturedHeaders.Get("x-api-key"))
-	assert.Empty(t, capturedHeaders.Get("anthropic-version"))
+	assert.Empty(t, hdrs.Get("x-api-key"))
+	assert.Empty(t, hdrs.Get("anthropic-version"))
 }
 
 // TestHealthChecker_DashScope_Auth 验证阿里百炼 DashScope 使用标准 Bearer 认证
 func TestHealthChecker_DashScope_Auth(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 
+	var mu sync.Mutex
 	var capturedHeaders http.Header
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		capturedHeaders = r.Header.Clone()
+		mu.Unlock()
 		w.WriteHeader(http.StatusOK)
 	}))
-	defer server.Close()
 
 	target := Target{ID: "dashscope-api", Addr: server.URL, Weight: 1, Healthy: true}
 	bal := NewWeightedRandom([]Target{target})
@@ -105,21 +122,28 @@ func TestHealthChecker_DashScope_Auth(t *testing.T) {
 
 	hc.CheckTarget("dashscope-api")
 	hc.Wait()
+	server.Close()
+
+	mu.Lock()
+	hdrs := capturedHeaders
+	mu.Unlock()
 
 	// 验证 Bearer 认证
-	assert.Equal(t, "Bearer sk-dashscope-test", capturedHeaders.Get("Authorization"))
+	assert.Equal(t, "Bearer sk-dashscope-test", hdrs.Get("Authorization"))
 }
 
 // TestHealthChecker_NoKey_NoAuthHeader 无 APIKey 时不注入任何认证头（本地 vLLM/sglang 行为不变）
 func TestHealthChecker_NoKey_NoAuthHeader(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 
+	var mu sync.Mutex
 	var capturedHeaders http.Header
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		capturedHeaders = r.Header.Clone()
+		mu.Unlock()
 		w.WriteHeader(http.StatusOK)
 	}))
-	defer server.Close()
 
 	// 创建 target，不配置任何凭证
 	target := Target{ID: "local-vllm", Addr: server.URL, Weight: 1, Healthy: true}
@@ -128,22 +152,30 @@ func TestHealthChecker_NoKey_NoAuthHeader(t *testing.T) {
 
 	hc.CheckTarget("local-vllm")
 	hc.Wait()
+	server.Close()
+
+	mu.Lock()
+	hdrs := capturedHeaders
+	mu.Unlock()
 
 	// 验证没有注入任何认证头
-	assert.Empty(t, capturedHeaders.Get("Authorization"))
-	assert.Empty(t, capturedHeaders.Get("x-api-key"))
-	assert.Empty(t, capturedHeaders.Get("anthropic-version"))
+	assert.Empty(t, hdrs.Get("Authorization"))
+	assert.Empty(t, hdrs.Get("x-api-key"))
+	assert.Empty(t, hdrs.Get("anthropic-version"))
 }
 
 // TestHealthChecker_UpdateCredentials_Runtime 运行时热更新 credentials 后，下次检查使用新 key
 func TestHealthChecker_UpdateCredentials_Runtime(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 
+	var mu sync.Mutex
 	callCount := 0
 	var lastHeaders http.Header
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		callCount++
 		lastHeaders = r.Header.Clone()
+		mu.Unlock()
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -161,10 +193,17 @@ func TestHealthChecker_UpdateCredentials_Runtime(t *testing.T) {
 	)
 
 	// 第一次检查：使用旧 key
+	// 缓存冷启动：discover（1 次）+ 发现后验证（1 次）= 2 次请求
 	hc.CheckTarget("test-api")
 	hc.Wait()
-	assert.Equal(t, "Bearer old-key", lastHeaders.Get("Authorization"))
-	assert.Equal(t, 1, callCount)
+
+	mu.Lock()
+	firstCount := callCount
+	firstHeaders := lastHeaders
+	mu.Unlock()
+
+	assert.Equal(t, "Bearer old-key", firstHeaders.Get("Authorization"))
+	assert.Equal(t, 2, firstCount)
 
 	// 运行时更新凭证
 	hc.UpdateCredentials(map[string]TargetCredential{
@@ -174,11 +213,17 @@ func TestHealthChecker_UpdateCredentials_Runtime(t *testing.T) {
 		},
 	})
 
-	// 第二次检查：使用新 key
+	// 第二次检查：凭证变更后缓存失效，再次 discover + 验证 = 2 次请求
 	hc.CheckTarget("test-api")
 	hc.Wait()
-	assert.Equal(t, "Bearer new-key", lastHeaders.Get("Authorization"))
-	assert.Equal(t, 2, callCount)
+
+	mu.Lock()
+	secondCount := callCount
+	secondHeaders := lastHeaders
+	mu.Unlock()
+
+	assert.Equal(t, "Bearer new-key", secondHeaders.Get("Authorization"))
+	assert.Equal(t, 4, secondCount)
 }
 
 // TestHealthChecker_401_StillTriggersFailure 确认即使有 key，401 也正常触发 recordFailure

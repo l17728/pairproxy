@@ -370,7 +370,7 @@ func TestSProxy_SetAPIKeyResolver(t *testing.T) {
 	defer cancel()
 
 	called := false
-	sp.SetAPIKeyResolver(func(userID string) (string, bool) {
+	sp.SetAPIKeyResolver(func(userID, groupID string) (string, bool) {
 		called = true
 		return "dynamic-key", true
 	})
@@ -380,7 +380,7 @@ func TestSProxy_SetAPIKeyResolver(t *testing.T) {
 		t.Error("apiKeyResolver should be set")
 	}
 	// 调用验证 resolver 可以被调用
-	key, found := sp.apiKeyResolver("test-user")
+	key, found := sp.apiKeyResolver("test-user", "test-group")
 	if !found || key != "dynamic-key" || !called {
 		t.Error("apiKeyResolver should have been called and returned dynamic-key")
 	}

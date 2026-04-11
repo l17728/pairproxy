@@ -220,6 +220,31 @@ func (r *APIKeyRepo) findByAssignment(id string, isUser bool) (*APIKey, error) {
 	return &key, nil
 }
 
+// FindAllForGroup 返回分配给指定 group 的所有活跃 API Key。
+// 用于号池场景：上层可对返回的多个 key 实现随机/轮询/加权轮换。
+// 返回空列表表示该 group 无分配（不是错误）。
+func (r *APIKeyRepo) FindAllForGroup(groupID string) ([]APIKey, error) {
+	if groupID == "" {
+		return nil, nil
+	}
+	var assigns []APIKeyAssignment
+	if err := r.db.Where("group_id = ?", groupID).Find(&assigns).Error; err != nil {
+		return nil, fmt.Errorf("find assignments for group: %w", err)
+	}
+	if len(assigns) == 0 {
+		return nil, nil
+	}
+	ids := make([]string, 0, len(assigns))
+	for _, a := range assigns {
+		ids = append(ids, a.APIKeyID)
+	}
+	var keys []APIKey
+	if err := r.db.Where("id IN ? AND is_active = ?", ids, true).Find(&keys).Error; err != nil {
+		return nil, fmt.Errorf("find api keys for group: %w", err)
+	}
+	return keys, nil
+}
+
 // FindByProviderAndValue 按 (provider, encrypted_value) 查找 API Key。
 // 用于 config-sync 时检查相同 key 值是否已存在，避免重复创建。
 // 返回 nil 表示不存在（不是错误）。

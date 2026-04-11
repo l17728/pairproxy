@@ -49,7 +49,7 @@ var ErrBoundTargetUnavailable = errors.New("assigned LLM target is currently una
 
 // LLMTarget 代表一个 LLM 后端（含 API Key 和 provider 类型）。
 type LLMTarget struct {
-	ID           string            // UUID（来自 DB，运行时路由标识）
+	ID           string // UUID（来自 DB，运行时路由标识）
 	URL          string
 	APIKey       string
 	Provider     string            // "anthropic"（默认）| "openai" | "ollama"
@@ -71,41 +71,42 @@ type LLMTargetStatus struct {
 
 // SProxy s-proxy 核心处理器
 type SProxy struct {
-	logger          *zap.Logger
-	jwtMgr          *auth.Manager
-	writer          *db.UsageWriter
-	targets         []LLMTarget
-	idx             atomic.Uint32 // 轮询计数器（无 LLM 均衡器时使用）
-	transport       http.RoundTripper
-	clusterMgr      *cluster.Manager // 可选，nil 表示单节点模式（不注入路由头）
-	sourceNode      string           // 来源节点标识（用于 usage_logs）
-	quotaChecker    *quota.Checker   // 可选，nil 表示不检查配额
-	startTime       time.Time        // 进程启动时间（供 /health 返回 uptime）
-	activeRequests  atomic.Int64     // 当前正在处理的代理请求数
-	sqlDB           *sql.DB          // 可选，用于 /health 检查 DB 可达性
-	apiKeyResolver  func(userID string) (apiKey string, found bool) // 可选，动态 API Key 解析
+	logger         *zap.Logger
+	jwtMgr         *auth.Manager
+	writer         *db.UsageWriter
+	targets        []LLMTarget
+	idx            atomic.Uint32 // 轮询计数器（无 LLM 均衡器时使用）
+	transport      http.RoundTripper
+	clusterMgr     *cluster.Manager                                // 可选，nil 表示单节点模式（不注入路由头）
+	sourceNode     string                                          // 来源节点标识（用于 usage_logs）
+	quotaChecker   *quota.Checker                                  // 可选，nil 表示不检查配额
+	startTime      time.Time                                       // 进程启动时间（供 /health 返回 uptime）
+	activeRequests atomic.Int64                                    // 当前正在处理的代理请求数
+	sqlDB          *sql.DB                                         // 可选，用于 /health 检查 DB 可达性
+	apiKeyResolver func(userID, groupID string) (apiKey string, found bool) // 可选，动态 API Key 解析
 
 	// 排水模式控制
-	draining     atomic.Bool   // 排水模式标志
-	drainReason  string        // 排水原因（用于日志和状态查询）
-	drainStarted time.Time     // 排水开始时间
+	draining     atomic.Bool // 排水模式标志
+	drainReason  string      // 排水原因（用于日志和状态查询）
+	drainStarted time.Time   // 排水开始时间
 
 	// LLM 均衡 + 绑定（可选）
-	llmBalancer     *lb.WeightedRandomBalancer                       // 加权随机负载均衡
-	llmHC           *lb.HealthChecker                                // 健康检查（被动熔断 + 自动恢复）
-	bindingResolver func(userID, groupID string) (string, bool)      // 用户/分组 → target URL
-	maxRetries      int                                               // RetryTransport 最大重试次数
-	retryOnStatus   []int                                             // 额外触发 try-next 的 HTTP 状态码（如 [429]）
+	llmBalancer     *lb.WeightedRandomBalancer                  // 加权随机负载均衡
+	llmHC           *lb.HealthChecker                           // 健康检查（被动熔断 + 自动恢复）
+	bindingResolver func(userID, groupID string) (string, bool) // 用户/分组 → target URL
+	maxRetries      int                                         // RetryTransport 最大重试次数
+	retryOnStatus   []int                                       // 额外触发 try-next 的 HTTP 状态码（如 [429]）
 
-	debugLogger atomic.Pointer[zap.Logger] // 可选，非 nil 时将转发内容写入独立 debug 文件
-	notifier    *alert.Notifier             // 可选，非 nil 时发送 high_load/load_recovered 告警
-	convTracker  atomic.Pointer[track.Tracker]  // 可选，非 nil 时记录指定用户对话内容
-	corpusWriter   atomic.Pointer[corpus.Writer]  // 可选，非 nil 时采集训练语料
-	semanticRouter *router.SemanticRouter         // 可选，非 nil 时对无绑定请求做语义路由
+	debugLogger    atomic.Pointer[zap.Logger]    // 可选，非 nil 时将转发内容写入独立 debug 文件
+	notifier       *alert.Notifier               // 可选，非 nil 时发送 high_load/load_recovered 告警
+	convTracker    atomic.Pointer[track.Tracker] // 可选，非 nil 时记录指定用户对话内容
+	corpusWriter   atomic.Pointer[corpus.Writer] // 可选，非 nil 时采集训练语料
+	semanticRouter *router.SemanticRouter        // 可选，非 nil 时对无绑定请求做语义路由
 
 	// 配置和数据库（用于 config target sync）
-	cfg *config.SProxyFullConfig // 可选，用于同步配置文件中的 LLM targets
-	db  *gorm.DB                 // 可选，用于同步配置文件中的 LLM targets
+	cfg           *config.SProxyFullConfig     // 可选，用于同步配置文件中的 LLM targets
+	db            *gorm.DB                     // 可选，用于同步配置文件中的 LLM targets
+	keyDecryptFn  func(string) (string, error) // 可选，当配置了 key_encryption_key 时用于解密 AES key
 }
 
 // NewSProxy 创建 SProxy。
@@ -173,9 +174,17 @@ func (sp *SProxy) SetDB(gormDB interface{ DB() (*sql.DB, error) }) {
 }
 
 // SetAPIKeyResolver 设置动态 API Key 解析器（可选）。
-// fn 根据 userID 返回解密后的 API Key；found=false 时回退到配置文件中的静态 Key。
-func (sp *SProxy) SetAPIKeyResolver(fn func(userID string) (string, bool)) {
+// fn 根据 userID 和 groupID 返回解密后的 API Key；found=false 时回退到配置文件中的静态 Key。
+// groupID 直接来自 JWT claims，无需再查询 UserRepo。
+func (sp *SProxy) SetAPIKeyResolver(fn func(userID, groupID string) (string, bool)) {
 	sp.apiKeyResolver = fn
+}
+
+// SetKeyDecryptFn 设置 AES 密钥解密函数（BUG-4 修复）。
+// 当配置了 admin.key_encryption_key 时，resolveAPIKey 优先使用此函数解密 AES 密文；
+// 未设置时退回到 obfuscateKey（兼容 config-sync 路径）。
+func (sp *SProxy) SetKeyDecryptFn(fn func(string) (string, error)) {
+	sp.keyDecryptFn = fn
 }
 
 // SetLLMHealthChecker 设置 LLM 负载均衡器和健康检查器（可选）。
@@ -274,15 +283,12 @@ func (sp *SProxy) resolveAPIKeyID(apiKey, provider, targetURL string) (*string, 
 	}
 
 	// 不存在，创建新记录（混淆存储）
-	// Name 使用 "Auto-{provider}-{obfuscated_suffix}" 保证 uniqueIndex 不冲突。
-	// 取混淆后 key 的后 8 位作为区分后缀（同一 URL 不同 key 可共存）。
-	suffix := obfuscated
-	if len(suffix) > 8 {
-		suffix = suffix[len(suffix)-8:]
-	}
-	autoName := fmt.Sprintf("Auto-%s-%s", provider, suffix)
+	// Name 使用 "Auto-{provider}-{uuid[:8]}" 保证全局唯一，不依赖 key 值的后缀。
+	// 之前使用混淆后缀会导致两个 key 混淆后恰好有相同后 8 位时产生 UNIQUE 冲突。
+	newKeyID := uuid.NewString()
+	autoName := fmt.Sprintf("Auto-%s-%s", provider, newKeyID[:8])
 	newKey := &db.APIKey{
-		ID:             uuid.NewString(),
+		ID:             newKeyID,
 		Name:           autoName,
 		Provider:       provider,
 		EncryptedValue: obfuscated,
@@ -330,20 +336,30 @@ func (sp *SProxy) syncConfigTargetsToDatabase(repo *db.LLMTargetRepo) error {
 				modelMappingJSON = string(jsonBytes)
 			}
 		}
-		target := &db.LLMTarget{
-			URL:              ct.URL,
-			APIKeyID:         apiKeyID,
-			Provider:         ct.Provider,
-			Name:             ct.Name,
-			Weight:           ct.Weight,
-			HealthCheckPath:  ct.HealthCheckPath,
-			ModelMappingJSON: modelMappingJSON,
-			Source:           "config",
-			IsEditable:       false,
-			IsActive:         true,
+		// 序列化 SupportedModels
+		supportedModelsJSON := "[]"
+		if len(ct.SupportedModels) > 0 {
+			if jsonBytes, err := json.Marshal(ct.SupportedModels); err == nil {
+				supportedModelsJSON = string(jsonBytes)
+			}
 		}
 
-		err = repo.Upsert(target)
+		target := &db.LLMTarget{
+			URL:                 ct.URL,
+			APIKeyID:            apiKeyID,
+			Provider:            ct.Provider,
+			Name:                ct.Name,
+			Weight:              ct.Weight,
+			HealthCheckPath:     ct.HealthCheckPath,
+			ModelMappingJSON:    modelMappingJSON,
+			SupportedModelsJSON: supportedModelsJSON,
+			AutoModel:           ct.AutoModel,
+			Source:              "config",
+			IsEditable:          false,
+			IsActive:            true,
+		}
+
+		err = repo.Seed(target)
 		if err != nil {
 			logger.Error("failed to sync config target",
 				zap.String("url", ct.URL),
@@ -414,6 +430,18 @@ func (sp *SProxy) loadAllTargets(repo *db.LLMTargetRepo) ([]config.LLMTarget, er
 			_ = json.Unmarshal([]byte(dt.ModelMappingJSON), &modelMapping)
 		}
 
+		// 反序列化 SupportedModelsJSON
+		var supportedModels []string
+		if dt.SupportedModelsJSON != "" && dt.SupportedModelsJSON != "[]" {
+			if err := json.Unmarshal([]byte(dt.SupportedModelsJSON), &supportedModels); err != nil {
+				sp.logger.Warn("failed to parse supported_models, treating as unrestricted",
+					zap.String("url", dt.URL),
+					zap.String("raw", dt.SupportedModelsJSON),
+					zap.Error(err),
+				)
+			}
+		}
+
 		targets = append(targets, config.LLMTarget{
 			ID:              dt.ID,
 			URL:             dt.URL,
@@ -423,6 +451,8 @@ func (sp *SProxy) loadAllTargets(repo *db.LLMTargetRepo) ([]config.LLMTarget, er
 			Weight:          dt.Weight,
 			HealthCheckPath: dt.HealthCheckPath,
 			ModelMapping:    modelMapping,
+			SupportedModels: supportedModels,
+			AutoModel:       dt.AutoModel,
 		})
 	}
 
@@ -448,7 +478,8 @@ func (sp *SProxy) loadAllTargets(repo *db.LLMTargetRepo) ([]config.LLMTarget, er
 	return targets, nil
 }
 
-// resolveAPIKey 根据 API Key ID 查询 API Key 值
+// resolveAPIKey 根据 API Key ID 查询 API Key 值。
+// BUG-4 修复：优先使用 keyDecryptFn（AES-256-GCM）解密；未配置时回退到 obfuscateKey（config-sync 路径兼容）。
 func (sp *SProxy) resolveAPIKey(apiKeyID *string) (string, error) {
 	if apiKeyID == nil || *apiKeyID == "" {
 		return "", nil // API Key 可选
@@ -457,6 +488,19 @@ func (sp *SProxy) resolveAPIKey(apiKeyID *string) (string, error) {
 	var apiKey db.APIKey
 	if err := sp.db.Where("id = ?", *apiKeyID).First(&apiKey).Error; err != nil {
 		return "", fmt.Errorf("query api key: %w", err)
+	}
+
+	// 优先使用 AES 解密（Admin API 创建的 key）
+	if sp.keyDecryptFn != nil {
+		plain, err := sp.keyDecryptFn(apiKey.EncryptedValue)
+		if err == nil {
+			return plain, nil
+		}
+		// AES 解密失败（可能是 config-sync 路径的 obfuscated 值），回退到 obfuscateKey
+		sp.logger.Debug("resolveAPIKey: AES decrypt failed, falling back to obfuscateKey",
+			zap.String("key_id", *apiKeyID),
+			zap.Error(err),
+		)
 	}
 
 	return obfuscateKey(apiKey.EncryptedValue), nil
@@ -568,11 +612,13 @@ func (sp *SProxy) SyncLLMTargets() {
 		}
 
 		lbTargets = append(lbTargets, lb.Target{
-			ID:       targetID,
-			Addr:     t.URL,
-			Weight:   w,
-			Healthy:  healthy,
-			Draining: draining,
+			ID:              targetID,
+			Addr:            t.URL,
+			Weight:          w,
+			Healthy:         healthy,
+			Draining:        draining,
+			SupportedModels: t.SupportedModels,
+			AutoModel:       t.AutoModel,
 		})
 		sp.logger.Debug("SyncLLMTargets: adding target",
 			zap.String("id", targetID),
@@ -595,6 +641,23 @@ func (sp *SProxy) SyncLLMTargets() {
 		}
 	}
 
+	// Fix Bug A: 同步 sp.targets，保证 llmTargetInfoForID 可通过 UUID 找到正确 APIKey。
+	// 原来 sp.targets 只在启动时从 cfg 初始化，ID 均为 ""，导致 sync 后的请求走到
+	// fallback 分支返回空 APIKey，所有转发请求携带空 Bearer token。
+	newSpTargets := make([]LLMTarget, 0, len(loadedTargets))
+	for _, t := range loadedTargets {
+		newSpTargets = append(newSpTargets, LLMTarget{
+			ID:           t.ID,
+			URL:          t.URL,
+			APIKey:       t.APIKey,
+			Provider:     t.Provider,
+			Name:         t.Name,
+			Weight:       t.Weight,
+			ModelMapping: t.ModelMapping,
+		})
+	}
+	sp.targets = newSpTargets
+
 	sp.llmBalancer.UpdateTargets(lbTargets)
 	sp.llmHC.UpdateHealthPaths(healthPaths)
 	sp.llmHC.UpdateCredentials(credentials)
@@ -605,10 +668,24 @@ func (sp *SProxy) SyncLLMTargets() {
 		sp.llmHC.CheckTarget(id)
 	}
 
+	// 统计带新字段的 target 数量
+	countWithModels := 0
+	countWithAutoModel := 0
+	for _, t := range lbTargets {
+		if len(t.SupportedModels) > 0 {
+			countWithModels++
+		}
+		if t.AutoModel != "" {
+			countWithAutoModel++
+		}
+	}
+
 	sp.logger.Info("SyncLLMTargets: balancer and health checker updated",
 		zap.Int("targets", len(lbTargets)),
 		zap.Int("health_check_paths", len(healthPaths)),
 		zap.Int("credentials", len(credentials)),
+		zap.Int("with_model_filter", countWithModels),
+		zap.Int("with_auto_model", countWithAutoModel),
 		zap.Int("new_targets_checking", len(newTargetsWithPath)),
 	)
 }
@@ -931,7 +1008,7 @@ func (sp *SProxy) HealthHandler() http.HandlerFunc {
 //  1. 用户/分组绑定（bindingResolver）→ 若绑定 target 健康且未尝试过
 //  2. 加权随机负载均衡（llmBalancer）→ 过滤已尝试 + 不健康 + provider 不匹配
 //  3. 回退简单轮询（无均衡器时）
-func (sp *SProxy) pickLLMTarget(path, userID, groupID string, tried []string, candidateFilter []string) (*lb.LLMTargetInfo, error) {
+func (sp *SProxy) pickLLMTarget(path, userID, groupID, requestedModel string, tried []string, candidateFilter []string) (*lb.LLMTargetInfo, error) {
 	triedSet := make(map[string]bool, len(tried))
 	for _, u := range tried {
 		triedSet[u] = true
@@ -994,7 +1071,7 @@ func (sp *SProxy) pickLLMTarget(path, userID, groupID string, tried []string, ca
 
 	// 2. 加权随机均衡（支持 tried 过滤 + provider 过滤 + candidateFilter）
 	if sp.llmBalancer != nil {
-		return sp.weightedPickExcluding(path, triedSet, filterSet)
+		return sp.weightedPickExcluding(path, requestedModel, triedSet, filterSet)
 	}
 
 	// 3. 回退：简单轮询（未配置均衡器时）
@@ -1029,11 +1106,13 @@ func (sp *SProxy) pickLLMTarget(path, userID, groupID string, tried []string, ca
 	return &lb.LLMTargetInfo{URL: t.URL, APIKey: t.APIKey}, nil
 }
 
-// weightedPickExcluding 从 llmBalancer 中选取健康 target，排除 tried，并应用 provider 过滤和语义候选集过滤。
-func (sp *SProxy) weightedPickExcluding(path string, tried map[string]bool, candidateFilter map[string]bool) (*lb.LLMTargetInfo, error) {
+// weightedPickExcluding 从 llmBalancer 中选取健康 target，排除 tried，并应用 provider 过滤、语义候选集过滤和模型过滤。
+// 执行顺序：provider 过滤 → 模型过滤（fail-open）→ 加权随机
+func (sp *SProxy) weightedPickExcluding(path, requestedModel string, tried map[string]bool, candidateFilter map[string]bool) (*lb.LLMTargetInfo, error) {
 	all := sp.llmBalancer.Targets()
 	preferred := preferredProvidersByPath(path)
 
+	// 步骤 1: provider + tried + candidateFilter 过滤（基础过滤）
 	filter := func(targets []lb.Target, providerFilter map[string]bool) []lb.Target {
 		var out []lb.Target
 		for _, t := range targets {
@@ -1055,29 +1134,39 @@ func (sp *SProxy) weightedPickExcluding(path string, tried map[string]bool, cand
 		return out
 	}
 
+	// 第一次尝试：带 provider 偏好的过滤
 	candidates := filter(all, preferred)
-	// 若 provider 过滤后无候选，回退到全量健康 target（保持兼容性）
 	usedFallback := false
 	if len(candidates) == 0 && preferred != nil {
+		// provider 没结果，回退到无 provider 限制
+		candidates = filter(all, nil)
+		usedFallback = true
 		sp.logger.Debug("routing: no preferred-provider candidates, falling back to all healthy targets",
 			zap.String("path", path),
 			zap.Any("preferred_providers", preferred),
-		)
-		candidates = filter(all, nil)
-		usedFallback = true
-	}
-	if preferred != nil && !usedFallback {
-		sp.logger.Debug("routing: path-based provider preference applied",
-			zap.String("path", path),
-			zap.Any("preferred_providers", preferred),
-			zap.Int("matching_candidates", len(candidates)),
 		)
 	}
 	if len(candidates) == 0 {
 		return nil, lb.ErrNoHealthyTarget
 	}
 
-	// 加权随机选取
+	// 步骤 2: 模型过滤（两级 fail-open）
+	// auto 模式和空 model 不过滤（让所有 target 参与负载均衡）
+	if requestedModel != "" && requestedModel != "auto" {
+		modelFiltered := filterByModel(candidates, requestedModel)
+		if len(modelFiltered) > 0 {
+			candidates = modelFiltered
+		} else {
+			// model 过滤无结果，fail-open 回退到 provider 过滤后的候选集
+			sp.logger.Warn("weightedPickExcluding: no LLM target supports requested model, using fail-open routing",
+				zap.String("requested_model", requestedModel),
+				zap.Int("available_targets_before_model_filter", len(candidates)),
+			)
+			// candidates 保持原值（fail-open）
+		}
+	}
+
+	// 步骤 3: 加权随机选取
 	total := 0
 	for _, c := range candidates {
 		total += c.Weight
@@ -1090,9 +1179,10 @@ func (sp *SProxy) weightedPickExcluding(path string, tried map[string]bool, cand
 				zap.String("url", candidates[i].ID),
 				zap.String("path", path),
 				zap.String("id", candidates[i].ID),
-					zap.String("provider", sp.providerForID(candidates[i].ID)),
+				zap.String("provider", sp.providerForID(candidates[i].ID)),
+				zap.String("requested_model", requestedModel),
 				zap.Int("candidates", len(candidates)),
-				zap.Bool("path_preference_applied", preferred != nil && !usedFallback),
+				zap.Bool("used_provider_fallback", usedFallback),
 			)
 			return sp.llmTargetInfoForID(candidates[i].ID), nil
 		}
@@ -1195,7 +1285,7 @@ func preferredProvidersByPath(path string) map[string]bool {
 // effectivePath 是传递给 PickNext 的路径（OtoA 时为 "/v1/messages"，其他为 r.URL.Path）。
 // これは次要防御機制：确保 retry 时 pickLLMTarget 从 /v1/messages 对应的 preferredProvidersByPath
 // 中选 Anthropic targets。主要机制是 Director 将出向请求路径改写为 convertedPath（Step 5.10）。
-func (sp *SProxy) buildRetryTransport(userID, groupID, effectivePath string) http.RoundTripper {
+func (sp *SProxy) buildRetryTransport(userID, groupID, effectivePath, requestedModel string) http.RoundTripper {
 	if sp.llmBalancer == nil {
 		return sp.transport
 	}
@@ -1213,7 +1303,7 @@ func (sp *SProxy) buildRetryTransport(userID, groupID, effectivePath string) htt
 			// "/v1/messages" (Anthropic targets); for all other cases it equals r.URL.Path
 			// (same as what RetryTransport would pass). RetryTransport's `path` arg is the
 			// original request path before Director rewrite — we don't want that here.
-			return sp.pickLLMTarget(effectivePath, userID, groupID, tried, nil)
+			return sp.pickLLMTarget(effectivePath, userID, groupID, requestedModel, tried, nil)
 		},
 		OnSuccess: func(targetURL string) {
 			if sp.llmHC != nil {
@@ -1380,7 +1470,20 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 
-	firstInfo, pickErr := sp.pickLLMTarget(r.URL.Path, claims.UserID, claims.GroupID, nil, semanticCandidates)
+	// 提取客户端请求的模型名（用于模型感知路由 F2 + auto 模式 F3）
+	// 注意：此提取在 pickLLMTarget 之前完成，以便路由层按模型过滤
+	requestedModel := extractModel(r)
+	if requestedModel == "" && len(bodyBytes) > 0 {
+		requestedModel = extractModelFromBody(bodyBytes)
+	}
+	if requestedModel != "" {
+		sp.logger.Debug("model-aware routing: extracted model from request",
+			zap.String("request_id", reqID),
+			zap.String("model", requestedModel),
+		)
+	}
+
+	firstInfo, pickErr := sp.pickLLMTarget(r.URL.Path, claims.UserID, claims.GroupID, requestedModel, nil, semanticCandidates)
 	if pickErr != nil {
 		switch {
 		case errors.Is(pickErr, ErrNoLLMBinding):
@@ -1427,15 +1530,34 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 		targetProvider = "openai"
 	}
 
-	// 协议转换前提前提取 requestedModel（客户端发送的原始模型名）：
+	// requestedModel 已在上方 pickLLMTarget 调用前提取
 	// AtoO 场景：此值为客户端发送的 Anthropic 模型名（如 "claude-3-5-sonnet-20241022"），
 	//   转换后 bodyBytes 会变成 OpenAI 格式，模型名可能已被 mapping 替换，
 	//   在响应时需要用原始 Anthropic 模型名覆盖 OpenAI 响应的 model 字段。
 	// OtoA 场景：此值为 OpenAI 客户端发送的模型名（如 "gpt-4o"），
 	//   不是 Anthropic 模型名，响应时用于日志记录和 UsageRecord.Model 字段。
-	requestedModel := extractModel(r)
-	if requestedModel == "" && len(bodyBytes) > 0 {
-		requestedModel = extractModelFromBody(bodyBytes)
+
+	// Auto 模式处理（F3）：选定 target 后，用 target 的 auto_model 重写请求体中的 model 字段
+	if requestedModel == "auto" && sp.llmBalancer != nil && len(bodyBytes) > 0 {
+		actualModel := sp.autoModelFromURL(firstInfo.URL)
+		if actualModel != "" {
+			rewritten := rewriteModelInBody(bodyBytes, "auto", actualModel)
+			if len(rewritten) != len(bodyBytes) || string(rewritten) != string(bodyBytes) {
+				bodyBytes = rewritten
+				r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+				r.ContentLength = int64(len(bodyBytes))
+				sp.logger.Info("auto mode: rewrote model in request body",
+					zap.String("request_id", reqID),
+					zap.String("target_url", firstInfo.URL),
+					zap.String("actual_model", actualModel),
+				)
+			}
+		} else {
+			sp.logger.Debug("auto mode: no auto_model configured, passing through 'auto' to LLM",
+				zap.String("request_id", reqID),
+				zap.String("target_url", firstInfo.URL),
+			)
+		}
 	}
 
 	convDir := detectConversionDirection(r.URL.Path, targetProvider)
@@ -1444,7 +1566,7 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 		effectivePath = "/v1/messages"
 		// Re-pick using effectivePath so preferredProvidersByPath["/v1/messages"] matches
 		// Anthropic targets correctly (spec §"Target Routing Fix for OtoA").
-		if repicked, pickErr := sp.pickLLMTarget(effectivePath, claims.UserID, claims.GroupID, nil, nil); pickErr == nil {
+		if repicked, pickErr := sp.pickLLMTarget(effectivePath, claims.UserID, claims.GroupID, requestedModel, nil, nil); pickErr == nil {
 			firstInfo = repicked
 			targetProvider = sp.providerForURL(firstInfo.URL)
 			// Update targetURL so the Director closure (captured at line ~1164) uses the right host.
@@ -1671,7 +1793,7 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 	tw := tap.NewTeeResponseWriter(finalWriter, sp.logger, sp.writer, usageRecord, targetProvider, startTime, onChunk)
 
 	// 构建 transport（配置均衡器时使用 RetryTransport；否则使用基础 transport）
-	transport := sp.buildRetryTransport(claims.UserID, claims.GroupID, effectivePath)
+	transport := sp.buildRetryTransport(claims.UserID, claims.GroupID, effectivePath, requestedModel)
 
 	proxy := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
@@ -1699,7 +1821,7 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 			req.Header.Del("x-api-key")
 			apiKey := firstInfo.APIKey
 			if sp.apiKeyResolver != nil {
-				if k, ok := sp.apiKeyResolver(claims.UserID); ok {
+				if k, ok := sp.apiKeyResolver(claims.UserID, claims.GroupID); ok {
 					apiKey = k
 					sp.logger.Debug("using dynamic api key for user",
 						zap.String("user_id", claims.UserID),
@@ -2007,7 +2129,7 @@ func matchModel(model string, patterns []string) bool {
 func rewriteModelInBody(body []byte, old, newModel string) []byte {
 	var req map[string]interface{}
 	if err := json.Unmarshal(body, &req); err != nil {
-		return body  // 非 JSON，原样返回
+		return body // 非 JSON，原样返回
 	}
 	if m, ok := req["model"].(string); ok && m == old {
 		req["model"] = newModel
@@ -2015,7 +2137,7 @@ func rewriteModelInBody(body []byte, old, newModel string) []byte {
 			return newBody
 		}
 	}
-	return body  // 无 model 字段或编码失败，原样返回
+	return body // 无 model 字段或编码失败，原样返回
 }
 
 // filterByModel 过滤 targets，仅保留支持 model 的（或未配置 supported_models 的）。
@@ -2031,15 +2153,16 @@ func filterByModel(targets []lb.Target, model string) []lb.Target {
 	return out
 }
 
-// autoModelFromBalancer 从当前 balancer 快照中查询 targetID 的 auto_model。
+// autoModelFromURL 从当前 balancer 快照中查询 target URL 的 auto_model。
 // 降级策略：auto_model > supported_models[0] > ""（透传）
 // 查询 sp.llmBalancer.Targets() 而非 sp.targets，支持 WebUI 热更新。
-func (sp *SProxy) autoModelFromBalancer(targetID string) string {
+func (sp *SProxy) autoModelFromURL(targetURL string) string {
 	if sp.llmBalancer == nil {
 		return ""
 	}
 	for _, t := range sp.llmBalancer.Targets() {
-		if t.ID == targetID {
+		// t.ID 可能是 UUID 或 URL（fallback）；t.Addr 始终是 URL
+		if t.Addr == targetURL || t.ID == targetURL {
 			if t.AutoModel != "" {
 				return t.AutoModel
 			}

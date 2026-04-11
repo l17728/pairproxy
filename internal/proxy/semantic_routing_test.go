@@ -94,7 +94,7 @@ func TestPickLLMTarget_CandidateFilter(t *testing.T) {
 	}
 
 	t.Run("nil filter returns any target", func(t *testing.T) {
-		info, err := sp.pickLLMTarget("/v1/messages", "", "", nil, nil)
+		info, err := sp.pickLLMTarget("/v1/messages", "", "", "", nil, nil)
 		if err != nil {
 			t.Fatalf("pickLLMTarget: %v", err)
 		}
@@ -112,7 +112,7 @@ func TestPickLLMTarget_CandidateFilter(t *testing.T) {
 
 	t.Run("filter narrows candidates", func(t *testing.T) {
 		filter := []string{"http://llm-b:8080"}
-		info, err := sp.pickLLMTarget("/v1/messages", "", "", nil, filter)
+		info, err := sp.pickLLMTarget("/v1/messages", "", "", "", nil, filter)
 		if err != nil {
 			t.Fatalf("pickLLMTarget: %v", err)
 		}
@@ -123,7 +123,7 @@ func TestPickLLMTarget_CandidateFilter(t *testing.T) {
 
 	t.Run("filter with no matching candidates returns error", func(t *testing.T) {
 		filter := []string{"http://nonexistent:8080"}
-		_, err := sp.pickLLMTarget("/v1/messages", "", "", nil, filter)
+		_, err := sp.pickLLMTarget("/v1/messages", "", "", "", nil, filter)
 		if err == nil {
 			t.Fatal("expected error for filter with no matching candidates")
 		}
@@ -132,7 +132,7 @@ func TestPickLLMTarget_CandidateFilter(t *testing.T) {
 	t.Run("filter combined with tried excludes both", func(t *testing.T) {
 		filter := []string{"http://llm-a:8080", "http://llm-b:8080"}
 		tried := []string{"http://llm-a:8080"}
-		info, err := sp.pickLLMTarget("/v1/messages", "", "", tried, filter)
+		info, err := sp.pickLLMTarget("/v1/messages", "", "", "", tried, filter)
 		if err != nil {
 			t.Fatalf("pickLLMTarget: %v", err)
 		}

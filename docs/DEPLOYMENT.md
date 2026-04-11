@@ -256,7 +256,7 @@ pairproxy
 
 ## Health Checks
 
-### Liveness Probe
+### Liveness Probe (pairproxy self-check)
 
 ```bash
 curl http://localhost:8080/health
@@ -283,6 +283,65 @@ Response:
   "database": "connected",
   "targets": 3
 }
+```
+
+### LLM Target Health Checks (Smart Probe)
+
+PairProxy automatically monitors upstream LLM targets using **Smart Probe** — no manual configuration required for major cloud providers.
+
+**How it works:**
+
+1. On first check, the system tries up to 5 probe strategies in order and caches the first one that succeeds (default TTL: 2h)
+2. Subsequent checks reuse the cached strategy directly
+3. Cache is invalidated when credentials change or the probe returns unexpected results
+
+**Probe strategies (in priority order):**
+
+```
+For provider=anthropic targets:
+  1. GET /v1/models      → ok if 200/401/403/400
+  2. POST /v1/messages   → ok if 200/401/403/400
+
+For all targets (generic):
+  3. GET /health         → ok if 200
+  4. GET /v1/models      → ok if 200/401/403
+  5. POST /v1/chat/completions → ok if 200/401/403/400
+```
+
+**Credential injection:** All probes automatically inject the target's API key using the provider-appropriate auth header (`x-api-key` for Anthropic, `Authorization: Bearer` for others). A whitespace-only `api_key` (spaces or tabs) is treated as absent — no auth header is injected, equivalent to omitting the key entirely.
+
+**Verified compatible services:**
+
+| Service | Auto-discovered probe | Notes |
+|---------|-----------------------|-------|
+| Anthropic API | `GET /v1/models` | 401 = endpoint found |
+| OpenAI API | `GET /v1/models` | 200 = healthy |
+| Volcengine Ark | `GET /v1/models` | Both OpenAI and Anthropic modes |
+| Tencent LKEAP | `GET /v1/models` / `POST /v1/messages` | Provider-dependent |
+| Huawei ModelArts | `GET /v1/models` | 401 with invalid key = found |
+| Xiaomi MiMo | `GET /v1/models` | 401 = endpoint found |
+| vLLM / sglang | `GET /health` | No auth required |
+| Ollama | `GET /health` | No auth required |
+
+**Forcing an explicit path** (to skip auto-discovery):
+
+```yaml
+targets:
+  - url: "https://my-custom-llm.example.com"
+    api_key: "${MY_KEY}"
+    health_check_path: "/api/health"   # explicit path bypasses Smart Probe
+```
+
+**Monitoring probe decisions via logs:**
+
+```bash
+# View smart probe discovery logs (DEBUG level required)
+journalctl -u sproxy | grep "probe:\|smart probe:"
+
+# Example output
+INFO  smart probe: discovering health check method  {target: api-1, provider: anthropic}
+INFO  probe: discovered working health check method  {target: api-1, method: GET /v1/models, status: 401}
+DEBUG health check ok  {target: api-2}
 ```
 
 ## Kubernetes Deployment
