@@ -425,25 +425,10 @@ func TestIssue2_AutoName_Collision_SameProvider_SimilarKeys(t *testing.T) {
 	// 但 provider 不同，Name = "Auto-openai-XXXXXXXX" vs "Auto-other-XXXXXXXX" 不碰撞
 	// 要碰撞需要同 provider 且 suffix 相同
 
-	// 构造：同 provider，suffix 相同（8位全相同字符）
-	key1 := "sk-openai-XXXXXXXX" // obfuscated = "sk-openai-XXXXXXXX"（X swap X）, suffix = "XXXXXXXX"
-	key2 := "sk-openai-YXXXXXXY" // obfuscated = "sk-openai-YXXXXXXY" -> swapFirstLast("YXXXXXXY") = "YXXXXXXY"
-	// 末8: "YXXXXXXY" != "XXXXXXXX" → 不碰撞
-	// 真正碰撞：key1="sk-p-ABCDEFGH" key2="sk-p-HBCDEFGA"
-	// obfuscate("sk-p-ABCDEFGH") = "sk-p-" + swapFirstLast("ABCDEFGH") = "sk-p-HBCDEFGA"
-	// obfuscate("sk-p-HBCDEFGA") = "sk-p-" + swapFirstLast("HBCDEFGA") = "sk-p-ABCDEFGH"
-	// 两者的 obfuscated 末8: "HBCDEFGA" vs "ABCDEFGH" → 不同 → 不碰撞
 	// 碰撞条件：obfuscate(k1)末8 == obfuscate(k2)末8
-	// 即 swapFirstLast(suffix1) 末8 == swapFirstLast(suffix2) 末8
-	// 最简单：suffix1 = suffix2 且长度≥8（同 key 被写两次，但 (provider,encrypted_value) 会复用）
-	// 真正的碰撞场景：两个不同的 key，obfuscated 结果末8相同
-	// obfuscate("sk-p-12345678") → "sk-p-" + swapFirstLast("12345678") = "sk-p-82345671"
-	// obfuscate("sk-p-82345671") → "sk-p-" + swapFirstLast("82345671") = "sk-p-12345678"
-	// 末8: "82345671" vs "12345678" → 不同
-	// 结论：对于长度>8的后缀，swapFirstLast 只影响首尾，末8仅在原key末8完全相同时才碰撞
 	// 即：key1和key2的原文末8相同，且前缀相同 → obfuscated末8也相同 → Name碰撞
-	key1 = "sk-openai-prefix-ABCXXXXX"
-	key2 = "sk-openai-suffix-ABCXXXXX" // 末8相同，但前缀不同，Name 仍碰撞（suffix取末8）
+	key1 := "sk-openai-prefix-ABCXXXXX"
+	key2 := "sk-openai-suffix-ABCXXXXX" // 末8相同，但前缀不同，Name 仍碰撞（suffix取末8）
 
 	// 验证 obfuscated 末8相同（确认测试数据正确）
 	obf1 := obfuscateKey(key1)

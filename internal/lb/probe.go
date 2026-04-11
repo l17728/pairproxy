@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -44,11 +43,6 @@ type probeResult struct {
 
 // ok 报告此次探活是否成功（视为"服务健康"）。
 // hasCredential 为 true 时，401/403 不视为健康（key 无效）；
-// 无凭证时，401/403 视为"服务在线但需要认证"，同样判为健康。
-func (r probeResult) ok() bool {
-	return r.okWithAuth(false)
-}
-
 func (r probeResult) okWithAuth(hasCredential bool) bool {
 	if r.err != nil || r.status == 0 {
 		return false
@@ -536,12 +530,4 @@ func injectCredential(req *http.Request, cred *TargetCredential) {
 	default:
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
-}
-
-// formatProbeMethodSummary 用于日志输出探活策略摘要。
-func formatProbeMethodSummary(m *ProbeMethod) string {
-	if m == nil {
-		return "<none>"
-	}
-	return fmt.Sprintf("%s %s", m.HTTPMethod, m.Path)
 }
