@@ -83,14 +83,15 @@ func (h *AdminLLMTargetHandler) handleListTargets(w http.ResponseWriter, r *http
 // handleCreateTarget POST /api/admin/llm/targets - 创建新的 LLM target
 func (h *AdminLLMTargetHandler) handleCreateTarget(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		URL             string   `json:"url"`
-		APIKeyID        string   `json:"api_key_id"`
-		Provider        string   `json:"provider"`
-		Name            string   `json:"name"`
-		Weight          int      `json:"weight"`
-		HealthCheckPath string   `json:"health_check_path"`
-		SupportedModels []string `json:"supported_models"`
-		AutoModel       string   `json:"auto_model"`
+		URL             string            `json:"url"`
+		APIKeyID        string            `json:"api_key_id"`
+		Provider        string            `json:"provider"`
+		Name            string            `json:"name"`
+		Weight          int               `json:"weight"`
+		HealthCheckPath string            `json:"health_check_path"`
+		SupportedModels []string          `json:"supported_models"`
+		AutoModel       string            `json:"auto_model"`
+		ModelMapping    map[string]string `json:"model_mapping"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -140,6 +141,14 @@ func (h *AdminLLMTargetHandler) handleCreateTarget(w http.ResponseWriter, r *htt
 		}
 	}
 
+	// 转换 model_mapping 为 JSON
+	modelMappingJSON := "{}"
+	if len(req.ModelMapping) > 0 {
+		if b, err := json.Marshal(req.ModelMapping); err == nil {
+			modelMappingJSON = string(b)
+		}
+	}
+
 	// 创建 target
 	target := &db.LLMTarget{
 		ID:                  uuid.NewString(),
@@ -150,6 +159,7 @@ func (h *AdminLLMTargetHandler) handleCreateTarget(w http.ResponseWriter, r *htt
 		Weight:              req.Weight,
 		HealthCheckPath:     req.HealthCheckPath,
 		SupportedModelsJSON: supportedModelsJSON,
+		ModelMappingJSON:    modelMappingJSON,
 		AutoModel:           req.AutoModel,
 		Source:              "database",
 		IsEditable:          true,
@@ -171,6 +181,9 @@ func (h *AdminLLMTargetHandler) handleCreateTarget(w http.ResponseWriter, r *htt
 	}
 	if req.AutoModel != "" {
 		auditDetails += fmt.Sprintf(" auto_model=%s", req.AutoModel)
+	}
+	if len(req.ModelMapping) > 0 {
+		auditDetails += fmt.Sprintf(" model_mapping=%s", modelMappingJSON)
 	}
 	_ = h.auditRepo.Create("admin", "llm_target.create", req.URL, auditDetails)
 
@@ -240,13 +253,14 @@ func (h *AdminLLMTargetHandler) handleUpdateTarget(w http.ResponseWriter, r *htt
 	}
 
 	var req struct {
-		Provider        *string  `json:"provider"`
-		APIKeyID        *string  `json:"api_key_id"`
-		Name            *string  `json:"name"`
-		Weight          *int     `json:"weight"`
-		HealthCheckPath *string  `json:"health_check_path"`
-		SupportedModels []string `json:"supported_models"`
-		AutoModel       *string  `json:"auto_model"`
+		Provider        *string           `json:"provider"`
+		APIKeyID        *string           `json:"api_key_id"`
+		Name            *string           `json:"name"`
+		Weight          *int              `json:"weight"`
+		HealthCheckPath *string           `json:"health_check_path"`
+		SupportedModels []string          `json:"supported_models"`
+		AutoModel       *string           `json:"auto_model"`
+		ModelMapping    map[string]string `json:"model_mapping"` // nil = no change; empty map = clear
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -306,6 +320,20 @@ func (h *AdminLLMTargetHandler) handleUpdateTarget(w http.ResponseWriter, r *htt
 	if req.AutoModel != nil && *req.AutoModel != target.AutoModel {
 		changes = append(changes, fmt.Sprintf("auto_model: %s→%s", target.AutoModel, *req.AutoModel))
 		target.AutoModel = *req.AutoModel
+	}
+
+	// 处理 model_mapping（nil 表示不修改；空 map 表示清除）
+	if req.ModelMapping != nil {
+		newModelMappingJSON := "{}"
+		if len(req.ModelMapping) > 0 {
+			if b, err := json.Marshal(req.ModelMapping); err == nil {
+				newModelMappingJSON = string(b)
+			}
+		}
+		if newModelMappingJSON != target.ModelMappingJSON {
+			changes = append(changes, fmt.Sprintf("model_mapping: %s→%s", target.ModelMappingJSON, newModelMappingJSON))
+			target.ModelMappingJSON = newModelMappingJSON
+		}
 	}
 
 	if len(changes) == 0 {

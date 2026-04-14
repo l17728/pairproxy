@@ -79,6 +79,7 @@ var (
 	addHealthCheckPath string
 	addSupportedModels []string
 	addAutoModel       string
+	addModelMapping    string // JSON string, e.g. '{"*":"llama3.2"}'
 )
 
 // llmTargetAddCmd 添加 LLM target
@@ -131,6 +132,17 @@ var llmTargetAddCmd = &cobra.Command{
 			}
 		}
 
+		modelMappingJSON := "{}"
+		if addModelMapping != "" {
+			var mm map[string]string
+			if err := json.Unmarshal([]byte(addModelMapping), &mm); err != nil {
+				return fmt.Errorf("invalid --model-mapping JSON: %w\nExample: --model-mapping '{\"*\":\"llama3.2\"}'", err)
+			}
+			if b, err := json.Marshal(mm); err == nil {
+				modelMappingJSON = string(b)
+			}
+		}
+
 		target := &db.LLMTarget{
 			ID:                  uuid.NewString(),
 			URL:                 addURL,
@@ -140,6 +152,7 @@ var llmTargetAddCmd = &cobra.Command{
 			Weight:              addWeight,
 			HealthCheckPath:     addHealthCheckPath,
 			SupportedModelsJSON: supportedModelsJSON,
+			ModelMappingJSON:    modelMappingJSON,
 			AutoModel:           addAutoModel,
 			Source:              "database",
 			IsEditable:          true,
@@ -160,6 +173,9 @@ var llmTargetAddCmd = &cobra.Command{
 		if addAutoModel != "" {
 			auditDetails += fmt.Sprintf(" auto_model=%s", addAutoModel)
 		}
+		if addModelMapping != "" {
+			auditDetails += fmt.Sprintf(" model_mapping=%s", modelMappingJSON)
+		}
 		auditCLI(gormDB, logger, "llm_target.add", addURL, auditDetails)
 
 		// 输出成功信息
@@ -174,6 +190,9 @@ var llmTargetAddCmd = &cobra.Command{
 		}
 		if addAutoModel != "" {
 			fmt.Printf("  Auto Model:       %s\n", addAutoModel)
+		}
+		if addModelMapping != "" {
+			fmt.Printf("  Model Mapping:    %s\n", modelMappingJSON)
 		}
 		fmt.Printf("  Source:   %s\n", target.Source)
 
@@ -190,6 +209,7 @@ func init() {
 	llmTargetAddCmd.Flags().StringVar(&addHealthCheckPath, "health-check-path", "", "Health check path")
 	llmTargetAddCmd.Flags().StringSliceVar(&addSupportedModels, "supported-models", []string{}, "Supported models (comma-separated, e.g., claude-3-*,gpt-4-*)")
 	llmTargetAddCmd.Flags().StringVar(&addAutoModel, "auto-model", "", "Model to use for auto mode requests")
+	llmTargetAddCmd.Flags().StringVar(&addModelMapping, "model-mapping", "", `Model name mapping as JSON, e.g. '{"*":"llama3.2"}' or '{"claude-3-5-sonnet-20241022":"mistral"}'`)
 
 	_ = llmTargetAddCmd.MarkFlagRequired("url")
 	_ = llmTargetAddCmd.MarkFlagRequired("api-key-id")
@@ -208,6 +228,7 @@ var (
 	updateHealthCheckPath string
 	updateSupportedModels []string
 	updateAutoModel       string
+	updateModelMapping    string // JSON string, e.g. '{"*":"llama3.2"}'; use '{}' to clear
 )
 
 // llmTargetUpdateCmd 更新 LLM target
@@ -313,6 +334,26 @@ var llmTargetUpdateCmd = &cobra.Command{
 				target.AutoModel = updateAutoModel
 			}
 		}
+
+		if cmd.Flags().Changed("model-mapping") {
+			var mm map[string]string
+			if updateModelMapping != "" && updateModelMapping != "{}" {
+				if err := json.Unmarshal([]byte(updateModelMapping), &mm); err != nil {
+					return fmt.Errorf("invalid --model-mapping JSON: %w\nExample: --model-mapping '{\"*\":\"llama3.2\"}'", err)
+				}
+			}
+			newModelMappingJSON := "{}"
+			if len(mm) > 0 {
+				if b, err := json.Marshal(mm); err == nil {
+					newModelMappingJSON = string(b)
+				}
+			}
+			if newModelMappingJSON != target.ModelMappingJSON {
+				changes = append(changes, fmt.Sprintf("model_mapping: %s→%s", target.ModelMappingJSON, newModelMappingJSON))
+				target.ModelMappingJSON = newModelMappingJSON
+			}
+		}
+
 		if len(changes) == 0 {
 			fmt.Printf("No changes detected for target: %s\n", targetURL)
 			return nil
@@ -361,6 +402,7 @@ func init() {
 	llmTargetUpdateCmd.Flags().StringVar(&updateHealthCheckPath, "health-check-path", "", "Health check path")
 	llmTargetUpdateCmd.Flags().StringSliceVar(&updateSupportedModels, "supported-models", []string{}, "Supported models (comma-separated, e.g., claude-3-*,gpt-4-*)")
 	llmTargetUpdateCmd.Flags().StringVar(&updateAutoModel, "auto-model", "", "Model to use for auto mode requests")
+	llmTargetUpdateCmd.Flags().StringVar(&updateModelMapping, "model-mapping", "", `Model name mapping as JSON, e.g. '{"*":"llama3.2"}'; use '{}' to clear`)
 }
 
 // ---------------------------------------------------------------------------
