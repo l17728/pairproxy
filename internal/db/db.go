@@ -108,6 +108,12 @@ func OpenWithConfig(logger *zap.Logger, cfg config.DatabaseConfig) (*gorm.DB, er
 
 	db, err := gorm.Open(dialector, &gorm.Config{
 		Logger: gormLog,
+		// PostgreSQL 的 AutoMigrate 会自动为 XxxID 字段创建 FK 约束，
+		// 但其生成的是 CREATE UNIQUE INDEX（非 UNIQUE CONSTRAINT），
+		// PostgreSQL 要求 FK 引用目标必须是 UNIQUE CONSTRAINT 或 PRIMARY KEY，
+		// 导致升级时报 "no unique constraint matching given keys for reference table groups"。
+		// 禁用后由应用层保证引用完整性（fail-open 设计，与 SQLite 行为对齐）。
+		DisableForeignKeyConstraintWhenMigrating: isPostgres,
 	})
 	if err != nil {
 		logger.Error("failed to open database",
