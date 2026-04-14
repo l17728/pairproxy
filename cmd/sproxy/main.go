@@ -433,6 +433,11 @@ func runStart(cmd *cobra.Command, args []string) error {
 		sp.SetMaxRetries(cfg.LLM.MaxRetries)
 		sp.SetRetryOnStatus(cfg.LLM.RetryOnStatus)
 
+		// sp.targets 在 newSProxy 时来自 config（ID 均为 ""）。
+		// SyncLLMTargets 从 DB 重新加载，将 sp.targets 更新为带 UUID 的版本，
+		// 保证 llmTargetInfoForID 在首次请求时即可通过 UUID 命中正确的 target/APIKey。
+		sp.SyncLLMTargets()
+
 		logger.Info("LLM balancer configured",
 			zap.Int("targets", len(lbLLMTargets)),
 			zap.Int("max_retries", cfg.LLM.MaxRetries),
