@@ -219,6 +219,17 @@ func Migrate(logger *zap.Logger, db *gorm.DB) error {
 	logger = logger.Named("migrate")
 	logger.Info("running database migrations")
 
+	// 数据清理：users.external_id 旧版为 string（空字符串默认），新版为 *string（NULL 默认）。
+	// AutoMigrate 将列改为 nullable 但不会把 "" 转成 NULL，导致
+	// (auth_provider, external_id) 复合唯一索引因重复的 ('local','') 创建失败。
+	// 在 AutoMigrate 前将空字符串规范化为 NULL，确保升级路径幂等。
+	if err := db.Exec(`UPDATE users SET external_id = NULL WHERE external_id = ''`).Error; err != nil {
+		logger.Warn("users.external_id normalization failed (non-fatal, table may not exist yet)",
+			zap.Error(err))
+	} else {
+		logger.Debug("users.external_id: empty strings normalized to NULL")
+	}
+
 	// AutoMigrate 创建/更新表结构
 	models := []interface{}{
 		&Group{},
