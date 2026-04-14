@@ -120,6 +120,19 @@ func (h *Handler) handleLLMPage(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			h.logger.Error("list llm bindings", zap.Error(err))
 		} else {
+			// 填充 TargetURL（gorm:"-" 字段，List() 不返回，从 allTargets 中反查）
+			targetIDToURL := make(map[string]string, len(allTargets))
+			for _, t := range allTargets {
+				targetIDToURL[t.ID] = t.URL
+			}
+			for i := range bindings {
+				if url, ok := targetIDToURL[bindings[i].TargetID]; ok {
+					bindings[i].TargetURL = url
+				} else {
+					// 兼容旧数据：target_id 可能存的是 URL（config-sourced）
+					bindings[i].TargetURL = bindings[i].TargetID
+				}
+			}
 			data.Bindings = bindings
 			for _, b := range bindings {
 				data.BoundCount[b.TargetID]++
@@ -222,23 +235,28 @@ func (h *Handler) handleLLMCreateBinding(w http.ResponseWriter, r *http.Request)
 		http.Redirect(w, r, "/dashboard/llm?error=invalid+form", http.StatusSeeOther)
 		return
 	}
-	targetURL := r.FormValue("target_url")
+	targetRaw := r.FormValue("target_url") // 表单字段名保持不变；值现在是 UUID（旧版可能是 URL）
 	bindType := r.FormValue("bind_type")
-	if targetURL == "" {
+	if targetRaw == "" {
 		http.Redirect(w, r, "/dashboard/llm?error=target_url+required", http.StatusSeeOther)
 		return
 	}
 
-	// 解析 target URL → target ID
-	// 同一 URL 可能有多个 target（Issue #6），此时重定向错误页提示用户用 UUID。
-	targetID := targetURL
+	// 解析 target：优先按 ID（UUID）查找，回退按 URL 查找（兼容旧表单数据）
+	targetID := targetRaw
 	if h.llmTargetRepo != nil {
-		matches, err := h.llmTargetRepo.ListByURL(targetURL)
-		if err == nil && len(matches) == 1 {
-			targetID = matches[0].ID
-		} else if err == nil && len(matches) > 1 {
-			http.Redirect(w, r, "/dashboard/llm?error=target_url_ambiguous", http.StatusSeeOther)
-			return
+		if t, err := h.llmTargetRepo.GetByID(targetRaw); err == nil {
+			targetID = t.ID
+		} else {
+			// 回退：按 URL 查找（旧版表单提交 URL 的兼容路径）
+			matches, err := h.llmTargetRepo.ListByURL(targetRaw)
+			if err == nil && len(matches) == 1 {
+				targetID = matches[0].ID
+			} else if err == nil && len(matches) > 1 {
+				http.Redirect(w, r, "/dashboard/llm?error=target_url_ambiguous", http.StatusSeeOther)
+				return
+			}
+			// err != nil 或 0 matches：targetID = targetRaw（config-sourced 兜底）
 		}
 	}
 
@@ -267,7 +285,7 @@ func (h *Handler) handleLLMCreateBinding(w http.ResponseWriter, r *http.Request)
 	}
 	h.logger.Info("llm binding created via dashboard",
 		zap.String("target_id", targetID),
-		zap.String("target_url", targetURL),
+		zap.String("target_raw", targetRaw),
 		zap.Any("user_id", userID),
 		zap.Any("group_id", groupID),
 	)
