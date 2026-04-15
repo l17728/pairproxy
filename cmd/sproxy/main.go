@@ -456,9 +456,18 @@ func runStart(cmd *cobra.Command, args []string) error {
 	usageRepo := db.NewUsageRepo(database, logger)
 	groupRepo := db.NewGroupRepo(database, logger)
 	auditRepo := db.NewAuditRepo(logger, database) // P2-3: 审计日志仓库
-	quotaCache := quota.NewQuotaCache(60 * time.Second)
+	// 缓存 TTL 设为 10s（与 UsageWriter flush 间隔 5s 同量级）：
+	// 配额缓存的主要作用是减少 DB 查询；TTL 过长（如 60s）会导致用户在配额耗尽后
+	// 仍可继续发送请求长达 TTL 秒，造成超额使用。
+	quotaCache := quota.NewQuotaCache(10 * time.Second)
 	quotaChecker := quota.NewChecker(logger, userRepo, usageRepo, quotaCache)
 	sp.SetQuotaChecker(quotaChecker)
+	// 用量批量写入 DB 后立即失效相关用户的配额缓存，确保下次请求读到最新用量
+	writer.SetOnFlush(func(userIDs []string) {
+		for _, uid := range userIDs {
+			quotaChecker.InvalidateCache(uid)
+		}
+	})
 	logger.Info("quota checker enabled")
 
 	// P1-4: 设置 DB 连接供 /health 端点 ping 检查

@@ -298,6 +298,8 @@ func (c *Checker) PurgeRateLimiter() {
 }
 
 // getUsage 返回用户今日和本月的 token 用量（缓存优先）。
+// 注意：所有时间边界必须使用 UTC，与数据库存储格式保持一致。
+// 使用本地时区会导致日期边界偏移（例如 UTC+8 服务器上每日统计窗口错误 8 小时）。
 func (c *Checker) getUsage(userID string) (daily, monthly int64, err error) {
 	if entry := c.cache.get(userID); entry != nil {
 		c.logger.Debug("quota cache hit",
@@ -308,9 +310,10 @@ func (c *Checker) getUsage(userID string) (daily, monthly int64, err error) {
 		return entry.dailyUsed, entry.monthlyUsed, nil
 	}
 	c.logger.Debug("quota cache miss, querying DB", zap.String("user_id", userID))
-	now := time.Now()
-	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+	// 必须使用 UTC：DB 中 created_at 存储为 UTC，本地时区会导致 dayStart/monthStart 与 DB 时区不一致
+	now := time.Now().UTC()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 
 	dailyIn, dailyOut, err := c.usageRepo.SumTokens(userID, dayStart, now)
 	if err != nil {

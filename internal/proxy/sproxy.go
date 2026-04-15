@@ -2044,6 +2044,14 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 
 	proxy.ServeHTTP(tw, r)
 
+	// 请求完成后立即失效该用户的配额缓存。
+	// 此时用量记录已写入 UsageWriter channel（异步，5s 内刷入 DB）。
+	// 提前失效缓存可确保下一个请求重新查询 DB，避免缓存过期前的超额使用。
+	// DB flush 完成后 onFlush 回调也会再次失效，消除 flush 延迟窗口。
+	if sp.quotaChecker != nil {
+		sp.quotaChecker.InvalidateCache(claims.UserID)
+	}
+
 	// 训练语料采集：流式响应完成后提交记录
 	if corpusCollector != nil {
 		corpusCollector.Finish(tw.StatusCode(), time.Since(startTime).Milliseconds())
