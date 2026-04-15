@@ -111,18 +111,45 @@ func (c *Checker) Check(ctx context.Context, userID string) error {
 		return nil
 	}
 
-	// 仅当有 token 限额时才查 DB 用量
+	// 1. 优先检查 RPM（不依赖 DB，不受 DB 错误影响）
+	// RPM 必须先于 token 配额检查，否则当 DB 故障 fail-open 时 RPM 也会被跳过。
+	if group.RequestsPerMinute != nil && c.rateLimiter != nil {
+		rpm := *group.RequestsPerMinute
+		if rpm > 0 {
+			if allowed, count := c.rateLimiter.Allow(userID, rpm); !allowed {
+				resetAt := c.rateLimiter.ResetAt(userID)
+				c.logger.Warn("request rate limit exceeded",
+					zap.String("user_id", userID),
+					zap.Int("count", count),
+					zap.Int("limit", rpm),
+				)
+				c.notify(alert.EventRateLimited, "request rate limit exceeded", userID, map[string]string{
+					"count": fmt.Sprintf("%d", count),
+					"limit": fmt.Sprintf("%d", rpm),
+				})
+				span.SetAttributes(attribute.String("result", "exceeded"), attribute.String("kind", "rate_limit"))
+				return &ExceededError{
+					Kind:    "rate_limit",
+					Current: int64(count),
+					Limit:   int64(rpm),
+					ResetAt: resetAt,
+				}
+			}
+		}
+	}
+
+	// 2. 检查 token 配额（需要查 DB，DB 错误时 fail-open）
 	var daily, monthly int64
 	if group.DailyTokenLimit != nil || group.MonthlyTokenLimit != nil {
 		var err error
 		daily, monthly, err = c.getUsage(userID)
 		if err != nil {
-			c.logger.Warn("quota check: failed to get usage, bypassing",
+			c.logger.Warn("quota check: failed to get usage, bypassing token quota",
 				zap.String("user_id", userID),
 				zap.Error(err),
 			)
 			span.SetAttributes(attribute.String("result", "bypass_error"))
-			return nil // fail-open
+			return nil // fail-open：DB 故障不阻断请求，但 RPM 已在上面检查
 		}
 		c.logger.Debug("quota check",
 			zap.String("user_id", userID),
@@ -175,32 +202,6 @@ func (c *Checker) Check(ctx context.Context, userID string) error {
 			Current: monthly,
 			Limit:   *group.MonthlyTokenLimit,
 			ResetAt: resetAt,
-		}
-	}
-
-	// 检查每分钟请求频率（RPM）
-	if group.RequestsPerMinute != nil && c.rateLimiter != nil {
-		rpm := *group.RequestsPerMinute
-		if rpm > 0 {
-			if allowed, count := c.rateLimiter.Allow(userID, rpm); !allowed {
-				resetAt := c.rateLimiter.ResetAt(userID)
-				c.logger.Warn("request rate limit exceeded",
-					zap.String("user_id", userID),
-					zap.Int("count", count),
-					zap.Int("limit", rpm),
-				)
-				c.notify(alert.EventRateLimited, "request rate limit exceeded", userID, map[string]string{
-					"count": fmt.Sprintf("%d", count),
-					"limit": fmt.Sprintf("%d", rpm),
-				})
-				span.SetAttributes(attribute.String("result", "exceeded"), attribute.String("kind", "rate_limit"))
-				return &ExceededError{
-					Kind:    "rate_limit",
-					Current: int64(count),
-					Limit:   int64(rpm),
-					ResetAt: resetAt,
-				}
-			}
 		}
 	}
 
