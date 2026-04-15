@@ -1010,6 +1010,8 @@ func runStart(cmd *cobra.Command, args []string) error {
 	adminHandler.SetKeyCache(apiKeyCache)     // 密码重置后立即踢出旧 API Key 缓存
 	keygenAPIHandler := api.NewKeygenHandler(logger, userRepo, jwtMgr)
 	keygenAPIHandler.SetKeyCache(apiKeyCache) // 改密后立即踢出旧 Key 缓存
+	keygenAPIHandler.SetUsageRepo(usageRepo)  // 用量中心数据接口
+	keygenAPIHandler.SetGroupRepo(groupRepo)  // 配额限制查询
 	keygenAPIHandler.SetWorkerMode(isWorker)
 	keygenAPIHandler.RegisterRoutes(mux)
 	logger.Info("keygen WebUI registered at /keygen/")
