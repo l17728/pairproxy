@@ -132,7 +132,7 @@ func TestGenerateKey_LongUsername(t *testing.T) {
 
 func TestGenerateKey_UnicodeUsername(t *testing.T) {
 	// Unicode 用户名应该正常工作
-	key, err := keygen.GenerateKey("用户名テスト", testSecret)
+	key, err := keygen.GenerateKey("用户名测试", testSecret)
 	require.NoError(t, err)
 	assert.Equal(t, keygen.KeyTotalLen, len(key))
 	assert.True(t, keygen.IsValidFormat(key))

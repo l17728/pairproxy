@@ -39,12 +39,12 @@ import (
 	"github.com/l17728/pairproxy/internal/version"
 )
 
-// ErrNoLLMBinding は LLM ターゲットが割り当てられていない場合に返される。
-// 管理者が明示的な割り当てを設定するまでリクエストは拒否される。
+// ErrNoLLMBinding 在未分配 LLM 目标时返回。
+// 在管理员显式配置分配关系之前，请求将被拒绝。
 var ErrNoLLMBinding = errors.New("no LLM target assigned for this user/group")
 
-// ErrBoundTargetUnavailable は割り当て済みの LLM ターゲットが利用不可の場合に返される。
-// ターゲットが unhealthy か既にリトライ済みの場合に発生する。
+// ErrBoundTargetUnavailable 在已绑定的 LLM 目标不可用时返回。
+// 目标处于 unhealthy 状态或已完成重试时触发。
 var ErrBoundTargetUnavailable = errors.New("assigned LLM target is currently unavailable")
 
 // LLMTarget 代表一个 LLM 后端（含 API Key 和 provider 类型）。
@@ -1283,7 +1283,7 @@ func preferredProvidersByPath(path string) map[string]bool {
 
 // buildRetryTransport 构建 RetryTransport（当 llmBalancer 已配置时）。
 // effectivePath 是传递给 PickNext 的路径（OtoA 时为 "/v1/messages"，其他为 r.URL.Path）。
-// これは次要防御機制：确保 retry 时 pickLLMTarget 从 /v1/messages 对应的 preferredProvidersByPath
+// 这是次要防御机制：确保 retry 时 pickLLMTarget 从 /v1/messages 对应的 preferredProvidersByPath
 // 中选 Anthropic targets。主要机制是 Director 将出向请求路径改写为 convertedPath（Step 5.10）。
 func (sp *SProxy) buildRetryTransport(userID, groupID, effectivePath, requestedModel string) http.RoundTripper {
 	if sp.llmBalancer == nil {
