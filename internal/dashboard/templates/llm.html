@@ -1,4 +1,15 @@
 {{define "content"}}
+<style>
+.bind-page-btn {
+  display:inline-flex; align-items:center; justify-content:center;
+  min-width:1.75rem; height:1.75rem; padding:0 0.4rem; border-radius:0.375rem;
+  font-size:0.75rem; border:1px solid #e5e7eb; background:#fff;
+  cursor:pointer; transition:background 0.15s;
+}
+.bind-page-btn:hover:not([disabled]) { background:#f3f4f6; }
+.bind-page-active { background:#4f46e5; color:#fff; border-color:#4f46e5; }
+.bind-page-btn[disabled] { opacity:0.4; cursor:default; }
+</style>
 <h1 class="text-xl font-bold text-gray-800 mb-6">LLM 目标管理</h1>
 
 <!-- 节点排水状态 -->
@@ -549,7 +560,31 @@
 {{end}}
 
 <section class="mb-8">
-  <h2 class="text-base font-semibold text-gray-700 mb-3">当前绑定关系</h2>
+  <div class="flex items-center justify-between mb-3">
+    <h2 class="text-base font-semibold text-gray-700">当前绑定关系</h2>
+    <span id="bindStats" class="text-xs text-gray-500"></span>
+  </div>
+
+  <!-- 过滤栏 -->
+  <div class="flex flex-wrap gap-2 mb-3">
+    <select id="bindFilterType" class="border border-gray-300 rounded px-2 py-1.5 text-sm focus:ring-2 focus:ring-indigo-400">
+      <option value="">全部类型</option>
+      <option value="user">用户</option>
+      <option value="group">分组</option>
+    </select>
+    <input type="text" id="bindFilterName" placeholder="用户/分组名称…"
+           class="border border-gray-300 rounded px-2 py-1.5 text-sm w-44 focus:ring-2 focus:ring-indigo-400">
+    <input type="text" id="bindFilterTarget" placeholder="目标 URL…"
+           class="border border-gray-300 rounded px-2 py-1.5 text-sm w-56 focus:ring-2 focus:ring-indigo-400">
+    <select id="bindPageSize" class="border border-gray-300 rounded px-2 py-1.5 text-sm focus:ring-2 focus:ring-indigo-400">
+      <option value="20">20 条/页</option>
+      <option value="50">50 条/页</option>
+      <option value="100">100 条/页</option>
+    </select>
+    <button type="button" onclick="bindResetFilters()"
+            class="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50 text-gray-600">重置</button>
+  </div>
+
   <div class="overflow-x-auto bg-white rounded shadow">
     <table class="min-w-full divide-y divide-gray-200 text-sm">
       <thead class="bg-gray-50">
@@ -561,30 +596,18 @@
           <th class="px-4 py-2"></th>
         </tr>
       </thead>
-      <tbody class="divide-y divide-gray-100">
-        {{range .Bindings}}
-        <tr>
-          <td class="px-4 py-2">{{if .UserID}}用户{{else}}分组{{end}}</td>
-          <td class="px-4 py-2 text-xs">
-            {{if .UserID}}{{username .UserID $.UserIDToName}}{{else if .GroupID}}{{username .GroupID $.GroupIDToName}}{{end}}
-          </td>
-          <td class="px-4 py-2 font-mono text-xs">{{.TargetURL}}</td>
-          <td class="px-4 py-2 text-xs text-gray-500">{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
-          <td class="px-4 py-2">
-            {{if not $.IsWorkerNode}}
-            <form method="POST" action="/dashboard/llm/bindings/{{.ID}}/delete">
-              <button type="submit" class="text-red-600 hover:text-red-800 text-xs">解绑</button>
-            </form>
-            {{end}}
-          </td>
-        </tr>
-        {{else}}
-        <tr><td colspan="5" class="px-4 py-4 text-center text-gray-400">暂无绑定关系</td></tr>
-        {{end}}
+      <tbody id="bindTableBody" class="divide-y divide-gray-100">
+        <tr><td colspan="5" class="px-4 py-4 text-center text-gray-400">加载中…</td></tr>
       </tbody>
     </table>
   </div>
+  <div id="bindPaginationBar" class="mt-2 flex items-center justify-between gap-3 text-xs text-gray-500"></div>
 </section>
+
+<!-- 绑定数据（供 JS 过滤分页使用） -->
+<script id="bindingsDataScript" type="application/json">
+[{{range .Bindings}}{"id":"{{.ID}}","type":"{{if .UserID}}user{{else}}group{{end}}","name":"{{if .UserID}}{{username .UserID $.UserIDToName}}{{else if .GroupID}}{{username .GroupID $.GroupIDToName}}{{end}}","targetURL":"{{.TargetURL}}","createdAt":"{{.CreatedAt.Format "2006-01-02 15:04"}}"},{{end}}]
+</script>
 
 {{end}}
 
@@ -663,6 +686,130 @@ function bindUserSelect(id, name) {
   }
 })();
 // ---- END 绑定表单用户 Combobox ----
+
+// ---- 绑定关系列表：过滤 + 分页 ----
+(function() {
+  var isWorkerNode = {{if .IsWorkerNode}}true{{else}}false{{end}};
+  var allBindings = [];
+  try {
+    var raw = document.getElementById('bindingsDataScript');
+    if (raw) allBindings = JSON.parse(raw.textContent.trim()) || [];
+  } catch(e) { allBindings = []; }
+
+  var currentPage = 1;
+  var pageSize = 20;
+
+  function getFilters() {
+    return {
+      type:   (document.getElementById('bindFilterType')   || {}).value || '',
+      name:   ((document.getElementById('bindFilterName')  || {}).value || '').trim().toLowerCase(),
+      target: ((document.getElementById('bindFilterTarget')|| {}).value || '').trim().toLowerCase(),
+    };
+  }
+
+  function applyFilters() {
+    var f = getFilters();
+    return allBindings.filter(function(b) {
+      if (f.type && b.type !== f.type) return false;
+      if (f.name && b.name.toLowerCase().indexOf(f.name) === -1) return false;
+      if (f.target && b.targetURL.toLowerCase().indexOf(f.target) === -1) return false;
+      return true;
+    });
+  }
+
+  function render() {
+    var filtered = applyFilters();
+    var total = filtered.length;
+    var totalPages = Math.max(1, Math.ceil(total / pageSize));
+    if (currentPage > totalPages) currentPage = totalPages;
+    var start = (currentPage - 1) * pageSize;
+    var page = filtered.slice(start, start + pageSize);
+
+    // stats
+    var stats = document.getElementById('bindStats');
+    if (stats) {
+      if (total === allBindings.length) {
+        stats.textContent = '共 ' + total + ' 条';
+      } else {
+        stats.textContent = '过滤后 ' + total + ' / ' + allBindings.length + ' 条';
+      }
+    }
+
+    // table body
+    var tbody = document.getElementById('bindTableBody');
+    if (!tbody) return;
+    if (page.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" class="px-4 py-4 text-center text-gray-400">暂无绑定关系</td></tr>';
+    } else {
+      tbody.innerHTML = page.map(function(b) {
+        var typeLabel = b.type === 'user' ? '用户' : '分组';
+        var deleteBtn = isWorkerNode ? '' :
+          '<form method="POST" action="/dashboard/llm/bindings/' + b.id + '/delete">' +
+          '<button type="submit" class="text-red-600 hover:text-red-800 text-xs">解绑</button></form>';
+        return '<tr>' +
+          '<td class="px-4 py-2">' + typeLabel + '</td>' +
+          '<td class="px-4 py-2 text-xs">' + escHtml(b.name) + '</td>' +
+          '<td class="px-4 py-2 font-mono text-xs">' + escHtml(b.targetURL) + '</td>' +
+          '<td class="px-4 py-2 text-xs text-gray-500">' + b.createdAt + '</td>' +
+          '<td class="px-4 py-2">' + deleteBtn + '</td>' +
+          '</tr>';
+      }).join('');
+    }
+
+    // pagination
+    renderBindPagination(currentPage, totalPages, total, start);
+  }
+
+  function renderBindPagination(page, totalPages, total, start) {
+    var bar = document.getElementById('bindPaginationBar');
+    if (!bar) return;
+    var end = Math.min(start + pageSize, total);
+    var infoText = total > 0 ? ('显示 ' + (start+1) + '–' + end + ' / ' + total + ' 条') : '';
+    if (totalPages <= 1) { bar.innerHTML = '<span>' + infoText + '</span>'; return; }
+
+    var pages = new Set([1, totalPages, page, page-1, page-2, page+1, page+2]
+      .filter(function(p){ return p >= 1 && p <= totalPages; }));
+    var sorted = Array.from(pages).sort(function(a,b){return a-b;});
+    var html = '<span>' + infoText + '</span><div class="flex items-center gap-1">';
+    html += '<button class="bind-page-btn" onclick="bindGotoPage(' + (page-1) + ')"' + (page<=1?' disabled':'') + '>‹</button>';
+    var prev = 0;
+    sorted.forEach(function(p) {
+      if (prev && p - prev > 1) html += '<span class="bind-page-btn" style="border:none;cursor:default">…</span>';
+      html += '<button class="bind-page-btn' + (p===page?' bind-page-active':'') + '" onclick="bindGotoPage(' + p + ')">' + p + '</button>';
+      prev = p;
+    });
+    html += '<button class="bind-page-btn" onclick="bindGotoPage(' + (page+1) + ')"' + (page>=totalPages?' disabled':'') + '>›</button>';
+    html += '</div>';
+    bar.innerHTML = html;
+  }
+
+  function escHtml(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  window.bindGotoPage = function(p) { currentPage = p; render(); };
+
+  window.bindResetFilters = function() {
+    var ft = document.getElementById('bindFilterType');
+    var fn = document.getElementById('bindFilterName');
+    var fu = document.getElementById('bindFilterTarget');
+    if (ft) ft.value = '';
+    if (fn) fn.value = '';
+    if (fu) fu.value = '';
+    currentPage = 1;
+    render();
+  };
+
+  ['bindFilterType','bindFilterName','bindFilterTarget'].forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) el.addEventListener('input', function() { currentPage = 1; render(); });
+  });
+  var ps = document.getElementById('bindPageSize');
+  if (ps) ps.addEventListener('change', function() { pageSize = parseInt(this.value); currentPage = 1; render(); });
+
+  render();
+})();
+// ---- END 绑定关系列表 ----
 
 function validateBindForm(form) {
   var bindType = form.querySelector('[name="bind_type"]').value;
