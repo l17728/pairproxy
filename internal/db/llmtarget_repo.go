@@ -2,6 +2,7 @@ package db
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
@@ -105,6 +106,22 @@ func (r *LLMTargetRepo) GetByID(id string) (*LLMTarget, error) {
 		return nil, fmt.Errorf("get llm target by id: %w", err)
 	}
 	return &target, nil
+}
+
+// MaxUpdatedAt 返回 llm_targets 表中最大的 updated_at 时间戳。
+// 用于 peer 模式的轮询感知：若结果比上次记录的时间戳新，则需要调用 SyncLLMTargets。
+// 表为空时返回零值 time.Time{}，err 为 nil。
+func (r *LLMTargetRepo) MaxUpdatedAt() (time.Time, error) {
+	var result struct {
+		Max *time.Time
+	}
+	if err := r.db.Model(&LLMTarget{}).Select("MAX(updated_at) AS max").Scan(&result).Error; err != nil {
+		return time.Time{}, fmt.Errorf("max updated_at: %w", err)
+	}
+	if result.Max == nil {
+		return time.Time{}, nil
+	}
+	return *result.Max, nil
 }
 
 // ListAll 列出所有 LLM targets

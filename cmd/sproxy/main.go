@@ -634,6 +634,49 @@ func runStart(cmd *cobra.Command, args []string) error {
 	llmTargetRepo := db.NewLLMTargetRepo(database, logger)
 	logger.Info("LLM target repo configured")
 
+	// Peer 模式：轮询 llm_targets.updated_at，感知 CLI 或其他节点写入的变更并同步到内存
+	// 轮询间隔与心跳间隔一致（默认 30s），延迟可接受（运维操作场景）
+	if isPeerMode {
+		pollInterval := cfg.Cluster.ReportInterval
+		if pollInterval <= 0 {
+			pollInterval = 30 * time.Second
+		}
+		go func() {
+			// 以当前最大 updated_at 为基准，避免启动时重复触发一次 sync
+			lastSeen, err := llmTargetRepo.MaxUpdatedAt()
+			if err != nil {
+				logger.Warn("peer mode target poll: failed to get initial max updated_at, will sync on first tick",
+					zap.Error(err))
+			}
+			ticker := time.NewTicker(pollInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					latest, err := llmTargetRepo.MaxUpdatedAt()
+					if err != nil {
+						logger.Warn("peer mode target poll: failed to query max updated_at",
+							zap.Error(err))
+						continue
+					}
+					if latest.After(lastSeen) {
+						logger.Info("peer mode target poll: detected llm_targets change, syncing",
+							zap.Time("prev", lastSeen),
+							zap.Time("latest", latest),
+						)
+						sp.SyncLLMTargets()
+						lastSeen = latest
+					}
+				}
+			}
+		}()
+		logger.Info("peer mode target poll started",
+			zap.Duration("interval", pollInterval),
+		)
+	}
+
 	// 排水控制函数
 	adminHandler.SetDrainFunctions(sp.Drain, sp.Undrain, sp.GetDrainStatus)
 	logger.Info("drain control functions configured")
