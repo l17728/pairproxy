@@ -169,8 +169,9 @@ func (r *LLMTargetRepo) Seed(target *LLMTarget) error {
 		return nil
 	}
 
-	// URL 不存在 → 首次插入，将 IsEditable 设为 true，允许 WebUI 后续修改（F1 的目标）
-	target.IsEditable = true
+	// URL 不存在 → 首次插入，保留调用方传入的 IsEditable 值。
+	// config-sourced target 由 syncConfigTargetsToDatabase 设置 IsEditable=false，
+	// 不得在此处覆盖为 true，否则 WebUI 会错误地允许编辑/删除配置文件来源的 target。
 	r.logger.Info("seed: inserting new config target",
 		zap.String("url", target.URL),
 		zap.String("provider", target.Provider))

@@ -1038,8 +1038,9 @@ func TestLLMTargetRepo_Seed_InsertNew(t *testing.T) {
 	assert.Equal(t, "https://api.anthropic.com", found.URL)
 	assert.Equal(t, "anthropic", found.Provider)
 	assert.Equal(t, "config", found.Source)
-	// Seed sets IsEditable=true on first insert (F1 design goal: allow WebUI modifications)
-	assert.True(t, found.IsEditable, "Seed should set IsEditable=true on first insert")
+	// Seed preserves the caller's IsEditable value; config-sourced targets pass IsEditable=false
+	// so they cannot be edited/deleted via WebUI.
+	assert.False(t, found.IsEditable, "Seed should preserve IsEditable=false for config-sourced targets")
 }
 
 func TestLLMTargetRepo_Seed_SkipExisting(t *testing.T) {
