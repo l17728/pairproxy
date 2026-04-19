@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PairProxy 特性全景图 — 同心圆架构</title>
+<style>
+  :root {
+    --c-bg:#0f0f1a; --c-text:#e0e0e0; --c-text2:#ccccee;
+    --c-dim:#7777aa; --c-dim2:#aa6666; --c-dim3:#8888aa;
+    --c-muted:#555570; --c-h1:#fff;
+    --c-tip-bg:rgba(22,22,37,0.96); --c-tip-bdr:#3a3a55;
+    --c-canvas-text:#ccccee;
+  }
+  [data-theme="light"] {
+    --c-bg:#f8f9fc; --c-text:#1a1a2e; --c-text2:#333350;
+    --c-dim:#666688; --c-dim2:#995555; --c-dim3:#555570;
+    --c-muted:#9999aa; --c-h1:#111;
+    --c-tip-bg:rgba(255,255,255,0.96); --c-tip-bdr:#c0c0d0;
+    --c-canvas-text:#333350;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--c-bg);
+    color: var(--c-text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 24px 16px 48px;
+    min-height: 100vh;
+    transition: background .3s, color .3s;
+  }
+  .header {
+    text-align: center;
+    margin-bottom: 20px;
+  }
+  .header h1 {
+    font-size: 26px;
+    font-weight: 700;
+    color: var(--c-h1);
+    margin-bottom: 6px;
+    letter-spacing: 1px;
+  }
+  .header .subtitle {
+    font-size: 13px;
+    color: var(--c-dim);
+    line-height: 1.6;
+  }
+  .canvas-wrap {
+    position: relative;
+    width: 100%;
+    max-width: 1100px;
+    aspect-ratio: 1 / 1;
+    max-height: 88vh;
+  }
+  canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+  .legend {
+    margin-top: 16px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px 24px;
+    justify-content: center;
+    max-width: 900px;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--c-text2);
+  }
+  .legend-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .footer {
+    margin-top: 20px;
+    font-size: 11px;
+    color: var(--c-muted);
+    text-align: center;
+  }
+  .tooltip {
+    position: fixed;
+    background: var(--c-tip-bg);
+    border: 1px solid var(--c-tip-bdr);
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 13px;
+    color: var(--c-text);
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.15s;
+    max-width: 320px;
+    z-index: 100;
+    line-height: 1.5;
+  }
+  .tooltip.visible { opacity: 1; }
+  .tooltip .t-name { font-weight: 700; font-size: 14px; margin-bottom: 4px; }
+  .tooltip .t-layer { font-size: 11px; color: var(--c-dim3); margin-bottom: 6px; }
+  .tooltip .t-desc { color: var(--c-text2); }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>PairProxy 特性全景图</h1>
+  <div class="subtitle">
+    133,000 行代码 &nbsp;|&nbsp; 24 个版本 &nbsp;|&nbsp; 390 次提交 &nbsp;|&nbsp; 2,090+ 测试<br>
+    从核心代理引擎向外辐射的七层架构 · 同心圆 = 依赖层次
+  </div>
+</div>
+
+<div class="canvas-wrap">
+  <canvas id="canvas"></canvas>
+</div>
+
+<div class="legend" id="legend"></div>
+<div class="footer">PairProxy AI Coding 方法论分享 · 同心圆架构可视化</div>
+<div class="tooltip" id="tooltip"></div>
+
+<script>
+// ============================================================
+// Data Model
+// ============================================================
+// Layers from innermost (kernel) to outermost (tooling)
+// Each feature has: name, short (optional short name for small screens), desc, deps (indices into other features)
+
+const LAYERS = [
+  {
+    name: 'L0 核心引擎',
+    color: '#ff6b6b',
+    bg: 'rgba(255,107,107,0.06)',
+    ringColor: 'rgba(255,107,107,0.18)',
+    features: [
+      { name: 'HTTP 反向代理', desc: '核心请求转发引擎，支持 Anthropic/OpenAI/Ollama 三种上游协议', deps: [] },
+      { name: 'SSE 流式解析', desc: 'TeeResponseWriter + 三种 SSE Parser（Anthropic/OpenAI/GLM），精确解析流式 token', deps: [0] },
+      { name: 'Token 精确统计', desc: '同步/流式双路径 token 计数，input/output/cache 分类统计', deps: [0, 1] },
+      { name: '加权负载均衡', desc: 'WeightedRandomBalancer，多 target 加权随机选择', deps: [0] },
+    ],
+  },
+  {
+    name: 'L1 协议与路由',
+    color: '#ffa94d',
+    bg: 'rgba(255,169,77,0.05)',
+    ringColor: 'rgba(255,169,77,0.15)',
+    features: [
+      { name: 'Anthropic↔OpenAI 转换', desc: '双向协议转换，支持 tool use、image、streaming 完整转换', deps: [0] },
+      { name: 'OtoA 转换 (v2.10)', desc: 'OpenAI 客户端透明访问 Anthropic 端点，Cursor/Continue.dev 兼容', deps: [4] },
+      { name: '语义路由 (v2.18)', desc: '基于请求意图缩窄 LLM 候选池，YAML+DB 双来源规则', deps: [3] },
+      { name: 'Model-Aware 路由', desc: '按模型名称精准路由，F1/F2/F3 三级匹配策略', deps: [3] },
+      { name: '故障转移重试', desc: '指定 HTTP 状态码（如 429）触发 try-next，遍历所有 target', deps: [3] },
+    ],
+  },
+  {
+    name: 'L2 认证与安全',
+    color: '#ffd43b',
+    bg: 'rgba(255,212,59,0.04)',
+    ringColor: 'rgba(255,212,59,0.13)',
+    features: [
+      { name: 'JWT 认证', desc: '独立 JWT，access 24h + refresh 7d，cproxy 自动刷新', deps: [0] },
+      { name: 'LDAP/AD 集成', desc: '企业 LDAP/Active Directory，JIT 自动创建用户，LDAPS 支持', deps: [9] },
+      { name: 'sk-pp- 直连代理', desc: 'HMAC-SHA256 API Key，48 字符 Base62，无需 cproxy 层', deps: [9] },
+      { name: '登录频率限制', desc: '每 IP 5 次失败锁定 5 分钟，防暴力破解', deps: [9] },
+      { name: 'Keygen 服务 (v2.15)', desc: 'HMAC-SHA256 碰撞-free 算法，LRU 缓存 + TTL + 用户级失效', deps: [11] },
+    ],
+  },
+  {
+    name: 'L3 多租户管理',
+    color: '#69db7c',
+    bg: 'rgba(105,219,124,0.04)',
+    ringColor: 'rgba(105,219,124,0.13)',
+    features: [
+      { name: '用户配额', desc: '按分组设置每日/每月 token 上限，超额返回 429', deps: [2] },
+      { name: 'RPM 速率限制', desc: '每用户每分钟请求数限制，滑动窗口算法', deps: [0] },
+      { name: 'Token 费用估算', desc: '按模型定价配置，实时 USD 消耗计算', deps: [2] },
+      { name: 'Group-Target Set', desc: '分组级 LLM 目标集绑定，独立负载均衡和健康检查', deps: [3] },
+      { name: '管理审计日志', desc: '所有用户/分组增删改操作记录到 audit_logs', deps: [] },
+    ],
+  },
+  {
+    name: 'L4 可观测性',
+    color: '#4dabf7',
+    bg: 'rgba(77,171,247,0.04)',
+    ringColor: 'rgba(77,171,247,0.13)',
+    features: [
+      { name: 'Smart Probe 健康检查', desc: '自动发现探活策略（v2.24.5+），无需配置路径，两阶段语义', deps: [3] },
+      { name: '熔断器', desc: '被动熔断：连续失败达到阈值后标记不健康，自动恢复检测', deps: [24] },
+      { name: 'Prometheus 指标', desc: 'GET /metrics，标准文本格式，含 DB 大小/缓存命中率/心跳延迟', deps: [] },
+      { name: 'OpenTelemetry 追踪', desc: '可选 gRPC/HTTP/stdout exporter，对接 Jaeger/Tempo', deps: [] },
+      { name: 'Webhook 告警', desc: '节点故障、配额超限等事件推送到 Slack/飞书/企业微信', deps: [24] },
+      { name: 'Debug Logger', desc: 'SIGHUP 运行时切换 debug 日志，双向转发内容记录', deps: [0] },
+    ],
+  },
+  {
+    name: 'L5 集群与存储',
+    color: '#9775fa',
+    bg: 'rgba(151,117,250,0.04)',
+    ringColor: 'rgba(151,117,250,0.13)',
+    features: [
+      { name: 'SQLite 集群', desc: 'Primary + Worker 模式，ConfigSyncer 30s 同步，写操作封锁', deps: [0] },
+      { name: 'PostgreSQL 对等节点', desc: 'PG 模式下 role:peer，所有节点完全对等，分布式节点发现', deps: [0] },
+      { name: '数据导出/备份', desc: 'CLI export csv/json + 流式 API download + backup 一键备份', deps: [] },
+      { name: '对话内容追踪', desc: '按用户隔离完整对话（JSON 文件），非流式/SSE 双路径捕获', deps: [1] },
+      { name: '训练语料采集 (v2.16)', desc: '异步 JSONL 语料，质量过滤，三种 SSE 格式，零阻塞热路径', deps: [1] },
+      { name: '滚动升级 Drain', desc: '优雅排水/恢复，支持无损滚动升级', deps: [24] },
+    ],
+  },
+  {
+    name: 'L6 接口与工具',
+    color: '#e599f7',
+    bg: 'rgba(229,153,247,0.04)',
+    ringColor: 'rgba(229,153,247,0.13)',
+    features: [
+      { name: 'Web Dashboard', desc: 'Go 模板 + Tailwind CSS，内嵌二进制，零前端构建', deps: [] },
+      { name: '趋势图表 (F-10)', desc: 'Token 用量/费用趋势，Top5 用户，7/30/90 天切换', deps: [31] },
+      { name: '用户自助页面', desc: '普通用户查看配额/用量历史，/dashboard/my-usage', deps: [31] },
+      { name: '告警页面 (SSE)', desc: '实时 WARN/ERROR 日志查看器，SSE 推送，无需刷新', deps: [31, 29] },
+      { name: '批量导入', desc: 'sproxy admin import 模板文件批量创建，--dry-run 预览', deps: [] },
+      { name: 'Admin CLI', desc: '完整命令行管理：用户/分组/配额/统计/LLM Target/路由/告警', deps: [] },
+      { name: 'REST API', desc: '/api/admin/* + /api/user/* + /api/internal/*，JWT 认证，分页', deps: [] },
+      { name: 'Keygen WebUI', desc: '用户自助 /keygen/ 页面生成 sk-pp- API Key', deps: [11, 31] },
+      { name: 'reportgen 工具', desc: '独立报表生成器，SQLite+PG 双驱动，LLM 洞察，9 阶段可视化', deps: [] },
+      { name: 'loadtest 工具', desc: '压力测试工具，并发请求模拟，实时延迟统计', deps: [] },
+      { name: 'mockllm/mockagent', desc: '测试用模拟 LLM/Agent 服务，集成测试基础设施', deps: [] },
+    ],
+  },
+];
+
+// ============================================================
+// Flatten features for index lookup
+// ============================================================
+const allFeatures = [];
+LAYERS.forEach((layer, li) => {
+  layer.features.forEach((f, fi) => {
+    f._layerIdx = li;
+    f._featIdx = fi;
+    f._globalIdx = allFeatures.length;
+    allFeatures.push(f);
+  });
+});
+
+// Map deps to global indices
+LAYERS.forEach(layer => {
+  layer.features.forEach(f => {
+    f._deps = f.deps.map(d => allFeatures[d]);
+  });
+});
+
+// ============================================================
+// Rendering
+// ============================================================
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const tooltip = document.getElementById('tooltip');
+
+let W, H, CX, CY, maxR, dpr;
+let featurePositions = []; // { x, y, r, feature }
+
+function resize() {
+  const rect = canvas.parentElement.getBoundingClientRect();
+  dpr = window.devicePixelRatio || 1;
+  W = rect.width;
+  H = rect.height;
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  CX = W / 2;
+  CY = H / 2;
+  maxR = Math.min(W * 0.63, H) * 0.46;
+}
+
+// Helper: get CSS var value
+function cv(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  featurePositions = [];
+
+  const layerCount = LAYERS.length;
+  const ringWidth = maxR / (layerCount + 0.5);
+
+  // Draw rings (outermost first so inner rings paint over)
+  for (let i = layerCount - 1; i >= 0; i--) {
+    const layer = LAYERS[i];
+    const outerR = maxR - i * ringWidth + ringWidth * 0.5;
+    const innerR = Math.max(0, maxR - (i + 1) * ringWidth + ringWidth * 0.5);
+
+    // Ring background
+    ctx.beginPath();
+    ctx.arc(CX, CY, outerR, 0, Math.PI * 2);
+    if (innerR > 0) {
+      ctx.arc(CX, CY, innerR, 0, Math.PI * 2, true);
+    }
+    ctx.fillStyle = layer.bg;
+    ctx.fill();
+
+    // Ring border
+    ctx.beginPath();
+    ctx.arc(CX, CY, outerR, 0, Math.PI * 2);
+    ctx.strokeStyle = layer.ringColor;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    if (innerR > 0) {
+      ctx.beginPath();
+      ctx.arc(CX, CY, innerR, 0, Math.PI * 2);
+      ctx.strokeStyle = layer.ringColor;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+  }
+
+  // Center kernel label
+  const kernelR = maxR - (layerCount) * ringWidth + ringWidth * 0.5;
+  if (kernelR > 0) {
+    ctx.beginPath();
+    ctx.arc(CX, CY, kernelR, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(255,107,107,0.12)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,107,107,0.3)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // Kernel icon/text
+    ctx.fillStyle = '#ff6b6b';
+    ctx.font = 'bold 13px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('PairProxy', CX, CY - 8);
+    ctx.font = '10px system-ui, sans-serif';
+    ctx.fillStyle = cv('--c-dim2');
+    ctx.fillText('Core Engine', CX, CY + 8);
+  }
+
+  // Draw dependency lines (behind nodes)
+  LAYERS.forEach(layer => {
+    layer.features.forEach(f => {
+      const fromPos = getFeaturePos(f);
+      if (!fromPos) return;
+      f._deps.forEach(dep => {
+        const toPos = getFeaturePos(dep);
+        if (!toPos) return;
+        drawDependency(fromPos, toPos, f, dep);
+      });
+    });
+  });
+
+  // Draw features
+  LAYERS.forEach((layer, li) => {
+    const midR = maxR - (li + 0.5) * ringWidth + ringWidth * 0.5;
+    const feats = layer.features;
+    const count = feats.length;
+
+    feats.forEach((f, fi) => {
+      // Spread features around the ring with even spacing
+      const angleOffset = (li * 0.4) % (Math.PI * 2); // Rotate each layer slightly
+      const angleStep = (Math.PI * 2) / Math.max(count, 1);
+      const angle = angleOffset + fi * angleStep - Math.PI / 2;
+
+      const nodeR = Math.max(8, Math.min(18, ringWidth * 0.22));
+      const x = CX + Math.cos(angle) * midR;
+      const y = CY + Math.sin(angle) * midR;
+
+      featurePositions.push({ x, y, r: nodeR, feature: f });
+
+      // Node circle
+      ctx.beginPath();
+      ctx.arc(x, y, nodeR, 0, Math.PI * 2);
+      ctx.fillStyle = layer.color;
+      ctx.globalAlpha = 0.9;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+
+      // Glow
+      ctx.beginPath();
+      ctx.arc(x, y, nodeR + 2, 0, Math.PI * 2);
+      ctx.strokeStyle = layer.color;
+      ctx.globalAlpha = 0.25;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+
+      // Check if label should be drawn outside with leader line
+      const labelR = midR + nodeR + 12;
+      const lx = CX + Math.cos(angle) * labelR;
+      const ly = CY + Math.sin(angle) * labelR;
+
+      // Measure text size
+      ctx.font = '11px system-ui, sans-serif';
+      const metrics = ctx.measureText(f.name);
+      const textWidth = metrics.width;
+      const textHeight = 11;
+
+      // Check if label should be drawn outside with leader line
+      // L6 layer (li === 6) — REST API, 批量导入, 用户自助页面 etc.
+      const labelNeedsExternal = li === 6;
+
+      if (labelNeedsExternal) {
+        // Draw leader line: diagonal out to maxR boundary, then horizontal to left/right edge
+        const isRightSide = Math.cos(angle) >= 0;
+
+        // Step 1: Diagonal line from node straight out to the outermost circle edge
+        const outerX = CX + Math.cos(angle) * maxR;
+        const outerY = CY + Math.sin(angle) * maxR;
+
+        // Step 2: Horizontal line extending well beyond the circle
+        const edgePadding = 30;
+        const horizX = isRightSide ? CX + maxR + edgePadding + 140 : CX - maxR - edgePadding - 140;
+        const horizY = outerY;
+
+        // Draw the polyline
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(outerX, outerY);
+        ctx.lineTo(horizX, horizY);
+        ctx.strokeStyle = layer.color;
+        ctx.globalAlpha = 0.5;
+        ctx.lineWidth = 1.2;
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+
+        // Draw label at the end of horizontal line
+        ctx.fillStyle = cv('--c-canvas-text');
+        const labelOffset = 6;
+        const finalLabelX = isRightSide ? horizX + labelOffset : horizX - labelOffset;
+        const finalLabelY = horizY;
+
+        ctx.textAlign = isRightSide ? 'left' : 'right';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(f.name, finalLabelX, finalLabelY);
+      } else {
+        // Draw label normally
+        ctx.fillStyle = cv('--c-canvas-text');
+        ctx.textAlign = Math.cos(angle) > 0.1 ? 'left' : Math.cos(angle) < -0.1 ? 'right' : 'center';
+        ctx.textBaseline = Math.sin(angle) > 0.3 ? 'top' : Math.sin(angle) < -0.3 ? 'bottom' : 'middle';
+        ctx.fillText(f.name, lx, ly);
+      }
+    });
+  });
+
+  // Layer labels on the right side
+  LAYERS.forEach((layer, li) => {
+    const midR = maxR - (li + 0.5) * ringWidth + ringWidth * 0.5;
+    const labelAngle = -Math.PI * 0.02; // Slightly right of top
+    const lx = CX + Math.cos(labelAngle) * (midR + ringWidth * 0.35);
+    const ly = CY + Math.sin(labelAngle) * (midR);
+
+    // Skip if too close to center
+  });
+
+  // Layer name badges along the top-right arc
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  LAYERS.forEach((layer, li) => {
+    const badgeAngle = -1.2 + li * 0.18;
+    const badgeR = maxR - li * ringWidth + ringWidth * 0.5 - ringWidth * 0.5;
+    const bx = CX + Math.cos(badgeAngle) * (maxR - li * ringWidth + 2);
+    const by = CY + Math.sin(badgeAngle) * (maxR - li * ringWidth + 2);
+
+    // Don't draw badges - they clutter. Use the legend instead.
+  });
+}
+
+function getFeaturePos(f) {
+  return featurePositions.find(p => p.feature._globalIdx === f._globalIdx);
+}
+
+function drawDependency(from, to, fromF, toF) {
+  const sameLayer = fromF._layerIdx === toF._layerIdx;
+  const fromLayer = LAYERS[fromF._layerIdx];
+  const toLayer = LAYERS[toF._layerIdx];
+
+  // Curved line through center-ish
+  const mx = (from.x + to.x) / 2;
+  const my = (from.y + to.y) / 2;
+  // Pull control point slightly toward center
+  const cpx = mx + (CX - mx) * 0.3;
+  const cpy = my + (CY - my) * 0.3;
+
+  ctx.beginPath();
+  ctx.moveTo(from.x, from.y);
+  ctx.quadraticCurveTo(cpx, cpy, to.x, to.y);
+
+  // Color: blend of the two layers
+  if (sameLayer) {
+    ctx.strokeStyle = fromLayer.color;
+    ctx.globalAlpha = 0.15;
+  } else {
+    ctx.strokeStyle = fromLayer.color;
+    ctx.globalAlpha = 0.12;
+  }
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+
+  // Arrow head at target
+  const arrowLen = 5;
+  const angle = Math.atan2(to.y - cpy, to.x - cpx);
+  ctx.beginPath();
+  ctx.moveTo(to.x, to.y);
+  ctx.lineTo(to.x - arrowLen * Math.cos(angle - 0.4), to.y - arrowLen * Math.sin(angle - 0.4));
+  ctx.moveTo(to.x, to.y);
+  ctx.lineTo(to.x - arrowLen * Math.cos(angle + 0.4), to.y - arrowLen * Math.sin(angle + 0.4));
+  ctx.strokeStyle = sameLayer ? fromLayer.color : toLayer.color;
+  ctx.globalAlpha = 0.25;
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+}
+
+// ============================================================
+// Tooltip
+// ============================================================
+canvas.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+
+  let hit = null;
+  for (const p of featurePositions) {
+    const dx = mx - p.x;
+    const dy = my - p.y;
+    if (dx * dx + dy * dy < (p.r + 6) * (p.r + 6)) {
+      hit = p;
+      break;
+    }
+  }
+
+  if (hit) {
+    const f = hit.feature;
+    const layer = LAYERS[f._layerIdx];
+    tooltip.innerHTML = `
+      <div class="t-name" style="color:${layer.color}">${f.name}</div>
+      <div class="t-layer">${layer.name} · 特性 ${f._featIdx + 1}/${layer.features.length}</div>
+      <div class="t-desc">${f.desc}</div>
+    `;
+    tooltip.style.left = Math.min(e.clientX + 16, window.innerWidth - 340) + 'px';
+    tooltip.style.top = Math.min(e.clientY - 10, window.innerHeight - 120) + 'px';
+    tooltip.classList.add('visible');
+    canvas.style.cursor = 'pointer';
+  } else {
+    tooltip.classList.remove('visible');
+    canvas.style.cursor = 'default';
+  }
+});
+
+canvas.addEventListener('mouseleave', () => {
+  tooltip.classList.remove('visible');
+  canvas.style.cursor = 'default';
+});
+
+// ============================================================
+// Legend
+// ============================================================
+function buildLegend() {
+  const legendEl = document.getElementById('legend');
+  LAYERS.forEach(layer => {
+    const item = document.createElement('div');
+    item.className = 'legend-item';
+    item.innerHTML = `<span class="legend-dot" style="background:${layer.color}"></span>${layer.name} (${layer.features.length})`;
+    legendEl.appendChild(item);
+  });
+}
+
+// ============================================================
+// Init
+// ============================================================
+function init() {
+  resize();
+  draw();
+  buildLegend();
+}
+
+window.addEventListener('resize', () => {
+  resize();
+  draw();
+});
+
+// Theme sync from parent
+window.addEventListener('message', e => {
+  if (e.data && e.data.type === 'theme') {
+    document.documentElement.setAttribute('data-theme', e.data.theme);
+    // Need to wait for CSS vars to update before redrawing
+    requestAnimationFrame(() => { resize(); draw(); });
+  }
+});
+
+init();
+</script>
+</body>
+</html>

@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Coding 依赖陷阱 — 五阶段模型</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+  :root {
+    --c-bg:#0f0f1a; --c-bg2:#161625; --c-bg3:#1a1a2e;
+    --c-text:#e0e0e0; --c-text2:#ccccee; --c-text3:#aaaacc; --c-text4:#9999bb;
+    --c-dim:#7777aa; --c-muted:#555570; --c-bdr:#2a2a40;
+    --c-h1:#fff; --c-tip-bg:rgba(22,22,37,0.95); --c-tip-bdr:#3a3a55;
+    --c-grid:rgba(255,255,255,0.04); --c-tick:#555577; --c-bdr3:rgba(255,255,255,0.04);
+  }
+  [data-theme="light"] {
+    --c-bg:#f8f9fc; --c-bg2:#ffffff; --c-bg3:#eef0f6;
+    --c-text:#1a1a2e; --c-text2:#2a2a40; --c-text3:#444466; --c-text4:#555570;
+    --c-dim:#666688; --c-muted:#9999aa; --c-bdr:#d0d2dd;
+    --c-h1:#111; --c-tip-bg:rgba(255,255,255,0.96); --c-tip-bdr:#c0c0d0;
+    --c-grid:rgba(0,0,0,0.04); --c-tick:#888899; --c-bdr3:rgba(0,0,0,0.06);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--c-bg);
+    color: var(--c-text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    padding: 30px 20px 60px;
+    max-width: 1100px;
+    margin: 0 auto;
+    transition: background .3s, color .3s;
+  }
+  .header { text-align: center; margin-bottom: 36px; }
+  .header h1 { font-size: 26px; font-weight: 700; color: var(--c-h1); margin-bottom: 6px; }
+  .header .subtitle { font-size: 13px; color: var(--c-dim); line-height: 1.6; }
+
+  .chart-section {
+    background: var(--c-bg2); border-radius: 12px; padding: 24px;
+    border: 1px solid var(--c-bdr); margin-bottom: 36px;
+  }
+  .chart-wrap { height: 380px; position: relative; }
+
+  .stages {
+    display: flex; flex-direction: column; gap: 12px;
+    margin-bottom: 36px;
+  }
+  .stage {
+    background: var(--c-bg2); border-radius: 10px; padding: 18px 22px;
+    border: 1px solid var(--c-bdr); display: flex; gap: 18px; align-items: flex-start;
+    transition: border-color 0.2s, transform 0.15s; cursor: pointer;
+  }
+  .stage:hover { transform: translateX(4px); }
+  .stage-idx {
+    font-size: 28px; font-weight: 800; opacity: 0.15; line-height: 1;
+    flex-shrink: 0; width: 36px; text-align: center;
+  }
+  .stage-body { flex: 1; }
+  .stage-title { font-size: 15px; font-weight: 700; margin-bottom: 4px; }
+  .stage-desc { font-size: 12px; color: var(--c-text4); line-height: 1.6; }
+  .stage-indicator {
+    display: flex; align-items: center; gap: 6px;
+    margin-top: 6px; font-size: 11px;
+  }
+  .bar-track { width: 80px; height: 4px; background: var(--c-bdr); border-radius: 2px; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 2px; transition: width 0.6s; }
+
+  .solutions {
+    background: var(--c-bg2); border-radius: 12px; padding: 24px;
+    border: 1px solid var(--c-bdr); margin-bottom: 36px;
+  }
+  .solutions h2 { font-size: 18px; font-weight: 600; color: var(--c-h1); margin-bottom: 16px; text-align: center; }
+  .solutions-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
+  }
+  .solution {
+    background: var(--c-bg3); border-radius: 8px; padding: 16px;
+    border-left: 3px solid;
+  }
+  .solution h3 { font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+  .solution p { font-size: 12px; color: var(--c-text4); line-height: 1.5; }
+
+  .insight {
+    background: var(--c-bg3); border-radius: 12px; padding: 24px;
+    border: 1px solid #ff6b6b33; text-align: center;
+    margin-bottom: 36px;
+  }
+  .insight h2 { font-size: 18px; font-weight: 600; color: #ff6b6b; margin-bottom: 12px; }
+  .insight p { font-size: 14px; color: var(--c-text2); line-height: 1.8; max-width: 700px; margin: 0 auto; }
+  .insight strong { color: #ff6b6b; }
+
+  .comparison {
+    background: var(--c-bg2); border-radius: 12px; padding: 24px;
+    border: 1px solid var(--c-bdr); margin-bottom: 36px;
+  }
+  .comparison h2 { font-size: 18px; font-weight: 600; color: var(--c-h1); margin-bottom: 16px; text-align: center; }
+  .comparison table {
+    width: 100%; border-collapse: collapse; font-size: 13px;
+  }
+  .comparison th { text-align: left; padding: 10px 16px; background: var(--c-bg3); color: var(--c-dim); font-weight: 600; border-bottom: 1px solid var(--c-bdr); }
+  .comparison td { padding: 10px 16px; border-bottom: 1px solid var(--c-bdr3); }
+  .comparison tr:last-child td { border-bottom: none; }
+  .tag { font-size: 11px; padding: 2px 8px; border-radius: 4px; display: inline-block; }
+  .tag-red { background: #ff6b6b20; color: #ff6b6b; }
+  .tag-green { background: #69db7c20; color: #69db7c; }
+
+  .footer { margin-top: 30px; text-align: center; font-size: 11px; color: var(--c-muted); }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>AI Coding 依赖陷阱</h1>
+  <div class="subtitle">五阶段模型：从信心大增到效率反转 · 为什么好的 Harness 不能消除依赖但能控制范围</div>
+</div>
+
+<div class="chart-section">
+  <div class="chart-wrap">
+    <canvas id="trapChart"></canvas>
+  </div>
+</div>
+
+<div class="stages" id="stagesContainer"></div>
+
+<div class="comparison">
+  <h2>传统开发 vs AI Coding：理解差距</h2>
+  <table>
+    <thead><tr><th>维度</th><th>传统开发</th><th>AI Coding</th></tr></thead>
+    <tbody>
+      <tr><td>代码理解</td><td>写过 → 理解</td><td>审过 → <span class="tag tag-red">部分理解</span></td></tr>
+      <tr><td>Bug 定位</td><td>凭记忆定位</td><td><span class="tag tag-red">依赖 AI 搜索</span></td></tr>
+      <tr><td>架构演进</td><td>逐步理解后决策</td><td>基于 AGENTS.md 约束让 AI 决策</td></tr>
+      <tr><td>离线能力</td><td><span class="tag tag-green">可脱离工具维护</span></td><td><span class="tag tag-red">离开 AI 几乎无法维护</span></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="solutions">
+  <h2>四个缓解方向</h2>
+  <div class="solutions-grid" id="solutionsGrid"></div>
+</div>
+
+<div class="insight">
+  <h2>核心洞察</h2>
+  <p>
+    AI Coding 让你更快地构建了一个<strong>你自己无法完全理解的系统</strong>。<br>
+    好的 Harness 不能消除依赖，但可以把依赖控制在<strong>可审计的范围内</strong>。<br>
+    你不需要理解每一行代码，但你需要理解<strong>每一个决策</strong>。
+  </p>
+</div>
+
+<div class="footer">PairProxy AI Coding 方法论分享 · 依赖陷阱五阶段模型</div>
+
+<script>
+// Stage data
+const stagesData = [
+  { idx: '1', title: '起步', color: '#69db7c', control: 100, aiEff: 100,
+    desc: '开发者用 AI 写代码，速度快了 5-10 倍，信心大增。一切看起来很美好。',
+    controlLabel: '掌控度 100%', aiLabel: 'AI 效率 5x' },
+  { idx: '2', title: '加速', color: '#ffd43b', control: 75, aiEff: 120,
+    desc: '项目快速膨胀（PairProxy: 44 天 13 万行）。开发者越来越依赖 AI，逐行 review 变得不可能，开始信任 AI 的输出。',
+    controlLabel: '掌控度 75%', aiLabel: 'AI 效率 5x+' },
+  { idx: '3', title: '失控', color: '#ffa94d', control: 45, aiEff: 130,
+    desc: '项目规模超出单人完整理解范围。开发者变成"审查 AI 工作的质检员"，但质检员自己看不懂所有细节，只能检查 AI 报告里的数字。',
+    controlLabel: '掌控度 45%', aiLabel: 'AI 效率 4x' },
+  { idx: '4', title: '依赖锁定', color: '#ff6b6b', control: 25, aiEff: 100,
+    desc: '离开 AI 无法维护代码。只能继续用 AI 维护 → AI 修改 AI 写的代码。开发者的角色进一步退化为"旁观者"。',
+    controlLabel: '掌控度 25%', aiLabel: 'AI 效率 3x' },
+  { idx: '5', title: '效率反转', color: '#cc3333', control: 15, aiEff: 60,
+    desc: '项目膨胀到 AI 上下文窗口也无法覆盖全貌。AI 开始重复犯错、制造架构冲突。Harness 维护成本非线性增长。AI 效率从 +5x 回落到 +1.5x 甚至更低。',
+    controlLabel: '掌控度 15%', aiLabel: 'AI 效率 1.5x' },
+];
+
+// Build chart
+function getCC() {
+  const cs = getComputedStyle(document.documentElement);
+  return {
+    tick: cs.getPropertyValue('--c-tick').trim(),
+    grid: cs.getPropertyValue('--c-grid').trim(),
+    dim: cs.getPropertyValue('--c-dim').trim(),
+    text3: cs.getPropertyValue('--c-text3').trim(),
+    tipBg: cs.getPropertyValue('--c-tip-bg').trim(),
+    tipBdr: cs.getPropertyValue('--c-tip-bdr').trim(),
+  };
+}
+let trapChart;
+function buildTrapChart() {
+  const cc = getCC();
+  if (trapChart) trapChart.destroy();
+  trapChart = new Chart(document.getElementById('trapChart').getContext('2d'), {
+    type: 'line',
+    data: {
+      labels: ['起步', '加速', '失控临界', '依赖锁定', '效率反转'],
+      datasets: [
+        {
+          label: '人类掌控度',
+          data: [100, 75, 45, 25, 15],
+          borderColor: '#ff6b6b',
+          backgroundColor: 'rgba(255,107,107,0.08)',
+          fill: true,
+          tension: 0.4,
+          pointRadius: 6,
+          pointBackgroundColor: '#ff6b6b',
+          borderWidth: 2.5,
+        },
+        {
+          label: 'AI 开发效率',
+          data: [100, 120, 130, 100, 60],
+          borderColor: '#4dabf7',
+          backgroundColor: 'rgba(77,171,247,0.08)',
+          fill: true,
+          tension: 0.4,
+          pointRadius: 6,
+          pointBackgroundColor: '#4dabf7',
+          borderWidth: 2.5,
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      scales: {
+        y: {
+          beginAtZero: true, max: 150,
+          ticks: { color: cc.tick, font: { size: 11 }, callback: v => v + '%' },
+          grid: { color: cc.grid },
+          title: { display: true, text: '百分比', color: cc.dim, font: { size: 12 } }
+        },
+        x: {
+          ticks: { color: cc.text3, font: { size: 12, weight: '600' } },
+          grid: { color: cc.grid }
+        }
+      },
+      plugins: {
+        legend: { labels: { color: cc.text3, font: { size: 12 }, usePointStyle: true, pointStyle: 'circle' } },
+        tooltip: {
+          backgroundColor: cc.tipBg,
+          borderColor: cc.tipBdr, borderWidth: 1,
+          titleColor: '#fff', bodyColor: '#ccccee',
+          padding: 12,
+        },
+        annotation: undefined
+      }
+    }
+  });
+}
+buildTrapChart();
+
+// Build stages
+const stagesEl = document.getElementById('stagesContainer');
+stagesData.forEach(s => {
+  const div = document.createElement('div');
+  div.className = 'stage';
+  div.style.borderColor = s.color + '30';
+  div.innerHTML = `
+    <div class="stage-idx" style="color:${s.color}">${s.idx}</div>
+    <div class="stage-body">
+      <div class="stage-title" style="color:${s.color}">${s.title}</div>
+      <div class="stage-desc">${s.desc}</div>
+      <div class="stage-indicator">
+        <span style="color:${s.color}">${s.controlLabel}</span>
+        <div class="bar-track"><div class="bar-fill" style="width:${s.control}%;background:${s.color}"></div></div>
+      </div>
+    </div>
+  `;
+  div.addEventListener('mouseenter', () => div.style.borderColor = s.color + '60');
+  div.addEventListener('mouseleave', () => div.style.borderColor = s.color + '30');
+  stagesEl.appendChild(div);
+});
+
+// Build solutions
+const solutions = [
+  { title: '强制保持驾驶能力', color: '#69db7c',
+    desc: '定期"无 AI 编程日"。关键模块（认证、协议、配额）必须人类逐行 review。架构决策永远由人类做出。' },
+  { title: '更智能的检索', color: '#4dabf7',
+    desc: '精准召回取代全量注入。架构决策索引化，变成可查询的知识图谱而非 463 行文档。' },
+  { title: '模块化隔离', color: '#ffd43b',
+    desc: 'File Map 限制 AI 单次会话的影响半径。模块间通过接口契约耦合。跨模块重构必须人类判断。' },
+  { title: 'Harness 自动化', color: '#9775fa',
+    desc: '自动检测新经验并建议写入规则。Learnings 提取从人工判断变为 AI 自动分析。减少 Harness 维护成本。' },
+];
+const solutionsGrid = document.getElementById('solutionsGrid');
+solutions.forEach(s => {
+  const div = document.createElement('div');
+  div.className = 'solution';
+  div.style.borderColor = s.color;
+  div.innerHTML = `<h3 style="color:${s.color}">${s.title}</h3><p>${s.desc}</p>`;
+  solutionsGrid.appendChild(div);
+});
+
+// Theme sync from parent
+window.addEventListener('message', e => {
+  if (e.data && e.data.type === 'theme') {
+    document.documentElement.setAttribute('data-theme', e.data.theme);
+    if (typeof trapChart !== 'undefined') buildTrapChart();
+  }
+});
+</script>
+</body>
+</html>

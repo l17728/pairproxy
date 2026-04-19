@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Coding 五个控制点 — 流程管线</title>
+<style>
+  :root {
+    --c-bg:#0f0f1a; --c-bg2:#161625; --c-bg3:#1a1a2e;
+    --c-text:#e0e0e0; --c-text2:#bbbbdd; --c-text3:#ccccee;
+    --c-dim:#7777aa; --c-dim2:#8888aa; --c-muted:#555570;
+    --c-bdr:#2a2a40; --c-bdr2:rgba(255,255,255,0.08);
+    --c-h1:#fff; --c-input-bg:rgba(255,255,255,0.05);
+  }
+  [data-theme="light"] {
+    --c-bg:#f8f9fc; --c-bg2:#ffffff; --c-bg3:#eef0f6;
+    --c-text:#1a1a2e; --c-text2:#333350; --c-text3:#444466;
+    --c-dim:#666688; --c-dim2:#555570; --c-muted:#9999aa;
+    --c-bdr:#d0d2dd; --c-bdr2:rgba(0,0,0,0.08);
+    --c-h1:#111; --c-input-bg:rgba(0,0,0,0.04);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--c-bg);
+    color: var(--c-text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    padding: 30px 20px 60px;
+    max-width: 1100px;
+    margin: 0 auto;
+    transition: background .3s, color .3s;
+  }
+  .header { text-align: center; margin-bottom: 40px; }
+  .header h1 { font-size: 26px; font-weight: 700; color: var(--c-h1); margin-bottom: 6px; }
+  .header .subtitle { font-size: 13px; color: var(--c-dim); }
+
+  .pipeline {
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+    margin-bottom: 40px;
+    min-height: 320px;
+  }
+  .step {
+    flex: 1;
+    position: relative;
+    padding: 24px 20px;
+    cursor: pointer;
+    transition: transform 0.2s, filter 0.2s;
+    display: flex;
+    flex-direction: column;
+  }
+  .step:hover { transform: translateY(-4px); filter: brightness(1.15); }
+
+  .step-bg {
+    position: absolute; inset: 0; border-radius: 12px;
+    opacity: 0.08; transition: opacity 0.2s;
+  }
+  .step:hover .step-bg { opacity: 0.15; }
+
+  .step-border {
+    position: absolute; inset: 0; border-radius: 12px;
+    border: 1px solid var(--c-bdr2); pointer-events: none;
+  }
+  .step.active .step-border { border-color: var(--c); box-shadow: 0 0 20px var(--c-glow); }
+
+  .step-num {
+    font-size: 48px; font-weight: 800; color: var(--c);
+    opacity: 0.2; line-height: 1; margin-bottom: 8px;
+  }
+  .step-title { font-size: 15px; font-weight: 700; color: var(--c-h1); margin-bottom: 4px; }
+  .step-tagline { font-size: 12px; color: var(--c-dim2); margin-bottom: 12px; line-height: 1.4; }
+
+  .step-input, .step-output {
+    font-size: 11px; padding: 4px 10px; border-radius: 6px;
+    display: inline-block; margin-bottom: 4px;
+  }
+  .step-input { background: var(--c-input-bg); color: var(--c-dim2); }
+  .step-output { background: var(--c-dim); color: var(--c); }
+
+  .step-arrow {
+    position: absolute; right: -14px; top: 50%; transform: translateY(-50%);
+    width: 28px; height: 28px; z-index: 2;
+  }
+  .step-arrow svg { width: 100%; height: 100%; }
+  .step:last-child .step-arrow { display: none; }
+
+  /* Detail panel */
+  .detail-panel {
+    background: var(--c-bg2);
+    border-radius: 12px;
+    border: 1px solid var(--c-bdr);
+    padding: 28px 32px;
+    margin-bottom: 36px;
+    display: none;
+  }
+  .detail-panel.visible { display: block; }
+  .detail-panel h2 { font-size: 20px; font-weight: 700; margin-bottom: 6px; }
+  .detail-panel .tagline { font-size: 13px; color: var(--c-dim); margin-bottom: 20px; }
+
+  .detail-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  .detail-block {
+    background: var(--c-bg3);
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .detail-block h3 { font-size: 12px; color: var(--c-dim); font-weight: 600; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .detail-block ul { list-style: none; padding: 0; }
+  .detail-block li {
+    font-size: 13px; color: var(--c-text2); padding: 5px 0;
+    border-bottom: 1px solid var(--c-bdr2);
+    display: flex; align-items: flex-start; gap: 8px;
+  }
+  .detail-block li:last-child { border-bottom: none; }
+  .detail-block .icon { flex-shrink: 0; width: 16px; text-align: center; }
+
+  .metrics {
+    margin-top: 20px;
+    display: flex; gap: 24px; justify-content: center;
+  }
+  .metric {
+    text-align: center;
+  }
+  .metric-value { font-size: 28px; font-weight: 800; }
+  .metric-label { font-size: 11px; color: var(--c-dim); margin-top: 2px; }
+
+  .footer { margin-top: 30px; text-align: center; font-size: 11px; color: var(--c-muted); }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>AI Coding 五个控制点</h1>
+  <div class="subtitle">从"帮我写段代码"到"按规格自测自验交付"的完整管线</div>
+</div>
+
+<div class="pipeline" id="pipeline"></div>
+
+<div class="detail-panel" id="detailPanel">
+  <h2 id="detailTitle"></h2>
+  <div class="tagline" id="detailTagline"></div>
+  <div class="detail-grid" id="detailGrid"></div>
+  <div class="metrics" id="detailMetrics"></div>
+</div>
+
+<div class="footer">PairProxy AI Coding 方法论分享 · 五个控制点管线</div>
+
+<script>
+const steps = [
+  {
+    num: '1', title: '上下文管理', tagline: '把"不言而喻"写出来',
+    color: '#ff6b6b',
+    input: '隐性知识', output: 'AGENTS.md',
+    blocks: [
+      { title: '写入内容', items: [
+        { icon: '🏗️', text: '架构决策（Fail-Open 原则、协议转换顺序）' },
+        { icon: '⚠️', text: '已知禁区（不能改的包装顺序、不能删的字段）' },
+        { icon: '🔧', text: '环境约束（精确构建命令、测试命令）' },
+        { icon: '📝', text: '代码风格隐性规则（日志四级、错误包装方式）' },
+      ]},
+      { title: '关键原则', items: [
+        { icon: '❌', text: '不写 AI 看代码就知道的废话' },
+        { icon: '✅', text: '只写 AI 不读 100 个文件就不知道的' },
+        { icon: '📊', text: '用代码示例代替自然语言描述' },
+        { icon: '🔄', text: '踩坑后立即更新，保持活的状态' },
+      ]},
+    ],
+    metrics: [
+      { value: '463', label: '行 AGENTS.md', color: '#ff6b6b' },
+      { value: '50%→15%', label: 'review 改动量', color: '#ff6b6b' },
+    ]
+  },
+  {
+    num: '2', title: '任务定义', tagline: '先审 Spec 再实现',
+    color: '#ffa94d',
+    input: '需求', output: 'Spec 文档',
+    blocks: [
+      { title: 'Spec 四要素', items: [
+        { icon: '🎯', text: '用具体反例描述问题（碰撞场景示例）' },
+        { icon: '🚫', text: '明确写出已拒绝的备选方案及原因' },
+        { icon: '📊', text: '量化 Success Criteria（功能+性能+测试+文档）' },
+        { icon: '🚧', text: 'Out of Scope 明确排除范围' },
+      ]},
+      { title: '为什么必须写', items: [
+        { icon: '💡', text: 'Spec 把"做什么"和"怎么做"分开' },
+        { icon: '⏰', text: '实现前对齐成本远低于实现后返工' },
+        { icon: '🔒', text: '"拒绝方案"防止 AI 聪明反被聪明误' },
+        { icon: '📐', text: '量化标准让验收有据可依' },
+      ]},
+    ],
+    metrics: [
+      { value: '4', label: '必备要素', color: '#ffa94d' },
+      { value: '~500', label: '行 / 功能', color: '#ffa94d' },
+    ]
+  },
+  {
+    num: '3', title: '执行控制', tagline: '拆成可验证的最小步骤',
+    color: '#ffd43b',
+    input: 'Spec', output: 'Plan 文档',
+    blocks: [
+      { title: 'Plan 五机制', items: [
+        { icon: '🗺️', text: 'File Map：白名单约束，只能动哪些文件' },
+        { icon: '📦', text: 'Chunk 分层：由内到外的依赖序拆分' },
+        { icon: '📋', text: 'Step 结构：命令 + Expected 输出' },
+        { icon: '✅', text: '验证失败是独立 Step（不可跳过）' },
+        { icon: '🔖', text: 'Commit 作为检查点（物理锁定进度）' },
+      ]},
+      { title: 'TDD 循环', items: [
+        { icon: '🔴', text: 'Step N.1：写失败的测试' },
+        { icon: '🔍', text: 'Step N.2：验证它确实失败（防自欺）' },
+        { icon: '🟢', text: 'Step N.3：实现功能代码' },
+        { icon: '✅', text: 'Step N.4：验证通过 + 全包回归' },
+      ]},
+    ],
+    metrics: [
+      { value: '~800', label: '行 / 功能', color: '#ffd43b' },
+      { value: '5', label: '个核心机制', color: '#ffd43b' },
+    ]
+  },
+  {
+    num: '4', title: '验证机制', tagline: '"验证它确实失败"不能跳',
+    color: '#69db7c',
+    input: 'Plan', output: '通过测试的代码',
+    blocks: [
+      { title: '验证层次', items: [
+        { icon: '🔬', text: '单步验证：每个 Step 都有 Expected 输出' },
+        { icon: '🧪', text: 'TDD 红→绿：功能没实现，测试就该失败' },
+        { icon: '🏗️', text: '全包回归：make test 确认无副作用' },
+        { icon: '🏁', text: 'Race 检测：make test-race 并发安全' },
+      ]},
+      { title: '六类定向 Review', items: [
+        { icon: '⚠️', text: '算法属性 × 用户预期' },
+        { icon: '🛡️', text: '降级策略 × 中间件场景' },
+        { icon: '🔒', text: '缓存安全 × 状态变化' },
+        { icon: '🔨', text: '构建元数据 × 静默失败' },
+        { icon: '🗄️', text: '数据库语义 × 业务标识' },
+        { icon: '🖥️', text: '前端交互 × 手动验证' },
+      ]},
+    ],
+    metrics: [
+      { value: '2,090+', label: '个测试', color: '#69db7c' },
+      { value: '0', label: '失败', color: '#69db7c' },
+    ]
+  },
+  {
+    num: '5', title: '交付验收', tagline: '让数字说话',
+    color: '#4dabf7',
+    input: '代码 + 测试', output: '验收报告',
+    blocks: [
+      { title: '验收报告结构', items: [
+        { icon: '📊', text: '测试结果表：总数/通过/失败/状态' },
+        { icon: '📈', text: '覆盖率：按包列出' },
+        { icon: '🐛', text: '测试中发现并修复的问题（强制暴露）' },
+        { icon: '⭐', text: '四维度评分：功能/代码质量/测试/文档' },
+      ]},
+      { title: '核心原则', items: [
+        { icon: '🔢', text: '可审计的数字 > 纯文字结论' },
+        { icon: '🔍', text: '"1,894 PASS, 0 FAIL" > "测试通过"' },
+        { icon: '🐛', text: '主动暴露修复过的 bug（对抗报喜不报忧）' },
+        { icon: '✅', text: 'AI 验收 + 人类审批 = 双重保障' },
+      ]},
+    ],
+    metrics: [
+      { value: '4.8/5.0', label: '平均验收评分', color: '#4dabf7' },
+      { value: '24', label: '个版本验收', color: '#4dabf7' },
+    ]
+  },
+];
+
+const pipeline = document.getElementById('pipeline');
+const detailPanel = document.getElementById('detailPanel');
+
+steps.forEach((s, i) => {
+  const div = document.createElement('div');
+  div.className = 'step';
+  div.style.setProperty('--c', s.color);
+  div.style.setProperty('--c-glow', s.color + '33');
+  div.style.setProperty('--c-dim', s.color + '20');
+
+  div.innerHTML = `
+    <div class="step-bg" style="background:${s.color}"></div>
+    <div class="step-border"></div>
+    <div class="step-num">${s.num}</div>
+    <div class="step-title">${s.title}</div>
+    <div class="step-tagline">${s.tagline}</div>
+    <div><span class="step-input">📥 ${s.input}</span></div>
+    <div><span class="step-output">📤 ${s.output}</span></div>
+    ${i < steps.length - 1 ? `<div class="step-arrow"><svg viewBox="0 0 28 28"><path d="M6 4 L22 14 L6 24" fill="none" stroke="${s.color}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/></svg></div>` : ''}
+  `;
+
+  div.addEventListener('click', () => {
+    document.querySelectorAll('.step').forEach(el => el.classList.remove('active'));
+    div.classList.add('active');
+    showDetail(i);
+  });
+
+  pipeline.appendChild(div);
+});
+
+function showDetail(idx) {
+  const s = steps[idx];
+  document.getElementById('detailTitle').textContent = `控制点 ${s.num}：${s.title}`;
+  document.getElementById('detailTitle').style.color = s.color;
+  document.getElementById('detailTagline').textContent = s.tagline;
+
+  const grid = document.getElementById('detailGrid');
+  grid.innerHTML = s.blocks.map(b => `
+    <div class="detail-block">
+      <h3>${b.title}</h3>
+      <ul>${b.items.map(it => `<li><span class="icon">${it.icon}</span><span>${it.text}</span></li>`).join('')}</ul>
+    </div>
+  `).join('');
+
+  const metrics = document.getElementById('detailMetrics');
+  metrics.innerHTML = s.metrics.map(m => `
+    <div class="metric">
+      <div class="metric-value" style="color:${m.color}">${m.value}</div>
+      <div class="metric-label">${m.label}</div>
+    </div>
+  `).join('');
+
+  detailPanel.classList.add('visible');
+}
+
+// Theme sync from parent
+window.addEventListener('message', e => {
+  if (e.data && e.data.type === 'theme') {
+    document.documentElement.setAttribute('data-theme', e.data.theme);
+  }
+});
+</script>
+</body>
+</html>

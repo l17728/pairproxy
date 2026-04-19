@@ -68,3 +68,27 @@ test-output-*.log
 .worktrees/
 test_full.log
 test_output.log
+
+# Slides viewer (Electron)
+slides-viewer/node_modules/
+slides-viewer/dist*/
+release-package/
+*.zip
+nul
+
+# Slides test/temp files
+docs/sharing/_test_*
+docs/sharing/_ref_*
+docs/sharing/_all_*
+docs/sharing/_pp_*
+docs/sharing/_cl_*
+docs/sharing/extract-content.js
+docs/sharing/gen-speech.py
+docs/sharing.zip
+.playwright-mcp/
+slides-maker/dist/
+slides-maker/node_modules/
+slides-viewer/node_modules/
+slides-viewer/dist8/
+slide1-title.png
+*.exe

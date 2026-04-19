@@ -1,98 +1,69 @@
-# CLAUDE.md
+# PairProxy Agent Guide
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Go-based LLM proxy service: enterprise rate limiting, token tracking, multi-tenant management for Claude Code and other LLM clients.
 
-## Quick Commands
+## Build & Test Commands
 
-### Build & Test
 ```bash
-make build              # Build cproxy and sproxy to bin/
-make build-dev         # Build all binaries (including mockllm/mockagent) to release/
-make release           # Cross-platform release packages to dist/
-make test              # Run all tests
-make test-race         # Run with race detector
-make test-cover        # Generate coverage.html report
-make test-pkg PKG=./internal/quota/...  # Test specific package
+make build              # Build cproxy + sproxy to bin/
+make build-dev          # Build all binaries (incl. mockllm/mockagent) to release/
+make release            # Cross-platform release packages to dist/
+make test               # Run all tests
+make test-race          # Run with race detector (required before merging concurrent changes)
+make test-cover         # Generate coverage.html report
+make test-pkg PKG=./internal/quota/...  # Run single package tests (with -v)
+make fmt                # Format with gofmt/goimports (run before every commit)
+make vet                # Run go vet
+make lint               # Run golangci-lint (install: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest)
+make tidy               # Update go.mod/go.sum
+make run-sproxy         # Run sproxy with example config
+make run-cproxy         # Run cproxy with example config
+make bcrypt-hash        # Generate admin password hash
 ```
 
-### Code Quality
+### Run a single test function
 ```bash
-make fmt               # Format with gofmt/goimports
-make vet               # Run go vet
-make lint              # Run golangci-lint
-make tidy              # Update go.mod/go.sum
+go test -v -run TestCheckerNoGroup ./internal/quota/
 ```
 
-### Development
-```bash
-make run-sproxy        # Run sproxy with example config
-make run-cproxy        # Run cproxy with example config
-make bcrypt-hash       # Generate admin password hash
-```
-
-## Architecture Overview
-
-**PairProxy** is an enterprise-grade LLM API gateway for Claude Code. Two-tier architecture:
-
-```
-Claude Code → cproxy (local:8080) → sproxy (server:9000) → Anthropic/OpenAI/Ollama
-```
-
-### Core Components
-
-| Component | Purpose |
-|-----------|---------|
-| **cproxy** | Local proxy: intercepts requests, injects JWT, auto-refreshes tokens, load balances across sproxy instances |
-| **sproxy** | Central gateway: JWT auth, quota management, token tracking, load balancing, protocol conversion, web dashboard, clustering |
-| **internal/auth** | JWT issuance/refresh (24h access, 7d refresh), bcrypt hashing, LDAP/AD support, sk-pp- API Key generation (v2.15.0+) |
-| **internal/quota** | Per-user/group daily/monthly limits, RPM rate limiting, sliding window algorithm, fail-open design |
-| **internal/lb** | Weighted random balancer, active/passive health checks, circuit breaker, configurable retry (v2.17.0+) |
-| **internal/db** | SQLite (default) or PostgreSQL, GORM ORM, async writes with buffering |
-| **internal/proxy** | HTTP handlers, middleware, Anthropic ↔ OpenAI protocol conversion, streaming support |
-| **internal/tap** | SSE stream parsing, zero-buffering token counting (input/output) |
-| **internal/cluster** | Primary+Worker (SQLite) or Peer Mode (PostgreSQL, v2.14.0+) |
-| **internal/router** | Semantic intent-based LLM target routing (v2.18.0+) |
-| **internal/corpus** | Training data collection as JSONL (v2.16.0+) |
-| **internal/track** | Full conversation recording per user |
-
-### Key Features
-- Zero-config client experience (set 2 env vars)
-- Real-time token tracking via SSE parsing
-- Multi-tenant with quotas, rate limiting, LDAP integration
-- Protocol interoperability (Anthropic ↔ OpenAI auto-conversion)
-- High availability (clustering, health checks, circuit breakers)
-- Enterprise features (audit logs, metrics, webhooks, OpenTelemetry)
-- Advanced routing (semantic intent-based, v2.18.0)
-- Training data collection (corpus, v2.16.0)
-
-## Code Style & Conventions
+## Code Style Guidelines
 
 ### Basics
-- **Go version**: 1.24.0
-- **Package names**: Lowercase, no underscores
-- **Imports**: Standard library → external → internal
-- **Comments**: Match existing file style (English or Chinese)
+- **Go version**: 1.24.0 (per go.mod)
+- **Package names**: Lowercase, no underscores, short and descriptive
+- **Imports**: Grouped — standard library, then external, then internal (`github.com/l17728/pairproxy/internal/...`)
+- **Comments**: Match existing file style (English or Chinese mixed — check surrounding code)
+- **Line length**: No hard limit; keep readable (<120 chars preferred)
 
-### Naming
-- **Types**: PascalCase (`LLMTarget`, `Checker`)
-- **Functions/Variables**: camelCase (`checkQuota`, `llmBalancer`)
-- **Test functions**: `TestXxx` pattern
-- **Error variables**: `ErrXxx` (`ErrNoLLMBinding`)
+### Naming Conventions
+- **Types**: PascalCase (`LLMTarget`, `Checker`, `ExceededError`)
+- **Functions/Variables**: camelCase (`checkQuota`, `llmBalancer`, `apiKeyResolver`)
+- **Test functions**: `TestXxx` pattern, descriptive (`TestCheckerNoGroup`, `TestHealthChecker_Anthropic_Auth`)
+- **Error variables**: `ErrXxx` sentinel pattern (`ErrNoLLMBinding`, `ErrBoundTargetUnavailable`)
+- **Test helpers**: `setupXxxTest(t *testing.T)` or `newXxxForTest(...)` — always call `t.Helper()`
 
 ### Error Handling
-- Wrap with context: `fmt.Errorf("context: %w", err)`
-- Never ignore errors (add `//nolint:errcheck` with comment if intentional)
-- **Fail-open**: Quota/database errors should not block requests (log and bypass)
+- **Wrap with context**: `fmt.Errorf("context: %w", err)`
+- **Never ignore errors**: Add `//nolint:errcheck` with comment only if intentional
+- **Sentinel errors**: Define as `var ErrXxx = errors.New("...")` at package level
+- **Fail-open**: Quota/database errors must NOT block requests — log warning and bypass:
+  ```go
+  user, err := s.userRepo.GetByID(userID)
+  if err != nil {
+      s.logger.Warn("failed to get user, bypassing", zap.Error(err))
+      return nil // fail-open
+  }
+  ```
 
 ### Logging (Zap)
-- Create package logger: `logger.Named("subsystem")`
-- **DEBUG**: Per-request details (disabled in prod)
-- **INFO**: Lifecycle events
+- **Create package logger**: `logger.Named("subsystem")` (e.g., `logger.Named("quota_checker")`)
+- **DEBUG**: Per-request details (token counts, SSE parsing) — disabled in prod
+- **INFO**: Lifecycle events (start, shutdown, token reload)
 - **WARN**: Recoverable errors (DB write failure, health check failure)
 - **ERROR**: Non-recoverable errors requiring manual intervention
-- Always add context: `zap.String("user_id", id), zap.Error(err)`
+- **Always add context fields**: `zap.String("user_id", id), zap.Error(err)`
 
-## Testing Requirements
+## Testing
 
 ### Unit Tests
 ```bash
@@ -122,12 +93,20 @@ echo -e "testuser\ntestpass123" | ./cproxy.exe login --server http://localhost:9
 ./mockagent.exe --url http://localhost:8080 --count 100 --concurrency 10
 ```
 
-### Standards
-- All unit tests must pass
-- E2E types 1 & 2 must pass before merge
-- New features require corresponding tests
-- Run `make test-race` before merging concurrent changes
-- No external assert frameworks (use standard `testing` package)
+### Test Frameworks & Conventions
+- **Frameworks**: Standard `testing` package + `github.com/stretchr/testify` (assert/require)
+- **Test files**: `xxx_test.go` in same package for white-box; `_test` suffix package for black-box
+- **Test helpers**: Pattern `setupXxxTest(t *testing.T)` with `t.Helper()`, returning cleanup functions:
+  ```go
+  func setupQuotaTest(t *testing.T) (*db.UserRepo, ..., context.CancelFunc) {
+      t.Helper()
+      // ... setup in-memory DB
+      return repos..., func() { cancel(); writer.Wait() }
+  }
+  ```
+- **No real network/FS**: Use `httptest.NewServer` for HTTP mocks, `:memory:` for SQLite
+- **Goroutine lifecycle**: Every goroutine started in tests must be tracked via `sync.WaitGroup`; call `cancel()` + `Wait()` before test returns
+- **Race detection**: Run `make test-race` before merging; use `-count=10` for probabilistic race detection
 
 ### Test Design Rules (防回归 checklist)
 - **Once-set semantics**: 测试"写入后不被覆盖"的逻辑时，后续输入必须携带**不同的值**，相同值无法区分"写一次"和"写多次"
@@ -193,15 +172,66 @@ hc.Wait()     // Wait for all to actually finish (REQUIRED)
 - ❌ Not calling `Wait()` after `cancel()`
 - ❌ Testing only once with `-race` (race detection is probabilistic)
 
-See `memory/concurrency_waitgroup_patterns.md` and `memory/concurrency_race_debugging.md` for detailed examples.
+### Linting (.golangci.yml)
+Enabled linters: `bodyclose`, `errcheck`, `gosimple`, `govet`, `ineffassign`, `staticcheck`, `unused`, `noctx`, `gocritic`
+- `bodyclose`: Always `defer resp.Body.Close()` on `http.Response` in tests
+- `noctx`: HTTP requests must carry context; use `//nolint:noctx` only for proxy forwarding
+- Test files exempt from: `errcheck`, `noctx`
+
+## Architecture
+
+**PairProxy** is an enterprise-grade LLM API gateway for Claude Code. Two-tier architecture:
+
+```
+Claude Code → cproxy (local:8080) → sproxy (server:9000) → Anthropic/OpenAI/Ollama
+```
+
+### Core Components
+
+| Component | Purpose |
+|-----------|---------|
+| **cproxy** | Local proxy: intercepts requests, injects JWT, auto-refreshes tokens, load balances across sproxy instances |
+| **sproxy** | Central gateway: JWT auth, quota management, token tracking, load balancing, protocol conversion, web dashboard, clustering |
+| **internal/auth** | JWT issuance/refresh (24h access, 7d refresh), bcrypt hashing, LDAP/AD support, sk-pp- API Key generation (v2.15.0+) |
+| **internal/quota** | Per-user/group daily/monthly limits, RPM rate limiting, sliding window algorithm, fail-open design |
+| **internal/lb** | Weighted random balancer, active/passive health checks, circuit breaker, configurable retry (v2.17.0+) |
+| **internal/db** | SQLite (default) or PostgreSQL, GORM ORM, async writes with buffering |
+| **internal/proxy** | HTTP handlers, middleware, Anthropic ↔ OpenAI protocol conversion, streaming support |
+| **internal/tap** | SSE stream parsing, zero-buffering token counting (input/output) |
+| **internal/cluster** | Primary+Worker (SQLite) or Peer Mode (PostgreSQL, v2.14.0+) |
+| **internal/router** | Semantic intent-based LLM target routing (v2.18.0+) |
+| **internal/corpus** | Training data collection as JSONL (v2.16.0+) |
+| **internal/track** | Full conversation recording per user |
+| **internal/config** | YAML loader, validation, env var expansion |
+| **internal/dashboard** | Web UI (Go templates + Tailwind, embedded in binary) |
+| **internal/api** | REST endpoints for admin/user/cluster/keygen |
+| **internal/keygen** | HMAC-SHA256 sk-pp- API Key generation/validation |
+| **internal/version** | Version info embedded via ldflags |
+
+### Key Design Decisions
+
+- **Protocol support**: Anthropic (`/v1/messages`), OpenAI (`/v1/chat/completions`), Ollama — auto-conversion between formats
+- **Cluster modes**: SQLite (primary + workers, 30s sync) or PostgreSQL (peer mode, all nodes equal)
+- **Direct Proxy**: `sk-pp-` API Keys for headerless access (HMAC-SHA256, 48-char Base62)
+- **Version injection**: Binaries embed `Version`, `Commit`, `BuiltAt` via ldflags from `internal/version`
+
+### Key Features
+- Zero-config client experience (set 2 env vars)
+- Real-time token tracking via SSE parsing
+- Multi-tenant with quotas, rate limiting, LDAP integration
+- Protocol interoperability (Anthropic ↔ OpenAI auto-conversion)
+- High availability (clustering, health checks, circuit breakers)
+- Enterprise features (audit logs, metrics, webhooks, OpenTelemetry)
+- Advanced routing (semantic intent-based, v2.18.0)
+- Training data collection (corpus, v2.16.0)
 
 ## Configuration
 
 ### YAML Format
-- Snake_case keys, `${ENV_VAR}` for secrets
-- Example configs: `config/*.yaml.example`
-- Load via: `config.Load(path)` from `internal/config`
-- Secrets required: `JWT_SECRET`, API keys, `KEYGEN_SECRET` (v2.15.0+)
+- **Snake_case keys**, `${ENV_VAR}` for secrets
+- **Example configs**: `config/*.yaml.example` — always update when adding config fields
+- **Load via**: `config.Load(path)` from `internal/config`
+- **Secrets required**: `JWT_SECRET`, API keys, `KEYGEN_SECRET` (v2.15.0+)
 
 ### Key Config Sections (sproxy.yaml)
 ```yaml
@@ -325,12 +355,21 @@ This outputs all commands with syntax, flags, examples, and natural language tri
 
 ## Version-Specific Features
 
+- **v2.24.5**: Smart Probe (auto-discovery health check, no path config needed)
+- **v2.24.4**: SQLite timezone fix (non-UTC systems returning 0 tokens)
+- **v2.24.3**: reportgen LLM direct-connect parameters
+- **v2.24.2**: reportgen PostgreSQL support
+- **v2.19.0**: WebUI health check runtime sync
 - **v2.18.0**: Semantic Router (intent-based LLM target routing)
+- **v2.17.0**: Configurable retry on specific HTTP status codes
 - **v2.16.0**: Corpus Collection (training data collection as JSONL)
 - **v2.15.0**: sk-pp- API Key generation (HMAC-SHA256, requires `auth.keygen_secret`)
+- **v2.14.1**: ConfigSyncer URL conflict fix
 - **v2.14.0**: PostgreSQL Peer Mode (all nodes equal, shared DB)
-- **v2.17.0**: Configurable retry on specific HTTP status codes
 - **v2.13.0**: PostgreSQL support
+- **v2.12.0**: Worker node consistency (30s config sync)
+- **v2.10.0**: OtoA bidirectional protocol conversion
+- **v2.9.0**: Direct Proxy (sk-pp- API Key)
 
 ## CI/CD
 
@@ -352,7 +391,7 @@ This outputs all commands with syntax, flags, examples, and natural language tri
 1. **记录有效路径**：把最终奏效的解决方案用简洁的步骤写下来，而不是描述走过的弯路
 2. **归因根本原因**：追问"为什么会出现这个问题"，而不是止步于"怎么修的"
 3. **提炼可复用规律**：把这次的教训抽象成下次可以直接套用的判断原则
-4. **更新知识库**：将结论补充到 `CLAUDE.md`（决策原则类）或 `docs/TROUBLESHOOTING.md`（操作排查类），让后来的自己和协作者直接受益
+4. **更新知识库**：将结论补充到 `AGENTS.md`（决策原则类）或 `docs/TROUBLESHOOTING.md`（操作排查类），让后来的自己和协作者直接受益
 
 **判断是否需要复盘**：凡是满足以下任一条件的问题，都值得复盘：
 - 尝试了两种以上方案才解决
@@ -387,9 +426,9 @@ This outputs all commands with syntax, flags, examples, and natural language tri
 
 将结论写入以下位置，防止同类问题再次发生：
 
--  顶部注释：Bug 模式索引，编号累加
-- ：根因分析、修复策略、举一反三表格、强制测试要求
-- （本文件）：决策原则，写成可直接执行的规则
+- 顶部注释：Bug 模式索引，编号累加
+- 根因分析、修复策略、举一反三表格、强制测试要求
+- 本文件（AGENTS.md）：决策原则，写成可直接执行的规则
 
 ### 触发标准
 
@@ -398,9 +437,17 @@ This outputs all commands with syntax, flags, examples, and natural language tri
 - 根因是某个 API/框架的隐式行为（如 GORM 零值、context 取消语义）
 - 同一模式在代码库中有多处使用
 - 问题在测试中未被覆盖，靠手动或偶发才发现
-- 已在 LEARNINGS.md 中出现过同类记录
 
 **原则**：一次痛苦只允许发生一次。发现问题的成本已经付出，不把它转化为系统性防护是对这笔成本的浪费。
+
+## Pre-commit Checklist
+
+- `make fmt` — format code
+- `make vet` — static analysis
+- `make test` (or `make test-race` for concurrent changes) — all tests pass
+- New features have tests (unit or integration)
+- Configuration changes reflected in `config/*.yaml.example`
+- Public APIs have godoc comments
 
 ## Important Notes
 

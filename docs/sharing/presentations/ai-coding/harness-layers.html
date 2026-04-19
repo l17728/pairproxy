@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Harness 五层文档体系 — 交互式架构图</title>
+<style>
+  :root {
+    --c-bg:#0f0f1a; --c-bg2:#161625; --c-bg3:#1a1a2e;
+    --c-text:#e0e0e0; --c-text2:#ccccee; --c-text3:#aaaacc; --c-text4:#9999bb;
+    --c-dim:#7777aa; --c-dim2:#8888aa; --c-muted:#555570;
+    --c-bdr:#2a2a40; --c-bdr2:rgba(255,255,255,0.05); --c-bdr3:rgba(255,255,255,0.03);
+    --c-h1:#fff; --c-flow-dim:#555577;
+  }
+  [data-theme="light"] {
+    --c-bg:#f8f9fc; --c-bg2:#ffffff; --c-bg3:#eef0f6;
+    --c-text:#1a1a2e; --c-text2:#2a2a40; --c-text3:#444466; --c-text4:#555570;
+    --c-dim:#666688; --c-dim2:#555570; --c-muted:#9999aa;
+    --c-bdr:#d0d2dd; --c-bdr2:rgba(0,0,0,0.06); --c-bdr3:rgba(0,0,0,0.04);
+    --c-h1:#111; --c-flow-dim:#888899;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--c-bg);
+    color: var(--c-text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    padding: 30px 20px 60px;
+    max-width: 900px;
+    margin: 0 auto;
+    transition: background .3s, color .3s;
+  }
+  .header { text-align: center; margin-bottom: 36px; }
+  .header h1 { font-size: 26px; font-weight: 700; color: var(--c-h1); margin-bottom: 6px; }
+  .header .subtitle { font-size: 13px; color: var(--c-dim); line-height: 1.6; }
+
+  .layers {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    margin-bottom: 36px;
+  }
+  .layer {
+    position: relative;
+    padding: 20px 24px;
+    cursor: pointer;
+    transition: transform 0.2s, filter 0.2s;
+    border: 1px solid transparent;
+  }
+  .layer:first-child { border-radius: 12px 12px 0 0; }
+  .layer:last-child { border-radius: 0 0 12px 12px; }
+  .layer:hover { transform: scale(1.01); filter: brightness(1.2); }
+  .layer.active { border-color: var(--c); box-shadow: 0 0 24px var(--c-glow); z-index: 2; }
+
+  .layer-bg {
+    position: absolute; inset: 0;
+    opacity: 0.06; pointer-events: none;
+  }
+  .layer:first-child .layer-bg { border-radius: 12px 12px 0 0; }
+  .layer:last-child .layer-bg { border-radius: 0 0 12px 12px; }
+
+  .layer-header {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .layer-badge {
+    font-size: 11px; font-weight: 700; padding: 3px 10px;
+    border-radius: 6px; color: #fff; flex-shrink: 0;
+    letter-spacing: 0.5px;
+  }
+  .layer-title {
+    font-size: 16px; font-weight: 700; color: var(--c-h1);
+  }
+  .layer-tagline {
+    font-size: 12px; color: var(--c-dim2); margin-left: auto; flex-shrink: 0;
+  }
+  .layer-arrow {
+    font-size: 14px; color: var(--c); transition: transform 0.2s; flex-shrink: 0;
+  }
+  .layer.active .layer-arrow { transform: rotate(90deg); }
+
+  .layer-content {
+    max-height: 0; overflow: hidden;
+    transition: max-height 0.4s ease, padding-top 0.3s;
+  }
+  .layer.active .layer-content { max-height: 500px; padding-top: 16px; }
+
+  .docs-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  .doc-card {
+    background: var(--c-bdr3);
+    border-radius: 8px;
+    padding: 14px 16px;
+    border: 1px solid var(--c-bdr2);
+  }
+  .doc-name {
+    font-size: 13px; font-weight: 600; color: var(--c-h1);
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    margin-bottom: 4px;
+  }
+  .doc-role { font-size: 11px; color: var(--c-dim2); line-height: 1.5; }
+  .doc-elements { margin-top: 6px; }
+  .doc-el {
+    font-size: 11px; color: var(--c-text3); padding: 2px 0;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .doc-el::before {
+    content: ''; width: 4px; height: 4px; border-radius: 50%;
+    background: var(--c); flex-shrink: 0;
+  }
+
+  .flow-section {
+    background: var(--c-bg2); border-radius: 12px; padding: 24px;
+    border: 1px solid var(--c-bdr); margin-bottom: 36px;
+  }
+  .flow-section h2 { font-size: 18px; font-weight: 600; color: var(--c-h1); margin-bottom: 16px; text-align: center; }
+  .flow-diagram {
+    display: flex; flex-direction: column; align-items: center; gap: 0;
+  }
+  .flow-step {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 20px; border-radius: 8px;
+    font-size: 13px; font-weight: 600;
+    width: 100%; max-width: 400px;
+  }
+  .flow-step .flow-icon { font-size: 16px; flex-shrink: 0; }
+  .flow-step .flow-text { color: var(--c-text2); }
+  .flow-arrow-down {
+    color: var(--c-flow-dim); font-size: 18px; line-height: 1; padding: 2px 0;
+  }
+  .flow-loop {
+    margin-top: 12px; padding: 12px 20px; border-radius: 8px;
+    background: rgba(255,107,107,0.06); border: 1px dashed #ff6b6b33;
+    text-align: center; font-size: 12px; color: #ff6b6b; max-width: 400px;
+    width: 100%;
+  }
+
+  .footer { margin-top: 30px; text-align: center; font-size: 11px; color: var(--c-muted); }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Harness 五层文档体系</h1>
+  <div class="subtitle">5 层 13 类文档 · 确保 AI 在每个阶段都能找到正确的上下文<br>点击每层展开查看文档类型和作用</div>
+</div>
+
+<div class="layers" id="layersContainer"></div>
+
+<div class="flow-section">
+  <h2>知识流动闭环</h2>
+  <div class="flow-diagram" id="flowDiagram"></div>
+</div>
+
+<div class="footer">PairProxy AI Coding 方法论分享 · Harness 文档体系交互图</div>
+
+<script>
+const layers = [
+  {
+    badge: 'L0', title: 'AI 运行时上下文', tagline: 'AI 首先读到的',
+    color: '#ff6b6b',
+    desc: '每次会话开始时自动加载，定义 AI 的行为边界和项目知识基线',
+    docs: [
+      { name: 'AGENTS.md', role: '项目知识和行为约束——AI 的"员工手册"',
+        elements: ['架构决策、Fail-Open 原则、已知禁区', '代码风格、测试规范、并发模式', '复盘机制、举一反三规则'] },
+      { name: 'CLAUDE.md', role: '与 AGENTS.md 内容一致，供 Claude Code 读取',
+        elements: ['两份文件保持同步', '不同 AI 工具读不同文件'] },
+    ]
+  },
+  {
+    badge: 'L1', title: '产品规划', tagline: '为什么做',
+    color: '#ffa94d',
+    desc: '定义方向和优先级，AI 需要知道当前任务在整个产品中的位置',
+    docs: [
+      { name: 'ROADMAP.md', role: '版本路线图和优先级',
+        elements: ['功能优先级排序', '影响范围评估', '里程碑时间线'] },
+      { name: 'CHANGELOG.md', role: '变更记录',
+        elements: ['每个版本的新功能、修复、Breaking Change', '版本间的演进脉络'] },
+    ]
+  },
+  {
+    badge: 'L2', title: '设计', tagline: '做什么——最重要的层',
+    color: '#ffd43b',
+    desc: '"做什么"和"怎么做"分开，AI 实现之前的对齐成本远低于实现后的返工成本',
+    docs: [
+      { name: 'Spec（功能规格）', role: '功能边界和验收标准',
+        elements: ['具体反例描述问题', '已拒绝方案及原因', '量化 Success Criteria', 'Out of Scope 排除范围'] },
+      { name: 'Plan（执行计划）', role: '可执行步骤分解',
+        elements: ['File Map（范围白名单）', 'Chunk 分层（依赖序）', 'Step + Expected（每步预期输出）', 'Commit 检查点'] },
+    ]
+  },
+  {
+    badge: 'L3', title: '实施与验证', tagline: '做出来 + 验得证',
+    color: '#69db7c',
+    desc: '执行过程的可追踪记录，支持跨会话恢复和进度审计',
+    docs: [
+      { name: 'Progress（进度追踪）', role: '当前状态、完成到哪、下一步',
+        elements: ['编译状态快照', '已完成改动清单', '下一步优先级', '预计剩余工时'] },
+      { name: '验收报告', role: '结构化交付验收',
+        elements: ['测试结果表（总数/通过/失败）', '覆盖率（按包）', '过程中发现并修复的问题', '四维度评分'] },
+    ]
+  },
+  {
+    badge: 'L4', title: '知识沉淀', tagline: '不再重复犯错——最被低估的层',
+    color: '#9775fa',
+    desc: '踩坑经验的规则化沉淀，形成"犯错→规则化→永不复发"的自进化闭环',
+    docs: [
+      { name: 'Learnings（踩坑记录）', role: 'Anti-Pattern 总结',
+        elements: ['LRN-编号 + 优先级', 'Summary + Anti-Pattern', '强制检查项'] },
+      { name: 'Templates（可复用模板）', role: 'Spec / Plan / CLAUDE.md 模板',
+        elements: ['spec-template.md', 'plan-template.md', 'CLAUDE-md-template.md', 'ai-failure-checklist.md'] },
+    ]
+  },
+];
+
+const container = document.getElementById('layersContainer');
+layers.forEach((l, i) => {
+  const div = document.createElement('div');
+  div.className = 'layer';
+  div.style.setProperty('--c', l.color);
+  div.style.setProperty('--c-glow', l.color + '33');
+
+  const docsHtml = l.docs.map(d => `
+    <div class="doc-card">
+      <div class="doc-name">${d.name}</div>
+      <div class="doc-role">${d.role}</div>
+      <div class="doc-elements">
+        ${d.elements.map(e => `<div class="doc-el">${e}</div>`).join('')}
+      </div>
+    </div>
+  `).join('');
+
+  div.innerHTML = `
+    <div class="layer-bg" style="background:${l.color}"></div>
+    <div class="layer-header">
+      <div class="layer-badge" style="background:${l.color}">${l.badge}</div>
+      <div class="layer-title">${l.title}</div>
+      <div class="layer-tagline">${l.tagline}</div>
+      <div class="layer-arrow">▶</div>
+    </div>
+    <div class="layer-content">
+      <div style="font-size:12px;color:var(--c-text4);margin-bottom:12px;line-height:1.5">${l.desc}</div>
+      <div class="docs-grid">${docsHtml}</div>
+    </div>
+  `;
+
+  div.addEventListener('click', () => {
+    const wasActive = div.classList.contains('active');
+    document.querySelectorAll('.layer').forEach(el => el.classList.remove('active'));
+    if (!wasActive) div.classList.add('active');
+  });
+
+  container.appendChild(div);
+});
+
+// Flow diagram
+const flowSteps = [
+  { icon: '🏗️', text: '踩坑（发现 bug 或 AI 失误）', bg: 'rgba(255,107,107,0.1)', color: '#ff6b6b' },
+  { icon: '🔍', text: '复盘（归因根本原因）', bg: 'rgba(255,169,77,0.1)', color: '#ffa94d' },
+  { icon: '🔬', text: '举一反三（普查同类风险）', bg: 'rgba(255,212,59,0.1)', color: '#ffd43b' },
+  { icon: '📝', text: '写入 AGENTS.md / Learnings', bg: 'rgba(105,219,124,0.1)', color: '#69db7c' },
+  { icon: '🛡️', text: '同类 bug 永不复发', bg: 'rgba(77,171,247,0.1)', color: '#4dabf7' },
+];
+
+const flowEl = document.getElementById('flowDiagram');
+flowSteps.forEach((s, i) => {
+  const step = document.createElement('div');
+  step.className = 'flow-step';
+  step.style.background = s.bg;
+  step.innerHTML = `<span class="flow-icon">${s.icon}</span><span class="flow-text" style="color:${s.color}">${s.text}</span>`;
+  flowEl.appendChild(step);
+  if (i < flowSteps.length - 1) {
+    const arrow = document.createElement('div');
+    arrow.className = 'flow-arrow-down';
+    arrow.textContent = '↓';
+    flowEl.appendChild(arrow);
+  }
+});
+
+const loop = document.createElement('div');
+loop.className = 'flow-loop';
+loop.textContent = '🔄 犯错 → 复盘 → 举一反三 → 规则化 → 永不复发 → 下一次踩的是新坑 → 循环';
+flowEl.appendChild(loop);
+
+// Theme sync from parent
+window.addEventListener('message', e => {
+  if (e.data && e.data.type === 'theme') {
+    document.documentElement.setAttribute('data-theme', e.data.theme);
+  }
+});
+</script>
+</body>
+</html>

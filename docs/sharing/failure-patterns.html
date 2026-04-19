@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Coding 六类失败模式 — 定向 Review 检查表</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+  :root {
+    --c-bg:#0f0f1a; --c-bg2:#161625; --c-bg3:#1a1a2e; --c-bg4:#1e1e35;
+    --c-text:#e0e0e0; --c-text2:#ccccee; --c-text3:#aaaacc; --c-text4:#9999bb;
+    --c-dim:#7777aa; --c-muted:#555570; --c-bdr:#2a2a40; --c-bdr2:#4a4a6a;
+    --c-h1:#fff; --c-tip-bg:rgba(22,22,37,0.96); --c-tip-bdr:#3a3a55;
+    --c-grid:rgba(255,255,255,0.06); --c-grid2:rgba(255,255,255,0.08);
+    --c-grid3:rgba(255,255,255,0.04); --c-tick:#555577;
+  }
+  [data-theme="light"] {
+    --c-bg:#f8f9fc; --c-bg2:#ffffff; --c-bg3:#eef0f6; --c-bg4:#e4e6ee;
+    --c-text:#1a1a2e; --c-text2:#2a2a40; --c-text3:#444466; --c-text4:#555570;
+    --c-dim:#666688; --c-muted:#9999aa; --c-bdr:#d0d2dd; --c-bdr2:#b8bad0;
+    --c-h1:#111; --c-tip-bg:rgba(255,255,255,0.96); --c-tip-bdr:#c0c0d0;
+    --c-grid:rgba(0,0,0,0.06); --c-grid2:rgba(0,0,0,0.08);
+    --c-grid3:rgba(0,0,0,0.04); --c-tick:#888899;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--c-bg);
+    color: var(--c-text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    padding: 30px 20px 60px;
+    max-width: 1100px;
+    margin: 0 auto;
+    transition: background .3s, color .3s;
+  }
+  .header { text-align: center; margin-bottom: 36px; }
+  .header h1 { font-size: 26px; font-weight: 700; color: var(--c-h1); margin-bottom: 6px; letter-spacing: 1px; }
+  .header .subtitle { font-size: 13px; color: var(--c-dim); line-height: 1.6; }
+
+  .radar-section {
+    background: var(--c-bg2);
+    border-radius: 12px;
+    padding: 24px;
+    border: 1px solid var(--c-bdr);
+    margin-bottom: 36px;
+    display: flex;
+    justify-content: center;
+  }
+  .radar-wrap { width: 100%; max-width: 520px; aspect-ratio: 1; position: relative; }
+
+  .cards-section { margin-bottom: 40px; }
+  .cards-section h2 { font-size: 18px; font-weight: 600; color: var(--c-h1); margin-bottom: 16px; text-align: center; }
+  .cards-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  .card {
+    background: var(--c-bg2);
+    border-radius: 10px;
+    padding: 16px 18px;
+    border: 1px solid var(--c-bdr);
+    cursor: pointer;
+    transition: border-color 0.2s, transform 0.15s;
+  }
+  .card:hover { border-color: var(--c-bdr2); transform: translateY(-2px); }
+  .card.active { border-color: var(--accent); }
+  .card-header { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .card-num {
+    width: 28px; height: 28px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; font-weight: 700; color: #fff; flex-shrink: 0;
+  }
+  .card-title { font-size: 14px; font-weight: 600; color: var(--c-h1); }
+  .card-version { font-size: 11px; color: var(--c-dim); margin-left: auto; }
+  .severity-bar { height: 4px; border-radius: 2px; margin-bottom: 8px; background: var(--c-bdr); overflow: hidden; }
+  .severity-fill { height: 100%; border-radius: 2px; transition: width 0.4s; }
+  .card-summary { font-size: 12px; color: var(--c-text3); line-height: 1.5; }
+  .card-detail {
+    max-height: 0; overflow: hidden; transition: max-height 0.35s ease, margin-top 0.35s;
+    font-size: 12px; color: var(--c-text4); line-height: 1.6;
+  }
+  .card-detail.open { max-height: 300px; margin-top: 12px; }
+  .card-detail .label { color: var(--c-dim); font-weight: 600; margin-top: 8px; }
+  .card-detail .label:first-child { margin-top: 0; }
+  .card-detail code {
+    background: var(--c-bg4); padding: 2px 6px; border-radius: 4px;
+    font-size: 11px; color: var(--c-text2);
+  }
+
+  .common-section {
+    background: var(--c-bg2); border-radius: 12px; padding: 24px;
+    border: 1px solid var(--c-bdr); text-align: center;
+  }
+  .common-section h2 { font-size: 18px; font-weight: 600; color: var(--c-h1); margin-bottom: 16px; }
+  .formula-grid {
+    display: grid; grid-template-columns: 1fr 1fr;
+    gap: 10px 24px; max-width: 700px; margin: 0 auto;
+  }
+  .formula-item {
+    font-size: 13px; color: var(--c-text3); padding: 8px 12px;
+    background: var(--c-bg3); border-radius: 8px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .formula-item .op { color: #ff6b6b; font-weight: 700; }
+
+  .footer { margin-top: 30px; text-align: center; font-size: 11px; color: var(--c-muted); }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>AI Coding 六类失败模式</h1>
+  <div class="subtitle">PairProxy 项目真实案例 · 识别这些模式可以把 review 工作量减少 60% 以上</div>
+</div>
+
+<div class="radar-section">
+  <div class="radar-wrap">
+    <canvas id="radarChart"></canvas>
+  </div>
+</div>
+
+<div class="cards-section">
+  <h2>点击展开详情</h2>
+  <div class="cards-grid" id="cardsGrid"></div>
+</div>
+
+<div class="common-section">
+  <h2>共同规律：AI 的失误不在主路径</h2>
+  <div class="formula-grid">
+    <div class="formula-item">算法属性副作用 <span class="op">×</span> 用户行为预期</div>
+    <div class="formula-item">降级策略选取 <span class="op">×</span> 中间件场景特殊性</div>
+    <div class="formula-item">缓存有效性假设 <span class="op">×</span> 安全场景状态变化</div>
+    <div class="formula-item">构建产物元数据 <span class="op">×</span> 静默失败的工具行为</div>
+    <div class="formula-item">数据库业务语义 <span class="op">×</span> 内部 ID vs 业务标识</div>
+    <div class="formula-item">前端视觉交互 <span class="op">×</span> 无法自动验证</div>
+  </div>
+</div>
+
+<div class="footer">PairProxy AI Coding 方法论分享 · 六类失败模式定向检查表</div>
+
+<script>
+const patterns = [
+  {
+    name: '算法属性副作用',
+    version: 'v2.15.0',
+    severity: 3,
+    color: '#ff6b6b',
+    summary: 'HMAC 确定性导致"重新生成 API Key"返回相同 Key，用户预期不符',
+    case_: '用户点击"重新生成 API Key"，期望得到新 Key，但 HMAC 是确定性函数——同一用户名+secret 永远产出同一个 Key。',
+    cause: 'AI 实现了正确的算法，通过了所有测试，但没有考虑"幂等性会改变用户预期"这个 UX 问题。',
+    fix: 'Spec 的 Success Criteria 里，功能正确性之外，必须单独列"用户行为预期"这一条。'
+  },
+  {
+    name: '降级策略过严',
+    version: 'v2.9.1',
+    severity: 5,
+    color: '#ffa94d',
+    summary: '遇到不支持的 thinking 参数返回 400，Claude Code 开启 extended thinking 后完全罢工',
+    case_: '协议转换时遇到不支持的 thinking 参数 → AI 选择返回 HTTP 400。Claude Code 开启 extended thinking 后所有请求失败。',
+    cause: 'AI 的逻辑正确：遇到不支持的参数就报错。但在中间件/网关场景，保持服务可用 > 返回精确错误。',
+    fix: '静默剥离 thinking 参数，继续转发请求。Spec 里针对每种"不支持的输入"明确写出：降级、透传、还是报错。'
+  },
+  {
+    name: '缓存安全假设',
+    version: 'v2.9.3',
+    severity: 4,
+    color: '#ffd43b',
+    summary: 'JWT 缓存命中后不校验用户是否活跃，管理员禁用用户在 TTL 内无效',
+    case_: '管理员禁用某用户，但 JWT 缓存命中后直接放行，不再校验 IsUserActive。24h TTL 内禁用完全无效。',
+    cause: 'AI 遵循"缓存命中即有效"的通用缓存原则——技术上正确，但在安全场景下是漏洞。',
+    fix: '缓存命中后额外执行 IsUserActive 查询（主键索引 < 1ms）。Spec 里对每个缓存点写明"哪些状态变化需要 bypass 缓存"。'
+  },
+  {
+    name: '构建元数据静默失效',
+    version: 'v2.9.4',
+    severity: 2,
+    color: '#4dabf7',
+    summary: 'Dockerfile ldflags 路径错误静默跳过，所有发布版本显示 dev',
+    case_: 'Go 的 -X flag 路径不存在时静默跳过，不报错不警告。所有 ./sproxy version 始终显示 dev。',
+    cause: '构建工具的静默失败行为，AI 不可能预知。',
+    fix: 'CI 加断言：<code>./sproxy version | grep -qv "^dev$" || exit 1</code>。可验证的构建产物属性必须显式断言。'
+  },
+  {
+    name: '数据库业务语义盲区',
+    version: 'v2.14.0',
+    severity: 5,
+    color: '#9775fa',
+    summary: 'ON CONFLICT(id) 用 UUID 做冲突键，Primary/Worker 生成不同 UUID，ConfigSyncer 完全失效',
+    case_: 'Primary 和 Worker 对同一个 URL 生成不同 UUID。ON CONFLICT(id) 永远不命中 → INSERT → UNIQUE(url) 冲突。Worker 日志持续报错。',
+    cause: 'id 是每次启动生成的 UUID，不是业务标识。业务唯一键是 url。',
+    fix: '<code>ON CONFLICT(url)</code>。Schema 里每张表的"业务唯一键"必须在 Spec 或注释里标注。'
+  },
+  {
+    name: '前端视觉交互盲区',
+    version: 'v2.9.2',
+    severity: 2,
+    color: '#e599f7',
+    summary: 'Chart.js 正反馈循环：图表撑高父元素 → 触发重绘 → 无限增长',
+    case_: 'responsive:true + maintainAspectRatio:false → 图表高度=父元素高度 → 渲染后撑大父元素 → 触发重绘 → 正反馈循环，页面无法滚动。',
+    cause: 'AI 不会在浏览器里打开页面测试，认为"代码看起来对"就是对了。',
+    fix: '用固定高度 div 包裹 canvas。前端视觉交互类改动必须人工在浏览器验证。'
+  }
+];
+
+// Build radar chart
+function getChartColors() {
+  const cs = getComputedStyle(document.documentElement);
+  return {
+    tick: cs.getPropertyValue('--c-tick').trim(),
+    grid: cs.getPropertyValue('--c-grid').trim(),
+    angle: cs.getPropertyValue('--c-grid2').trim(),
+    label: cs.getPropertyValue('--c-text3').trim(),
+    tipBg: cs.getPropertyValue('--c-tip-bg').trim(),
+    tipBdr: cs.getPropertyValue('--c-tip-bdr').trim(),
+  };
+}
+let radarChart;
+function buildChart() {
+  const cc = getChartColors();
+  if (radarChart) radarChart.destroy();
+  radarChart = new Chart(document.getElementById('radarChart').getContext('2d'), {
+    type: 'radar',
+    data: {
+      labels: patterns.map(p => p.name),
+      datasets: [{
+        label: '严重度',
+        data: patterns.map(p => p.severity),
+        backgroundColor: 'rgba(255, 107, 107, 0.12)',
+        borderColor: '#ff6b6b',
+        borderWidth: 2,
+        pointBackgroundColor: patterns.map(p => p.color),
+        pointBorderColor: patterns.map(p => p.color),
+        pointRadius: 6,
+        pointHoverRadius: 9,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      scales: {
+        r: {
+          beginAtZero: true,
+          max: 5,
+          ticks: { stepSize: 1, color: cc.tick, backdropColor: 'transparent', font: { size: 11 } },
+          grid: { color: cc.grid },
+          angleLines: { color: cc.angle },
+          pointLabels: { color: cc.label, font: { size: 13, weight: '600' } }
+        }
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: cc.tipBg,
+          borderColor: cc.tipBdr,
+          borderWidth: 1,
+          titleColor: '#fff',
+          bodyColor: '#ccccee',
+          padding: 12,
+          callbacks: {
+            label: (ctx) => `严重度: ${ctx.raw}/5`
+          }
+        }
+      }
+    }
+  });
+}
+buildChart();
+
+// Build cards
+const grid = document.getElementById('cardsGrid');
+patterns.forEach((p, i) => {
+  const severityColors = { 1: '#69db7c', 2: '#69db7c', 3: '#ffd43b', 4: '#ffa94d', 5: '#ff6b6b' };
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.style.setProperty('--accent', p.color);
+  card.innerHTML = `
+    <div class="card-header">
+      <div class="card-num" style="background:${p.color}">${i + 1}</div>
+      <div class="card-title">${p.name}</div>
+      <div class="card-version">${p.version}</div>
+    </div>
+    <div class="severity-bar"><div class="severity-fill" style="width:${p.severity * 20}%;background:${severityColors[p.severity]}"></div></div>
+    <div class="card-summary">${p.summary}</div>
+    <div class="card-detail" id="detail-${i}">
+      <div class="label">案例</div>
+      <div>${p.case_}</div>
+      <div class="label">原因</div>
+      <div>${p.cause}</div>
+      <div class="label">防护</div>
+      <div>${p.fix}</div>
+    </div>
+  `;
+  card.addEventListener('click', () => {
+    const detail = document.getElementById(`detail-${i}`);
+    detail.classList.toggle('open');
+    card.classList.toggle('active');
+  });
+  grid.appendChild(card);
+});
+
+// Theme sync from parent
+window.addEventListener('message', e => {
+  if (e.data && e.data.type === 'theme') {
+    document.documentElement.setAttribute('data-theme', e.data.theme);
+    if (typeof radarChart !== 'undefined') buildChart();
+  }
+});
+</script>
+</body>
+</html>

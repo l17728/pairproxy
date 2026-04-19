@@ -1,0 +1,1965 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PPT 生成器</title>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3/dist/jszip.min.js"></script>
+<style>
+:root{--font:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;--mono:'SF Mono','Fira Code','Consolas',monospace;}
+[data-theme="dark"]{--bg:#0a0a14;--bg2:#12121f;--bg3:#1a1a2e;--text:#e8e8f0;--dim:#8888aa;--muted:#555570;--bdr:#2a2a40;--bdr2:#3a3a55;--accent:#4dabf7;--shadow:0 8px 32px rgba(0,0,0,.5);}
+[data-theme="light"]{--bg:#fafafe;--bg2:#fff;--bg3:#f0f0f8;--text:#1a1a2e;--dim:#666688;--muted:#9999aa;--bdr:#e0e0ee;--bdr2:#c8c8d8;--accent:#2563eb;--shadow:0 8px 32px rgba(0,0,0,.08);}
+*{margin:0;padding:0;box-sizing:border-box;}
+html,body{width:100%;height:100%;overflow:hidden;font-family:var(--font);background:var(--bg);color:var(--text);}
+
+/* Top bar */
+.topbar{position:fixed;top:0;left:0;right:0;height:48px;background:var(--bg2);border-bottom:1px solid var(--bdr);display:flex;align-items:center;padding:0 16px;gap:12px;z-index:100;}
+.topbar .logo{font-weight:800;font-size:15px;color:var(--accent);white-space:nowrap;}
+.topbar input{padding:5px 10px;border:1px solid var(--bdr);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px;font-family:inherit;}
+.topbar input:focus{outline:none;border-color:var(--accent);}
+.topbar .sep{width:1px;height:24px;background:var(--bdr);}
+.topbar .tbtn{padding:5px 14px;border-radius:6px;border:1px solid var(--bdr);background:var(--bg2);color:var(--text);cursor:pointer;font-size:12px;font-weight:600;transition:all .15s;white-space:nowrap;}
+.topbar .tbtn:hover{border-color:var(--accent);color:var(--accent);}
+.topbar .tbtn.primary{background:var(--accent);color:#fff;border-color:var(--accent);}
+.topbar .tbtn.primary:hover{opacity:.85;}
+
+/* Main layout */
+.main{position:fixed;top:48px;left:0;right:0;bottom:0;display:flex;}
+
+/* Left panel - slide list */
+.lpanel{width:220px;min-width:220px;background:var(--bg2);border-right:1px solid var(--bdr);display:flex;flex-direction:column;overflow:hidden;}
+.lpanel .lhead{padding:10px 12px;font-size:12px;font-weight:700;color:var(--dim);border-bottom:1px solid var(--bdr);display:flex;align-items:center;justify-content:space-between;}
+.lpanel .lhead button{background:var(--bg3);border:1px solid var(--bdr);color:var(--accent);width:24px;height:24px;border-radius:6px;cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;}
+.lpanel .lhead button:hover{background:var(--accent);color:#fff;}
+.slist{flex:1;overflow-y:auto;padding:6px;}
+.sitem{padding:8px 10px;border-radius:6px;cursor:pointer;display:flex;align-items:center;gap:8px;margin-bottom:4px;transition:all .15s;border:1px solid transparent;font-size:12px;}
+.sitem:hover{background:var(--bg3);}
+.sitem.sel{background:var(--bg3);border-color:var(--accent);color:var(--accent);}
+.sitem .snum{width:22px;height:22px;border-radius:50%;background:var(--bdr);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0;}
+.sitem.sel .snum{background:var(--accent);color:#fff;}
+.sitem .stxt{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.sitem .sdel{background:none;border:none;color:var(--muted);cursor:pointer;font-size:12px;padding:2px;opacity:0;transition:opacity .15s;}
+.sitem:hover .sdel{opacity:1;}
+.sitem .sdel:hover{color:#f55;}
+.sitem .sacts{display:flex;flex-direction:column;gap:1px;}
+.sitem .sacts button{background:none;border:none;color:var(--muted);cursor:pointer;font-size:9px;padding:0;line-height:1;}
+.sitem .sacts button:hover{color:var(--accent);}
+
+/* Center panel - editor */
+.cpanel{flex:1;display:flex;flex-direction:column;overflow:hidden;}
+.cpanel .chead{padding:10px 16px;border-bottom:1px solid var(--bdr);display:flex;align-items:center;gap:10px;flex-shrink:0;}
+.cpanel .chead label{font-size:11px;color:var(--dim);white-space:nowrap;}
+.cpanel .chead select,.cpanel .chead input[type="text"]{padding:5px 10px;border:1px solid var(--bdr);border-radius:6px;background:var(--bg);color:var(--text);font-size:12px;font-family:inherit;}
+.cpanel .chead select:focus,.cpanel .chead input[type="text"]:focus{outline:none;border-color:var(--accent);}
+.cpanel .cbody{flex:1;overflow-y:auto;padding:16px;}
+.formrow{margin-bottom:14px;}
+.formrow label{display:block;font-size:11px;color:var(--dim);margin-bottom:4px;font-weight:600;}
+.formrow input,.formrow select,.formrow textarea{width:100%;padding:6px 10px;border:1px solid var(--bdr);border-radius:6px;background:var(--bg2);color:var(--text);font-size:12px;font-family:inherit;}
+.formrow input:focus,.formrow select:focus,.formrow textarea:focus{outline:none;border-color:var(--accent);}
+.formrow textarea{min-height:60px;resize:vertical;line-height:1.6;}
+.formrow .hint{font-size:10px;color:var(--muted);margin-top:3px;}
+.dynamic-rows{display:flex;flex-direction:column;gap:8px;}
+.dyn-row{display:flex;gap:6px;align-items:center;}
+.dyn-row input{flex:1;}
+.dyn-row .color-dot{width:20px;height:20px;border-radius:50%;cursor:pointer;border:2px solid var(--bdr);flex-shrink:0;}
+.dyn-row .rbtn{background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px;padding:2px;}
+.dyn-row .rbtn:hover{color:#f55;}
+.add-row-btn{background:none;border:1px dashed var(--bdr);color:var(--dim);padding:5px;border-radius:6px;cursor:pointer;font-size:11px;transition:all .15s;}
+.add-row-btn:hover{border-color:var(--accent);color:var(--accent);}
+.img-grid-upload{border:2px dashed var(--bdr);border-radius:8px;padding:20px;text-align:center;color:var(--dim);cursor:pointer;transition:border-color .2s;font-size:12px;}
+.img-grid-upload:hover{border-color:var(--accent);}
+.img-grid-preview{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;}
+.img-grid-preview .thumb{width:60px;height:60px;border-radius:4px;object-fit:cover;border:1px solid var(--bdr);position:relative;}
+.img-grid-preview .thumb .del-img{position:absolute;top:-4px;right:-4px;background:#f55;color:#fff;border:none;border-radius:50%;width:16px;height:16px;font-size:9px;cursor:pointer;display:flex;align-items:center;justify-content:center;}
+
+/* Right panel - preview */
+.rpanel{width:420px;min-width:420px;background:var(--bg2);border-left:1px solid var(--bdr);display:flex;flex-direction:column;overflow:hidden;}
+.rpanel .rhead{padding:10px 12px;font-size:12px;font-weight:700;color:var(--dim);border-bottom:1px solid var(--bdr);text-align:center;}
+.rpanel .rbody{flex:1;display:flex;align-items:center;justify-content:center;padding:16px;background:var(--bg);}
+
+/* Preview frame - replicates slides.html slide */
+.preview-slide{width:388px;height:218px;background:var(--bg);border-radius:6px;border:1px solid var(--bdr);position:relative;overflow:hidden;display:flex;flex-direction:column;justify-content:center;align-items:center;padding:8px 14px;font-family:var(--font);font-size:7px;line-height:1.4;color:var(--text);}
+.preview-slide .pv-stitle{font-size:9px;font-weight:700;margin-bottom:4px;text-align:center;}
+.preview-slide .pv-sub{font-size:6.5px;color:var(--dim);text-align:center;margin-bottom:4px;}
+.preview-slide .pv-mets{display:flex;gap:8px;justify-content:center;}
+.preview-slide .pv-met{text-align:center;}
+.preview-slide .pv-met-v{font-size:14px;font-weight:800;line-height:1;}
+.preview-slide .pv-met-l{font-size:5px;color:var(--dim);}
+.preview-slide .pv-bq{font-size:8px;font-weight:600;line-height:1.4;border-left:2px solid var(--accent);padding:4px 8px;text-align:left;max-width:95%;}
+.preview-slide .pv-cards{display:grid;gap:4px;width:100%;}
+.preview-slide .pv-card{background:var(--bg2);border:1px solid var(--bdr);border-radius:3px;padding:4px 6px;text-align:left;}
+.preview-slide .pv-card h4{font-size:6px;font-weight:700;margin-bottom:2px;}
+.preview-slide .pv-card p{font-size:5px;color:var(--dim);line-height:1.3;}
+.preview-slide .pv-split{display:flex;gap:6px;width:100%;}
+.preview-slide .pv-split-half{flex:1;background:var(--bg2);border:1px solid var(--bdr);border-radius:3px;padding:4px 6px;font-size:5px;}
+.preview-slide .pv-split-half h4{font-size:6px;font-weight:700;margin-bottom:2px;}
+.preview-slide .pv-vlink{display:inline-block;padding:2px 6px;border-radius:3px;background:var(--bg3);border:1px solid var(--bdr);color:var(--accent);font-size:5.5px;}
+.preview-slide .pv-flow{display:flex;flex-direction:column;gap:2px;align-items:center;width:80%;}
+.preview-slide .pv-fstep{padding:2px 6px;border-radius:3px;font-size:6px;font-weight:600;width:100%;background:var(--bg2);border:1px solid var(--bdr);text-align:center;}
+.preview-slide .pv-imgs{display:grid;gap:3px;width:100%;}
+.preview-slide .pv-img{width:100%;height:28px;object-fit:cover;border-radius:2px;border:1px solid var(--bdr);}
+.preview-slide .pv-html{font-size:6px;line-height:1.4;width:100%;overflow:hidden;max-height:100%;}
+
+/* Color dots */
+.cr{color:#ff6b6b;}.co{color:#ffa94d;}.cy{color:#ffd43b;}.cg{color:#69db7c;}.cb{color:#4dabf7;}.cp{color:#9775fa;}.ck{color:#e599f7;}
+
+/* Notification */
+.notif{position:fixed;top:56px;right:16px;padding:10px 18px;border-radius:8px;font-size:12px;font-weight:600;z-index:500;opacity:0;transition:opacity .3s;pointer-events:none;}
+.notif.show{opacity:1;}
+.notif.ok{background:#69db7c22;color:#69db7c;border:1px solid #69db7c44;}
+.notif.err{background:#ff6b6b22;color:#ff6b6b;border:1px solid #ff6b6b44;}
+
+/* Modal */
+.modal-bg{position:fixed;inset:0;z-index:500;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;}
+.modal-bg.on{display:flex;}
+.modal-card{background:var(--bg);border:1px solid var(--bdr2);border-radius:14px;padding:24px 28px;width:420px;max-width:90vw;color:var(--text);}
+.modal-card h3{font-size:1.1rem;margin-bottom:16px;font-weight:700;}
+.modal-card label{display:block;font-size:.75rem;color:var(--dim);margin-bottom:4px;margin-top:12px;}
+.modal-card input{width:100%;padding:8px 12px;border:1px solid var(--bdr);border-radius:6px;background:var(--bg2);color:var(--text);font-size:.85rem;box-sizing:border-box;}
+.modal-card input:focus{outline:none;border-color:var(--accent);}
+.modal-card .mbtn-row{display:flex;gap:8px;margin-top:20px;justify-content:flex-end;}
+.modal-card .mbtn{padding:8px 20px;border-radius:8px;border:1px solid var(--bdr);background:var(--bg2);color:var(--text);cursor:pointer;font-size:.85rem;transition:all .15s;}
+.modal-card .mbtn:hover{border-color:var(--bdr2);}
+.modal-card .mbtn.primary{background:var(--accent);color:#fff;border-color:var(--accent);}
+
+/* Chat panel at bottom */
+.chat-panel{position:fixed;bottom:0;left:220px;right:420px;height:260px;background:var(--bg2);border-top:1px solid var(--bdr2);z-index:200;display:none;flex-direction:column;box-shadow:0 -4px 16px rgba(0,0,0,.2);}
+.chat-panel.on{display:flex;}
+.chat-panel .cp-head{display:flex;align-items:center;padding:8px 14px;border-bottom:1px solid var(--bdr);flex-shrink:0;}
+.chat-panel .cp-head span{flex:1;font-weight:700;font-size:12px;}
+.chat-panel .cp-head button{background:none;border:none;color:var(--dim);cursor:pointer;font-size:14px;padding:2px 6px;}
+.chat-panel .cp-head button:hover{color:var(--text);}
+.chat-panel .cp-head .cp-hint{font-size:10px;color:var(--muted);margin-left:8px;}
+.chat-msgs{flex:1;overflow-y:auto;padding:10px 14px;display:flex;flex-direction:column;gap:8px;}
+.chat-msg{font-size:12px;line-height:1.6;padding:8px 12px;border-radius:10px;max-width:95%;white-space:pre-wrap;word-break:break-word;}
+.chat-msg.user{background:var(--accent);color:#fff;align-self:flex-end;}
+.chat-msg.assistant{background:var(--bg);color:var(--text);align-self:flex-start;border:1px solid var(--bdr);}
+.chat-msg.assistant code{display:block;background:var(--bg3);border:1px solid var(--bdr);border-radius:6px;padding:8px 10px;margin:6px 0;font-family:var(--mono);font-size:11px;white-space:pre-wrap;max-height:120px;overflow-y:auto;line-height:1.5;}
+.chat-msg.error{background:rgba(255,60,60,.1);color:#f88;align-self:center;font-size:11px;}
+.chat-input-row{display:flex;gap:6px;padding:8px 14px;border-top:1px solid var(--bdr);flex-shrink:0;align-items:flex-end;}
+.chat-input-row textarea{flex:1;padding:6px 10px;border:1px solid var(--bdr);border-radius:6px;background:var(--bg);color:var(--text);font-size:12px;resize:none;height:36px;max-height:60px;font-family:inherit;}
+.chat-input-row textarea:focus{outline:none;border-color:var(--accent);}
+.chat-input-row button{padding:6px 14px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:12px;font-weight:600;white-space:nowrap;}
+.chat-input-row button:hover{opacity:.85;}
+.apply-btn{margin-top:4px;padding:3px 10px;border-radius:4px;border:1px solid var(--accent);background:transparent;color:var(--accent);cursor:pointer;font-size:10px;font-weight:600;}
+.apply-btn:hover{background:var(--accent);color:#fff;}
+
+/* Diagnostic panel */
+.diag-panel{position:absolute;bottom:0;left:0;right:0;max-height:140px;overflow-y:auto;background:var(--bg2);border-top:1px solid var(--bdr);padding:6px 10px;font-size:10px;font-family:var(--mono);z-index:10;}
+.diag-panel .diag-head{display:flex;align-items:center;gap:6px;margin-bottom:4px;}
+.diag-panel .diag-head span{font-weight:700;font-size:11px;}
+.diag-panel .diag-head .diag-ok{color:#69db7c;}
+.diag-panel .diag-head .diag-err{color:#ff6b6b;}
+.diag-panel .diag-head .diag-warn{color:#ffd43b;}
+.diag-item{padding:2px 0;display:flex;gap:6px;align-items:flex-start;line-height:1.4;}
+.diag-item .dicon{flex-shrink:0;width:14px;text-align:center;}
+.diag-item .dmsg{color:var(--dim);}
+.diag-item.err .dmsg{color:#ff6b6b;}
+.diag-item.warn .dmsg{color:#ffd43b;}
+.diag-item.ok .dmsg{color:#69db7c;}
+.diag-item .dctx{color:var(--muted);font-size:9px;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.rpanel.has-diag .rbody{padding-bottom:150px;}
+.auto-fix-btn{margin-top:4px;padding:3px 8px;border-radius:4px;border:1px solid #ff6b6b;background:transparent;color:#ff6b6b;cursor:pointer;font-size:9px;font-weight:600;white-space:nowrap;}
+.auto-fix-btn:hover{background:#ff6b6b;color:#fff;}
+
+/* File input hidden */
+.hidden{display:none;}
+</style>
+</head>
+<body>
+
+<!-- Top bar -->
+<div class="topbar">
+  <span class="logo">📊 PPT 生成器</span>
+  <div class="sep"></div>
+  <input type="text" id="pptTitle" placeholder="演示标题" style="width:180px" value="">
+  <input type="text" id="pptSubtitle" placeholder="副标题" style="width:200px" value="">
+  <div class="sep"></div>
+  <label style="font-size:11px;color:var(--dim);cursor:pointer;">
+    📷 封面 <input type="file" id="coverInput" accept="image/*" class="hidden">
+  </label>
+  <label style="font-size:11px;color:var(--dim);cursor:pointer;">
+    🖼 背景 <input type="file" id="bgInput" accept="image/*" class="hidden">
+  </label>
+  <div style="flex:1"></div>
+  <button class="tbtn" onclick="openSettings()" title="LLM 设置">⚙️</button>
+  <button class="tbtn" onclick="toggleChat()">💬 AI 生成</button>
+  <button class="tbtn" onclick="toggleTheme()">🌙</button>
+  <button class="tbtn primary" onclick="exportZIP()">📦 导出 ZIP</button>
+</div>
+
+<!-- Notification -->
+<div class="notif" id="notif"></div>
+
+<!-- Main layout -->
+<div class="main">
+  <!-- Left: slide list -->
+  <div class="lpanel">
+    <div class="lhead">
+      <span>幻灯片列表</span>
+      <button onclick="addSlide()" title="添加新页">+</button>
+    </div>
+    <div class="slist" id="slist"></div>
+  </div>
+
+  <!-- Center: editor -->
+  <div class="cpanel">
+    <div class="chead">
+      <label>标题</label>
+      <input type="text" id="slideTitle" placeholder="本页标题" style="width:200px" oninput="onEdit()">
+      <div class="sep" style="height:20px"></div>
+      <label>布局</label>
+      <select id="layoutSelect" onchange="onLayoutChange()">
+        <option value="title">标题页</option>
+        <option value="metrics">数据指标</option>
+        <option value="imagegrid">图片网格</option>
+        <option value="cards">卡片</option>
+        <option value="split">双栏</option>
+        <option value="blockquote">引用</option>
+        <option value="flow">流程步骤</option>
+        <option value="stages">阶段</option>
+        <option value="custom">自定义 HTML</option>
+      </select>
+    </div>
+    <div class="cbody" id="editorBody">
+      <!-- Dynamic form fields rendered here -->
+    </div>
+  </div>
+
+  <!-- Right: preview -->
+  <div class="rpanel" id="rpanel">
+    <div class="rhead">实时预览 <span id="diagSummary" style="float:right;font-weight:400"></span></div>
+    <div class="rbody">
+      <div class="preview-slide" id="preview"></div>
+      <iframe id="sandboxPreview" sandbox="allow-same-origin" style="display:none;width:388px;height:218px;border:1px solid var(--bdr);border-radius:6px;background:var(--bg);"></iframe>
+    </div>
+    <div class="diag-panel" id="diagPanel" style="display:none"></div>
+  </div>
+</div>
+
+<input type="file" id="imgInput" multiple accept="image/*" class="hidden">
+
+<!-- Settings Modal -->
+<div class="modal-bg" id="settingsModal">
+  <div class="modal-card">
+    <h3>⚙️ LLM 设置</h3>
+    <label>模型名称</label><input id="llmModel" placeholder="gpt-4o / deepseek-chat">
+    <label>Base URL</label><input id="llmUrl" placeholder="https://api.openai.com/v1">
+    <label>API Key</label><input id="llmKey" type="password" placeholder="sk-...">
+    <div class="mbtn-row">
+      <button class="mbtn" onclick="closeSettings()">取消</button>
+      <button class="mbtn primary" onclick="saveSettings()">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- Chat Panel -->
+<div class="chat-panel" id="chatPanel">
+  <div class="cp-head">
+    <span>🤖 AI 生成幻灯片</span>
+    <span class="cp-hint">描述你想要的幻灯片内容，AI 将生成 HTML 代码</span>
+    <button onclick="toggleChat()">✕</button>
+  </div>
+  <div class="chat-msgs" id="chatMsgs"></div>
+  <div class="chat-input-row">
+    <textarea id="chatInput" placeholder="描述你想要的幻灯片内容..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat();}"></textarea>
+    <button onclick="sendChat()">💬 对话</button>
+    <button onclick="smartGenerate()" style="background:linear-gradient(135deg,var(--accent),#9775fa);border:none;color:#fff;padding:6px 14px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;">🚀 智能生成</button>
+  </div>
+</div>
+
+<script>
+// ===== State =====
+let slides = [];
+let selIdx = 0;
+let coverData = null; // {name, data(base64)}
+let bgData = null;
+
+const COLORS = [
+  {id:'cr',color:'#ff6b6b',label:'红'},
+  {id:'co',color:'#ffa94d',label:'橙'},
+  {id:'cy',color:'#ffd43b',label:'黄'},
+  {id:'cg',color:'#69db7c',label:'绿'},
+  {id:'cb',color:'#4dabf7',label:'蓝'},
+  {id:'cp',color:'#9775fa',label:'紫'},
+  {id:'ck',color:'#e599f7',label:'粉'},
+];
+
+const LAYOUTS = {
+  title: {label:'标题页'},
+  metrics: {label:'数据指标'},
+  imagegrid: {label:'图片网格'},
+  cards: {label:'卡片'},
+  split: {label:'双栏'},
+  blockquote: {label:'引用'},
+  flow: {label:'流程步骤'},
+  stages: {label:'阶段'},
+  custom: {label:'自定义 HTML'},
+};
+
+function newSlide(layout){
+  const s = {title:'', layout: layout||'title', data:{}};
+  if(layout==='metrics') s.data.items=[{value:'',label:'',colorId:'cb'}];
+  if(layout==='imagegrid') {s.data.cols=4; s.data.images=[]; s.data.vlink='';}
+  if(layout==='cards') {s.data.cols=3; s.data.items=[{title:'',desc:'',borderColor:'#4dabf7'}];}
+  if(layout==='split') {s.data.left=''; s.data.right='';}
+  if(layout==='blockquote') {s.data.quotes=[{text:'',size:'normal',color:'#4dabf7'}]; s.data.footer='';}
+  if(layout==='flow') s.data.steps=[''];
+  if(layout==='stages') s.data.items=[{name:'',desc:''}];
+  if(layout==='custom') s.data.html='';
+  if(layout==='title') {s.data.subtitle=''; s.data.stats=[];}
+  return s;
+}
+
+// ===== Init =====
+function init(){
+  const saved = localStorage.getItem('ppt-gen-state');
+  if(saved){
+    try{
+      const st = JSON.parse(saved);
+      slides = st.slides || [newSlide('title')];
+      selIdx = st.selIdx || 0;
+      document.getElementById('pptTitle').value = st.pptTitle || '';
+      document.getElementById('pptSubtitle').value = st.pptSubtitle || '';
+      coverData = st.coverData || null;
+      bgData = st.bgData || null;
+    }catch(e){slides=[newSlide('title')];}
+  }else{
+    slides=[newSlide('title')];
+  }
+  renderList();
+  selectSlide(selIdx);
+}
+
+function save(){
+  localStorage.setItem('ppt-gen-state', JSON.stringify({
+    slides, selIdx,
+    pptTitle: document.getElementById('pptTitle').value,
+    pptSubtitle: document.getElementById('pptSubtitle').value,
+    coverData, bgData
+  }));
+}
+
+// ===== Slide list =====
+function renderList(){
+  const el = document.getElementById('slist');
+  el.innerHTML = '';
+  slides.forEach((s,i)=>{
+    const d = document.createElement('div');
+    d.className = 'sitem'+(i===selIdx?' sel':'');
+    d.innerHTML = `<div class="snum">${i+1}</div><div class="stxt">${s.title||LAYOUTS[s.layout].label}</div>
+      <div class="sacts"><button onclick="event.stopPropagation();moveSlide(${i},-1)" title="上移">▲</button><button onclick="event.stopPropagation();moveSlide(${i},1)" title="下移">▼</button></div>
+      <button class="sdel" onclick="event.stopPropagation();delSlide(${i})" title="删除">✕</button>`;
+    d.onclick = ()=>selectSlide(i);
+    el.appendChild(d);
+  });
+}
+
+function selectSlide(i){
+  selIdx = Math.max(0, Math.min(i, slides.length-1));
+  renderList();
+  const s = slides[selIdx];
+  document.getElementById('slideTitle').value = s.title;
+  document.getElementById('layoutSelect').value = s.layout;
+  renderEditor();
+  renderPreview();
+}
+
+function addSlide(){
+  slides.splice(selIdx+1, 0, newSlide('title'));
+  selectSlide(selIdx+1);
+  save();
+}
+
+function delSlide(i){
+  if(slides.length<=1) return;
+  slides.splice(i,1);
+  if(selIdx>=slides.length) selIdx=slides.length-1;
+  selectSlide(selIdx);
+  save();
+}
+
+function moveSlide(i, dir){
+  const j = i+dir;
+  if(j<0||j>=slides.length) return;
+  [slides[i],slides[j]]=[slides[j],slides[i]];
+  selIdx=j;
+  renderList();
+  selectSlide(selIdx);
+  save();
+}
+
+// ===== Editor =====
+function onEdit(){
+  slides[selIdx].title = document.getElementById('slideTitle').value;
+  renderList();
+  renderPreview();
+  save();
+}
+
+function onLayoutChange(){
+  const layout = document.getElementById('layoutSelect').value;
+  const oldData = slides[selIdx].data;
+  slides[selIdx].layout = layout;
+  // Reset data for new layout but keep it sensible
+  const s = newSlide(layout);
+  s.data = s.data;
+  slides[selIdx].data = s.data;
+  renderEditor();
+  renderPreview();
+  save();
+}
+
+function renderEditor(){
+  const s = slides[selIdx];
+  const body = document.getElementById('editorBody');
+  let html = '';
+
+  switch(s.layout){
+    case 'title':
+      html += formRow('副标题','<input type="text" data-field="subtitle" value="'+esc(s.data.subtitle||'')+'" oninput="updateField(this)">');
+      html += '<div class="formrow"><label>统计项</label><div class="dynamic-rows" id="statsRows">';
+      (s.data.stats||[]).forEach((st,i)=>{
+        html += `<div class="dyn-row"><input type="text" placeholder="值" value="${esc(st.value)}" oninput="updateStat(${i},'value',this.value)"><input type="text" placeholder="标签" value="${esc(st.label)}" oninput="updateStat(${i},'label',this.value)">${colorDot(st.colorId,i,'stat')}</div>`;
+      });
+      html += `</div><button class="add-row-btn" onclick="addStat()">+ 添加统计项</button></div>`;
+      break;
+
+    case 'metrics':
+      html += '<div class="formrow"><label>指标项</label><div class="dynamic-rows" id="metricRows">';
+      (s.data.items||[]).forEach((m,i)=>{
+        html += `<div class="dyn-row"><input type="text" placeholder="数值" value="${esc(m.value)}" oninput="updateMetric(${i},'value',this.value)" style="width:80px"><input type="text" placeholder="标签" value="${esc(m.label)}" oninput="updateMetric(${i},'label',this.value)">${colorDot(m.colorId,i,'metric')}<button class="rbtn" onclick="removeMetric(${i})">✕</button></div>`;
+      });
+      html += `</div><button class="add-row-btn" onclick="addMetric()">+ 添加指标</button></div>`;
+      break;
+
+    case 'imagegrid':
+      html += formRow('列数',`<select data-field="cols" onchange="updateNum(this)"><option value="2"${s.data.cols==2?' selected':''}>2列</option><option value="3"${s.data.cols==3?' selected':''}>3列</option><option value="4"${s.data.cols==4?' selected':''}>4列</option></select>`);
+      html += `<div class="formrow"><label>图片 (${(s.data.images||[]).length} 张)</label><div class="img-grid-upload" onclick="pickImages()">📷 点击上传图片或将图片拖放至此</div><div class="img-grid-preview" id="imgGridPreview">`;
+      (s.data.images||[]).forEach((img,i)=>{
+        html += `<div class="thumb" style="position:relative"><img src="${img.data}" style="width:60px;height:60px;object-fit:cover;border-radius:4px;border:1px solid var(--bdr)"><button class="del-img" style="position:absolute;top:-4px;right:-4px;background:#f55;color:#fff;border:none;border-radius:50%;width:16px;height:16px;font-size:9px;cursor:pointer;display:flex;align-items:center;justify-content:center;" onclick="removeImage(${i})">✕</button></div>`;
+      });
+      html += '</div></div>';
+      html += formRow('底部链接文字','<input type="text" data-field="vlink" value="'+esc(s.data.vlink||'')+'" oninput="updateField(this)" placeholder="如：📈 查看完整报告">');
+      break;
+
+    case 'cards':
+      html += formRow('列数',`<select data-field="cols" onchange="updateNum(this)"><option value="2"${s.data.cols==2?' selected':''}>2列</option><option value="3"${s.data.cols==3?' selected':''}>3列</option></select>`);
+      html += '<div class="formrow"><label>卡片</label><div class="dynamic-rows" id="cardRows">';
+      (s.data.items||[]).forEach((c,i)=>{
+        html += `<div class="dyn-row" style="flex-direction:column;gap:4px;background:var(--bg);padding:8px;border-radius:6px;border:1px solid var(--bdr)"><div style="display:flex;gap:6px;width:100%"><input type="text" placeholder="标题" value="${esc(c.title)}" oninput="updateCard(${i},'title',this.value)" style="flex:2"><input type="color" value="${c.borderColor||'#4dabf7'}" oninput="updateCard(${i},'borderColor',this.value)" style="width:36px;height:28px;padding:0;border:none;cursor:pointer"></div><textarea placeholder="描述" oninput="updateCard(${i},'desc',this.value)" style="width:100%;min-height:36px;padding:4px 8px;border:1px solid var(--bdr);border-radius:4px;background:var(--bg2);color:var(--text);font-size:12px;resize:vertical;font-family:inherit">${esc(c.desc)}</textarea><button class="rbtn" onclick="removeCard(${i})" style="align-self:flex-end">✕ 删除卡片</button></div>`;
+      });
+      html += `</div><button class="add-row-btn" onclick="addCard()">+ 添加卡片</button></div>`;
+      break;
+
+    case 'split':
+      html += '<div style="display:flex;gap:12px"><div style="flex:1">';
+      html += formRow('左栏内容','<textarea data-field="left" oninput="updateField(this)" rows="4" placeholder="支持 HTML">'+esc(s.data.left||'')+'</textarea>');
+      html += '</div><div style="flex:1">';
+      html += formRow('右栏内容','<textarea data-field="right" oninput="updateField(this)" rows="4" placeholder="支持 HTML">'+esc(s.data.right||'')+'</textarea>');
+      html += '</div></div>';
+      html += '<div class="formrow"><div class="hint">💡 提示：每栏可写多个 &lt;div style="padding:1vh 1vw;background:var(--bg2);border-radius:6px;margin-bottom:.5vh"&gt;内容&lt;/div&gt; 来创建卡片式布局</div></div>';
+      break;
+
+    case 'blockquote':
+      html += '<div class="formrow"><label>引用段落</label><div class="dynamic-rows" id="bqRows">';
+      (s.data.quotes||[]).forEach((q,i)=>{
+        html += `<div class="dyn-row" style="flex-direction:column;gap:4px;background:var(--bg);padding:8px;border-radius:6px;border:1px solid var(--bdr)"><textarea placeholder="引用文字" oninput="updateBQ(${i},'text',this.value)" style="width:100%;min-height:40px;padding:4px 8px;border:1px solid var(--bdr);border-radius:4px;background:var(--bg2);color:var(--text);font-size:12px;resize:vertical;font-family:inherit">${esc(q.text)}</textarea><div style="display:flex;gap:6px;align-items:center"><select onchange="updateBQ(${i},'size',this.value)" style="padding:3px 6px;border:1px solid var(--bdr);border-radius:4px;background:var(--bg2);color:var(--text);font-size:11px"><option value="normal"${q.size==='normal'?' selected':''}>正常</option><option value="large"${q.size==='large'?' selected':''}>大</option><option value="xlarge"${q.size==='xlarge'?' selected':''}>特大</option></select><input type="color" value="${q.color||'#4dabf7'}" oninput="updateBQ(${i},'color',this.value)" style="width:30px;height:24px;padding:0;border:none;cursor:pointer"><button class="rbtn" onclick="removeBQ(${i})">✕</button></div></div>`;
+      });
+      html += `</div><button class="add-row-btn" onclick="addBQ()">+ 添加引用段</button></div>`;
+      html += formRow('底部文字','<input type="text" data-field="footer" value="'+esc(s.data.footer||'')+'" oninput="updateField(this)" placeholder="引用下方的补充说明">');
+      break;
+
+    case 'flow':
+      html += '<div class="formrow"><label>步骤</label><div class="dynamic-rows" id="flowRows">';
+      (s.data.steps||[]).forEach((st,i)=>{
+        html += `<div class="dyn-row"><input type="text" placeholder="步骤描述" value="${esc(st)}" oninput="updateFlow(${i},this.value)"><button class="rbtn" onclick="removeFlow(${i})">✕</button></div>`;
+      });
+      html += `</div><button class="add-row-btn" onclick="addFlow()">+ 添加步骤</button></div>`;
+      break;
+
+    case 'stages':
+      html += '<div class="formrow"><label>阶段</label><div class="dynamic-rows" id="stageRows">';
+      (s.data.items||[]).forEach((st,i)=>{
+        html += `<div class="dyn-row"><input type="text" placeholder="名称" value="${esc(st.name)}" oninput="updateStage(${i},'name',this.value)" style="width:120px"><input type="text" placeholder="描述" value="${esc(st.desc)}" oninput="updateStage(${i},'desc',this.value)"><button class="rbtn" onclick="removeStage(${i})">✕</button></div>`;
+      });
+      html += `</div><button class="add-row-btn" onclick="addStage()">+ 添加阶段</button></div>`;
+      break;
+
+    case 'custom':
+      html += formRow('自定义 HTML','<textarea data-field="html" oninput="updateField(this)" rows="12" placeholder="直接编写 HTML 代码，可使用 slides.html 的所有 CSS class">'+esc(s.data.html||'')+'</textarea>');
+      html += '<div class="formrow"><div class="hint">💡 可用 class: .sub .bq .mets .cards2 .cards3 .card .split .vlink .flow .stages-row .mermaid<br>颜色 class: .cr .co .cy .cg .cb .cp .ck</div></div>';
+      break;
+  }
+
+  body.innerHTML = html;
+}
+
+function formRow(label, inner){
+  return `<div class="formrow"><label>${label}</label>${inner}</div>`;
+}
+
+function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+
+function colorDot(colorId, idx, type){
+  const c = COLORS.find(c=>c.id===colorId)||COLORS[4];
+  return `<select onchange="updateColor(${idx},'${type}',this.value)" style="width:50px;padding:2px;border:1px solid var(--bdr);border-radius:4px;background:var(--bg2);color:var(--text);font-size:10px">${COLORS.map(cc=>`<option value="${cc.id}"${cc.id===colorId?' selected':''}>${cc.label}</option>`).join('')}</select>`;
+}
+
+// ===== Field updaters =====
+function updateField(el){
+  const f = el.getAttribute('data-field');
+  if(f==='subtitle') slides[selIdx].data.subtitle = el.value;
+  else if(f==='vlink') slides[selIdx].data.vlink = el.value;
+  else if(f==='left') slides[selIdx].data.left = el.value;
+  else if(f==='right') slides[selIdx].data.right = el.value;
+  else if(f==='footer') slides[selIdx].data.footer = el.value;
+  else if(f==='html') slides[selIdx].data.html = el.value;
+  renderPreview();
+  save();
+}
+
+function updateNum(el){
+  const f = el.getAttribute('data-field');
+  if(f==='cols') slides[selIdx].data.cols = parseInt(el.value);
+  renderPreview();
+  save();
+}
+
+function updateMetric(i,k,v){ slides[selIdx].data.items[i][k]=v; renderPreview(); save(); }
+function addMetric(){ slides[selIdx].data.items.push({value:'',label:'',colorId:'cb'}); renderEditor(); renderPreview(); save(); }
+function removeMetric(i){ slides[selIdx].data.items.splice(i,1); renderEditor(); renderPreview(); save(); }
+
+function updateStat(i,k,v){ slides[selIdx].data.stats[i][k]=v; renderPreview(); save(); }
+function addStat(){ if(!slides[selIdx].data.stats) slides[selIdx].data.stats=[]; slides[selIdx].data.stats.push({value:'',label:'',colorId:'cb'}); renderEditor(); renderPreview(); save(); }
+
+function updateCard(i,k,v){ slides[selIdx].data.items[i][k]=v; renderPreview(); save(); }
+function addCard(){ slides[selIdx].data.items.push({title:'',desc:'',borderColor:'#4dabf7'}); renderEditor(); renderPreview(); save(); }
+function removeCard(i){ slides[selIdx].data.items.splice(i,1); renderEditor(); renderPreview(); save(); }
+
+function updateBQ(i,k,v){ slides[selIdx].data.quotes[i][k]=v; renderPreview(); save(); }
+function addBQ(){ slides[selIdx].data.quotes.push({text:'',size:'normal',color:'#4dabf7'}); renderEditor(); renderPreview(); save(); }
+function removeBQ(i){ slides[selIdx].data.quotes.splice(i,1); renderEditor(); renderPreview(); save(); }
+
+function updateFlow(i,v){ slides[selIdx].data.steps[i]=v; renderPreview(); save(); }
+function addFlow(){ slides[selIdx].data.steps.push(''); renderEditor(); renderPreview(); save(); }
+function removeFlow(i){ slides[selIdx].data.steps.splice(i,1); renderEditor(); renderPreview(); save(); }
+
+function updateStage(i,k,v){ slides[selIdx].data.items[i][k]=v; renderPreview(); save(); }
+function addStage(){ slides[selIdx].data.items.push({name:'',desc:''}); renderEditor(); renderPreview(); save(); }
+function removeStage(i){ slides[selIdx].data.items.splice(i,1); renderEditor(); renderPreview(); save(); }
+
+function updateColor(idx, type, colorId){
+  if(type==='metric') slides[selIdx].data.items[idx].colorId = colorId;
+  if(type==='stat') slides[selIdx].data.stats[idx].colorId = colorId;
+  renderPreview(); save();
+}
+
+// ===== Image handling =====
+function pickImages(){
+  const inp = document.getElementById('imgInput');
+  inp.onchange = function(){
+    const files = Array.from(this.files);
+    let pending = files.length;
+    files.forEach(f=>{
+      const reader = new FileReader();
+      reader.onload = function(e){
+        slides[selIdx].data.images.push({name:f.name, data:e.target.result});
+        if(--pending===0){ renderEditor(); renderPreview(); save(); }
+      };
+      reader.readAsDataURL(f);
+    });
+  };
+  inp.click();
+}
+
+function removeImage(i){
+  slides[selIdx].data.images.splice(i,1);
+  renderEditor(); renderPreview(); save();
+}
+
+// ===== Cover / BG =====
+document.getElementById('coverInput').onchange = function(){
+  const f = this.files[0]; if(!f)return;
+  const r = new FileReader();
+  r.onload = e => { coverData={name:f.name,data:e.target.result}; notify('封面已设置','ok'); };
+  r.readAsDataURL(f);
+};
+document.getElementById('bgInput').onchange = function(){
+  const f = this.files[0]; if(!f)return;
+  const r = new FileReader();
+  r.onload = e => { bgData={name:f.name,data:e.target.result}; notify('背景已设置','ok'); };
+  r.readAsDataURL(f);
+};
+
+// ===== Preview =====
+function renderPreview(){
+  const s = slides[selIdx];
+  const pv = document.getElementById('preview');
+  let h = '';
+
+  if(s.title) h += `<div class="pv-stitle">${esc(s.title)}</div>`;
+
+  switch(s.layout){
+    case 'title':
+      if(s.data.subtitle) h += `<div class="pv-sub">${esc(s.data.subtitle)}</div>`;
+      if(s.data.stats && s.data.stats.length){
+        h += '<div class="pv-mets">';
+        s.data.stats.forEach(st=>{
+          const c = COLORS.find(c=>c.id===st.colorId)||COLORS[4];
+          h += `<div class="pv-met"><div class="pv-met-v" style="color:${c.color}">${esc(st.value)||'-'}</div><div class="pv-met-l">${esc(st.label)}</div></div>`;
+        });
+        h += '</div>';
+      }
+      break;
+
+    case 'metrics':
+      h += '<div class="pv-mets">';
+      (s.data.items||[]).forEach(m=>{
+        const c = COLORS.find(cc=>cc.id===m.colorId)||COLORS[4];
+        h += `<div class="pv-met"><div class="pv-met-v" style="color:${c.color}">${esc(m.value)||'-'}</div><div class="pv-met-l">${esc(m.label)}</div></div>`;
+      });
+      h += '</div>';
+      break;
+
+    case 'imagegrid':
+      const cols = s.data.cols || 4;
+      const imgs = s.data.images || [];
+      h += `<div class="pv-imgs" style="grid-template-columns:repeat(${cols},1fr)">`;
+      imgs.forEach(img=>{
+        h += `<img class="pv-img" src="${img.data}">`;
+      });
+      h += '</div>';
+      if(s.data.vlink) h += `<div class="pv-vlink">${esc(s.data.vlink)}</div>`;
+      break;
+
+    case 'cards':
+      const cc = s.data.cols||3;
+      h += `<div class="pv-cards" style="grid-template-columns:repeat(${cc},1fr)">`;
+      (s.data.items||[]).forEach(c=>{
+        h += `<div class="pv-card" style="border-top:2px solid ${c.borderColor||'#4dabf7'}"><h4>${esc(c.title)}</h4><p>${esc(c.desc)}</p></div>`;
+      });
+      h += '</div>';
+      break;
+
+    case 'split':
+      h += '<div class="pv-split">';
+      h += `<div class="pv-split-half">${esc(s.data.left||'(左栏)')}</div>`;
+      h += `<div class="pv-split-half">${esc(s.data.right||'(右栏)')}</div>`;
+      h += '</div>';
+      break;
+
+    case 'blockquote':
+      (s.data.quotes||[]).forEach(q=>{
+        const fs = q.size==='xlarge'?'11px':q.size==='large'?'9px':'7px';
+        h += `<div class="pv-bq" style="font-size:${fs};border-left-color:${q.color||'#4dabf7'}">${esc(q.text)}</div>`;
+      });
+      if(s.data.footer) h += `<div class="pv-sub" style="margin-top:6px">${esc(s.data.footer)}</div>`;
+      break;
+
+    case 'flow':
+      h += '<div class="pv-flow">';
+      (s.data.steps||[]).forEach(st=>{
+        h += `<div class="pv-fstep">${esc(st)}</div>`;
+      });
+      h += '</div>';
+      break;
+
+    case 'stages':
+      h += '<div style="display:flex;gap:4px;width:100%">';
+      (s.data.items||[]).forEach(st=>{
+        h += `<div style="flex:1;text-align:center;background:var(--bg2);border-radius:3px;padding:4px"><div style="font-size:6px;font-weight:700">${esc(st.name)}</div><div style="font-size:4.5px;color:var(--dim)">${esc(st.desc)}</div></div>`;
+      });
+      h += '</div>';
+      break;
+
+    case 'custom':
+      // Use sandboxed iframe for real rendering of custom HTML
+      renderSandboxPreview(s.data.html||'');
+      return; // skip normal pv.innerHTML
+  }
+
+  pv.innerHTML = h;
+  // Hide sandbox for non-custom layouts
+  document.getElementById('sandboxPreview').style.display='none';
+  pv.style.display='flex';
+  runValidation(s);
+}
+
+// ===== Validation Engine =====
+const ALLOWED_CLASSES = [
+  'sub','bq','sm','mets','met-v','met-l','cards2','cards3','card',
+  'split','split-half','split-divider','cols','col','col-l',
+  'vlink','stages-row','stage-item','sn','sd','flow','fstep','farrow',
+  'hrd','stitle','sno','sbg','tag','mermaid',
+  'cr','co','cy','cg','cb','cp','ck',
+  'tg-r','tg-o','tg-y','tg-g','tg-b','tg-p',
+  'contenteditable','editable'
+];
+const BANNED_TAGS = ['script','style','iframe','frame','object','embed','applet','form','input','button','select','textarea','link','meta'];
+const BANNED_ATTRS = ['onclick','onerror','onload','onmouseover','onfocus','onblur','onsubmit','onchange'];
+const BANNED_STYLES = ['position:\\s*fixed','position:\\s*absolute','z-index:\\s*[5-9]','z-index:\\s*\\d{2,}'];
+
+function validateSlideHTML(html){
+  const errors=[];
+  const warnings=[];
+  if(!html||!html.trim()) return {errors:[{id:'empty',msg:'HTML 内容为空'}],warnings:[]};
+
+  // 1. Banned tags
+  BANNED_TAGS.forEach(tag=>{
+    const re=new RegExp('<'+tag+'[\\s>]','gi');
+    if(re.test(html)) errors.push({id:'banned-tag:'+tag,msg:`禁止使用 <${tag}> 标签`,ctx:extractCtx(html,re)});
+  });
+
+  // 2. Banned attributes (event handlers)
+  BANNED_ATTRS.forEach(attr=>{
+    const re=new RegExp('\\s'+attr+'\\s*=','gi');
+    if(re.test(html)) errors.push({id:'banned-attr:'+attr,msg:`禁止使用 ${attr} 事件属性`,ctx:extractCtx(html,re)});
+  });
+
+  // 3. Banned style patterns
+  BANNED_STYLES.forEach(pat=>{
+    const re=new RegExp(pat,'gi');
+    if(re.test(html)) errors.push({id:'banned-style:'+pat,msg:`禁止使用 ${pat.replace(/\\\\s\\*/g,'').replace(/\\\\/g,'')} 样式`,ctx:extractCtx(html,re)});
+  });
+
+  // 4. External URLs (http/https except var(--))
+  const urlRe=/src\s*=\s*["'](https?:\/\/[^"']+)["']/gi;
+  let um;
+  while((um=urlRe.exec(html))!==null){
+    errors.push({id:'external-url',msg:`禁止使用外部URL: ${um[1].substring(0,60)}`,ctx:um[0]});
+  }
+  const hrefRe=/href\s*=\s*["'](https?:\/\/[^"']+)["']/gi;
+  while((um=hrefRe.exec(html))!==null){
+    warnings.push({id:'external-href',msg:`外部链接可能在离线环境不可用: ${um[1].substring(0,60)}`,ctx:um[0]});
+  }
+
+  // 5. Unknown CSS classes
+  const classRe=/class\s*=\s*["']([^"']+)["']/gi;
+  let cm;
+  while((cm=classRe.exec(html))!==null){
+    const classes=cm[1].trim().split(/\s+/);
+    classes.forEach(cls=>{
+      if(cls && !ALLOWED_CLASSES.includes(cls) && !cls.startsWith('contenteditable') && !cls.startsWith('data-')){
+        // Ignore inline style-only classes (common in style attributes)
+        if(!/^[a-z]{1,2}$/.test(cls) && cls.length<30){
+          warnings.push({id:'unknown-class:'+cls,msg:`未识别的CSS类: .${cls}（可能不被框架支持）`,ctx:cm[0]});
+        }
+      }
+    });
+  }
+
+  // 6. Missing clamp() for font-size (accessibility)
+  const fsRe=/font-size\s*:\s*(\d+(?:\.\d+)?)(px|rem|em)(?![\s\S]*clamp)/gi;
+  let fm;
+  while((fm=fsRe.exec(html))!==null){
+    if(parseFloat(fm[1])>14){
+      warnings.push({id:'fixed-fontsize',msg:`建议使用 clamp() 而非固定字号: font-size:${fm[1]}${fm[2]}`,ctx:fm[0]});
+    }
+  }
+
+  // 7. Tag balance check (basic)
+  const openTags=[];
+  const tagRe=/<(\/?)([a-z][a-z0-9]*)[\s>\/]/gi;
+  let tm;
+  while((tm=tagRe.exec(html))!==null){
+    const isClose=tm[1]==='/';
+    const tagName=tm[2].toLowerCase();
+    if(['br','hr','img','input','meta','link'].includes(tagName))continue;
+    if(isClose){
+      const lastOpen=openTags.lastIndexOf(tagName);
+      if(lastOpen===-1){
+        errors.push({id:'unmatched-close:'+tagName,msg:`多余的闭合标签 </${tagName}>`,ctx:extractCtx(html,new RegExp('</'+tagName+'>','i'))});
+      }else{
+        openTags.splice(lastOpen,1);
+      }
+    }else{
+      openTags.push(tagName);
+    }
+  }
+  openTags.forEach(tag=>{
+    warnings.push({id:'unclosed:'+tag,msg:`未闭合的标签 <${tag}>`});
+  });
+
+  return {errors, warnings};
+}
+
+function extractCtx(html,re){
+  const m=html.match(re);
+  if(!m)return'';
+  const idx=html.indexOf(m[0]);
+  return html.substring(Math.max(0,idx-20),Math.min(html.length,idx+m[0].length+20));
+}
+
+function runValidation(s){
+  const panel=document.getElementById('diagPanel');
+  const summary=document.getElementById('diagSummary');
+  const rpanel=document.getElementById('rpanel');
+
+  let html='';
+  if(s.layout==='custom') html=s.data.html||'';
+  else html=generateSlideMD(s,'');
+
+  if(!html.trim()){
+    panel.style.display='none';
+    summary.textContent='';
+    rpanel.classList.remove('has-diag');
+    return;
+  }
+
+  const result=validateSlideHTML(html);
+  const totalErrors=result.errors.length;
+  const totalWarnings=result.warnings.length;
+
+  if(totalErrors===0 && totalWarnings===0){
+    panel.style.display='block';
+    rpanel.classList.add('has-diag');
+    panel.innerHTML=`<div class="diag-head"><span class="diag-ok">✅ 验证通过</span></div><div class="diag-item ok"><span class="dicon">✓</span><span class="dmsg">所有规则检查通过，代码符合框架约束</span></div>`;
+    summary.innerHTML='<span style="color:#69db7c">✓ 无错误</span>';
+  }else{
+    let diagHtml=`<div class="diag-head"><span class="${totalErrors?'diag-err':'diag-warn'}">${totalErrors?'❌ '+totalErrors+' 个错误':'⚠️ '+totalWarnings+' 个警告'}</span>`;
+    if(totalErrors>0){
+      diagHtml+=`<button class="auto-fix-btn" onclick="autoFixErrors()">🔄 发送给AI自动修复</button>`;
+    }
+    diagHtml+=`</div>`;
+
+    result.errors.forEach(e=>{
+      diagHtml+=`<div class="diag-item err"><span class="dicon">✕</span><span class="dmsg">${esc(e.msg)}</span>${e.ctx?`<span class="dctx">${esc(e.ctx)}</span>`:''}</div>`;
+    });
+    result.warnings.forEach(w=>{
+      diagHtml+=`<div class="diag-item warn"><span class="dicon">⚠</span><span class="dmsg">${esc(w.msg)}</span>${w.ctx?`<span class="dctx">${esc(w.ctx)}</span>`:''}</div>`;
+    });
+
+    panel.style.display='block';
+    rpanel.classList.add('has-diag');
+    panel.innerHTML=diagHtml;
+    summary.innerHTML=`<span style="color:${totalErrors?'#ff6b6b':'#ffd43b'}">${totalErrors?'✕ '+totalErrors+'错误':'⚠ '+totalWarnings+'警告'}</span>`;
+  }
+}
+
+// ===== Sandbox Preview (real HTML rendering) =====
+function renderSandboxPreview(html){
+  const pv=document.getElementById('preview');
+  const iframe=document.getElementById('sandboxPreview');
+  pv.style.display='none';
+  iframe.style.display='block';
+
+  // Build a self-contained HTML with the framework CSS
+  const frameHtml=`<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+:root{--font:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;--mono:'SF Mono','Fira Code','Consolas',monospace;--bg:#0a0a14;--bg2:#12121f;--bg3:#1a1a2e;--text:#e8e8f0;--dim:#8888aa;--muted:#555570;--bdr:#2a2a40;--bdr2:#3a3a55;--accent:#4dabf7;}
+*{margin:0;padding:0;box-sizing:border-box;}
+body{width:100%;height:100%;display:flex;flex-direction:column;justify-content:center;align-items:center;background:var(--bg);color:var(--text);font-family:var(--font);overflow:hidden;padding:8px 14px;}
+.sub{font-size:clamp(.82rem,1.3vw,1.02rem);color:var(--dim);line-height:1.6;margin-bottom:2vh;text-align:center;max-width:800px;}
+.bq{font-size:clamp(1rem,1.8vw,1.5rem);font-weight:600;line-height:1.6;border-left:4px solid var(--accent);padding:1.5vh 2vw;margin:1vh 0;text-align:left;max-width:850px;}
+.bq.sm{font-size:clamp(.85rem,1.4vw,1.1rem);font-weight:500;}
+.mets{display:flex;gap:3vw;margin:1vh 0;}
+.met-v{font-size:clamp(2rem,4vw,3.2rem);font-weight:800;line-height:1;}
+.met-l{font-size:clamp(.65rem,1vw,.82rem);color:var(--dim);margin-top:.3vh;}
+.cards2,.cards3{display:grid;gap:1vw;width:100%;}
+.cards2{grid-template-columns:1fr 1fr;}.cards3{grid-template-columns:1fr 1fr 1fr;}
+.card{background:var(--bg2);border:1px solid var(--bdr);border-radius:10px;padding:1.2vw 1.5vw;text-align:left;}
+.card h4{font-size:clamp(.82rem,1.2vw,.95rem);font-weight:700;margin-bottom:.3vh;}
+.card p{font-size:clamp(.72rem,1vw,.88rem);color:var(--dim);line-height:1.5;}
+.split{display:flex;width:100%;max-width:1150px;gap:1.5vw;}
+.split-half{flex:1;display:flex;flex-direction:column;gap:1vh;}
+.split-divider{width:1px;background:var(--bdr);align-self:stretch;margin:0 .3vw;}
+.cols{display:flex;gap:3vw;width:100%;max-width:1150px;align-items:stretch;}
+.col{flex:1;}.col-l{flex:1.2;}
+.vlink{display:inline-flex;padding:.8vh 1.5vw;border-radius:8px;background:var(--bg3);border:1px solid var(--bdr);color:var(--accent);font-size:clamp(.72rem,1vw,.85rem);}
+.stages-row{display:flex;gap:.6vw;width:100%;max-width:1000px;}
+.stage-item{flex:1;padding:1vh .8vw;border-radius:8px;text-align:center;}
+.stage-item .sn{font-size:clamp(.68rem,1vw,.85rem);font-weight:700;}
+.stage-item .sd{font-size:clamp(.58rem,.8vw,.68rem);color:var(--dim);margin-top:.2vh;}
+.flow{display:flex;flex-direction:column;align-items:center;gap:0;max-width:500px;width:100%;}
+.fstep{display:flex;align-items:center;gap:1vw;padding:.8vh 1.2vw;border-radius:8px;font-size:clamp(.72rem,1vw,.85rem);font-weight:600;width:100%;}
+.farrow{color:var(--muted);font-size:1.2rem;padding:.15vh 0;}
+.hrd{width:100%;max-width:1100px;border:none;border-top:1px solid var(--bdr);margin:1vh 0;}
+h1{font-size:clamp(2.2rem,5vw,3.8rem);font-weight:800;text-align:center;}
+h2{font-size:clamp(1.6rem,3.5vw,2.7rem);font-weight:700;text-align:center;}
+h3{font-size:clamp(1.05rem,2vw,1.5rem);font-weight:600;}
+h4{font-size:clamp(.82rem,1.2vw,.95rem);font-weight:700;}
+p{font-size:clamp(.88rem,1.5vw,1.15rem);line-height:1.65;}
+li{font-size:clamp(.88rem,1.5vw,1.15rem);line-height:1.65;}
+ul,ol{padding-left:2vw;}
+table{font-size:clamp(.68rem,1vw,.85rem);border-collapse:collapse;width:100%;}
+th{padding:.6vh .8vw;background:var(--bg3);font-weight:600;color:var(--dim);border-bottom:1px solid var(--bdr);}
+td{padding:.6vh .8vw;border-bottom:1px solid var(--bdr);}
+.cr{color:#ff6b6b;}.co{color:#ffa94d;}.cy{color:#ffd43b;}.cg{color:#69db7c;}.cb{color:#4dabf7;}.cp{color:#9775fa;}.ck{color:#e599f7;}
+.tag{display:inline-block;font-size:clamp(.65rem,.95vw,.8rem);padding:.4vh 1vw;border-radius:6px;font-weight:600;}
+.tg-r{background:#ff6b6b18;color:#ff6b6b;}.tg-o{background:#ffa94d18;color:#ffa94d;}.tg-y{background:#ffd43b18;color:#ffd43b;}
+.tg-g{background:#69db7c18;color:#69db7c;}.tg-b{background:#4dabf718;color:#4dabf7;}.tg-p{background:#9775fa18;color:#9775fa;}
+img{max-width:100%;border-radius:6px;}
+.mermaid{background:var(--bg2);border:1px solid var(--bdr);border-radius:10px;padding:1.5vh 1.5vw;max-width:950px;width:100%;}
+</style></head><body>${html}</body></html>`;
+
+  iframe.srcdoc=frameHtml;
+  // Run validation after rendering
+  runValidation(slides[selIdx]);
+}
+
+// ===== Auto-fix: send errors to LLM =====
+function autoFixErrors(){
+  const s=slides[selIdx];
+  let html='';
+  if(s.layout==='custom') html=s.data.html||'';
+  else html=generateSlideMD(s,'');
+
+  const result=validateSlideHTML(html);
+  if(result.errors.length===0){notify('没有需要修复的错误','ok');return;}
+
+  let errReport='以下代码存在验证错误，请修复：\n\n';
+  result.errors.forEach((e,i)=>{
+    errReport+=`${i+1}. **${e.msg}**${e.ctx?'\n   上下文: `'+e.ctx+'`':''}\n`;
+  });
+  result.warnings.forEach((w,i)=>{
+    errReport+=`⚠ ${i+1}. ${w.msg}${w.ctx?' 上下文: `'+w.ctx+'`':''}\n`;
+  });
+  errReport+='\n--- 原始代码 ---\n```html\n'+html+'\n```\n\n请输出修复后的完整HTML代码。只修复错误，不要改变内容和意图。';
+
+  // Send to chat
+  document.getElementById('chatPanel').classList.add('on');
+  const input=document.getElementById('chatInput');
+  input.value=errReport;
+  sendChat();
+}
+
+// ===== Theme =====
+function toggleTheme(){
+  const t = document.documentElement.getAttribute('data-theme')==='dark'?'light':'dark';
+  document.documentElement.setAttribute('data-theme', t);
+}
+
+// ===== Notification =====
+function notify(msg, type){
+  const el = document.getElementById('notif');
+  el.textContent = msg;
+  el.className = 'notif '+type+' show';
+  setTimeout(()=>{el.className='notif';}, 2500);
+}
+
+// ===== Generate slide.md content =====
+function generateSlideMD(s, dirName){
+  let html = '';
+  html += '<div class="stitle" contenteditable="true"><br></div>';
+
+  switch(s.layout){
+    case 'title':
+      if(s.data.subtitle) html += `<p class="sub" contenteditable="true">${s.data.subtitle}</p>\n`;
+      if(s.data.stats && s.data.stats.length){
+        html += '<div style="display:flex;gap:2.5vw;font-size:clamp(.78rem,1.15vw,.95rem);margin-top:2vh;color:var(--dim);" contenteditable="true">\n';
+        s.data.stats.forEach(st=>{
+          const c = COLORS.find(cc=>cc.id===st.colorId)||COLORS[4];
+          html += `  <span contenteditable="true"><strong class="${c.id}">${st.value}</strong> ${st.label}</span>\n`;
+        });
+        html += '</div>\n';
+      }
+      break;
+
+    case 'metrics':
+      html += '<hr class="hrd">\n';
+      html += '<div class="mets">\n';
+      s.data.items.forEach(m=>{
+        const c = COLORS.find(cc=>cc.id===m.colorId)||COLORS[4];
+        html += `  <div style="text-align:center;"><div class="met-v ${c.id}">${m.value}</div><div class="met-l">${m.label}</div></div>\n`;
+      });
+      html += '</div>\n';
+      html += '<hr class="hrd">\n';
+      break;
+
+    case 'imagegrid':
+      const cols = s.data.cols || 4;
+      html += `<div style="display:grid;grid-template-columns:repeat(${cols},1fr);gap:.6vh .6vw;margin-top:1vh;" contenteditable="true">\n`;
+      (s.data.images||[]).forEach(img=>{
+        html += `  <img src="${img.name}" style="width:100%;height:18vh;object-fit:cover;border-radius:6px;border:1px solid var(--bdr);cursor:zoom-in;">\n`;
+      });
+      html += '</div>\n';
+      if(s.data.vlink) html += `<a class="vlink" style="margin-top:1vh;" contenteditable="true">${s.data.vlink}</a>\n`;
+      break;
+
+    case 'cards':
+      const cc = s.data.cols||3;
+      const cls = cc===2?'cards2':'cards3';
+      html += `<div class="${cls}" style="margin-top:1.5vh;">\n`;
+      s.data.items.forEach(c=>{
+        html += `  <div class="card" style="border-top:3px solid ${c.borderColor||'#4dabf7'};" contenteditable="true"><h4>${c.title}</h4><p>${c.desc}</p></div>\n`;
+      });
+      html += '</div>\n';
+      break;
+
+    case 'split':
+      html += '<div class="split" style="margin-top:1vh;">\n';
+      html += `  <div class="split-half" contenteditable="true">\n    ${s.data.left||''}\n  </div>\n`;
+      html += '  <div class="split-divider"></div>\n';
+      html += `  <div class="split-half" contenteditable="true">\n    ${s.data.right||''}\n  </div>\n`;
+      html += '</div>\n';
+      break;
+
+    case 'blockquote':
+      (s.data.quotes||[]).forEach(q=>{
+        const fs = q.size==='xlarge'?'clamp(1.5rem,3vw,2.8rem)':q.size==='large'?'clamp(1.3rem,2.5vw,2.2rem)':'clamp(1rem,1.8vw,1.5rem)';
+        html += `<div class="bq" style="font-size:${fs};border-left-width:5px;max-width:850px;text-align:center;border-left-color:${q.color||'#4dabf7'};" contenteditable="true">\n  ${q.text}\n</div>\n`;
+      });
+      if(s.data.footer){
+        html += `<div style="margin-top:5vh;font-size:clamp(.75rem,1.1vw,.9rem);color:var(--dim);max-width:650px;text-align:center;" contenteditable="true">\n  ${s.data.footer}\n</div>\n`;
+      }
+      break;
+
+    case 'flow':
+      html += '<div class="flow">\n';
+      s.data.steps.forEach((st,i)=>{
+        html += `  <div class="fstep" contenteditable="true">${st}</div>\n`;
+        if(i<s.data.steps.length-1) html += '  <div class="farrow">▼</div>\n';
+      });
+      html += '</div>\n';
+      break;
+
+    case 'stages':
+      html += '<div class="stages-row">\n';
+      s.data.items.forEach(st=>{
+        html += `  <div class="stage-item"><div class="sn">${st.name}</div><div class="sd">${st.desc}</div></div>\n`;
+      });
+      html += '</div>\n';
+      break;
+
+    case 'custom':
+      html += s.data.html || '';
+      break;
+  }
+
+  return html.trim();
+}
+
+// ===== Export ZIP =====
+async function exportZIP(){
+  const zip = new JSZip();
+  const pptTitle = document.getElementById('pptTitle').value || 'My Presentation';
+  const pptSubtitle = document.getElementById('pptSubtitle').value || '';
+
+  // manifest.json
+  const manifestSlides = slides.map((s,i)=>{
+    const dirName = String(i).padStart(2,'0') + '-' + (s.title||('slide-'+(i+1))).replace(/[^a-zA-Z0-9\u4e00-\u9fff_-]/g,'').substring(0,30);
+    return {dir: dirName, title: s.title};
+  });
+  const manifest = {title: pptTitle, subtitle: pptSubtitle, slides: manifestSlides};
+  zip.file('manifest.json', JSON.stringify(manifest, null, 2));
+
+  // Copy slides.html from same directory
+  let slidesHtml = '';
+  try{
+    const resp = await fetch('slides.html');
+    slidesHtml = await resp.text();
+  }catch(e){
+    notify('无法读取 slides.html，请确保同目录下有此文件','err');
+    return;
+  }
+  zip.file('slides.html', slidesHtml);
+
+  // Copy JS libraries if available
+  try{ const r = await fetch('html2canvas.min.js'); if(r.ok) zip.file('html2canvas.min.js', await r.text()); }catch(e){}
+  try{ const r = await fetch('pptxgen.bundle.js'); if(r.ok) zip.file('pptxgen.bundle.js', await r.text()); }catch(e){}
+
+  // Cover and BG
+  if(coverData){
+    const b64 = coverData.data.split(',')[1];
+    zip.file('cover.jpg', b64, {base64: true});
+  }
+  if(bgData){
+    const b64 = bgData.data.split(',')[1];
+    zip.file('bg.jpg', b64, {base64: true});
+  }
+
+  // Slides
+  slides.forEach((s,i)=>{
+    const dirName = manifestSlides[i].dir;
+    const mdContent = generateSlideMD(s, dirName);
+    zip.file(dirName + '/slide.md', mdContent);
+
+    // Images for this slide
+    if(s.layout==='imagegrid' && s.data.images){
+      s.data.images.forEach(img=>{
+        const b64 = img.data.split(',')[1];
+        zip.file(dirName + '/' + img.name, b64, {base64: true});
+      });
+    }
+  });
+
+  // Generate and download
+  try{
+    const blob = await zip.generateAsync({type:'blob'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = pptTitle.replace(/[^a-zA-Z0-9\u4e00-\u9fff _-]/g,'') + '.zip';
+    a.click();
+    URL.revokeObjectURL(url);
+    notify('导出成功！','ok');
+  }catch(e){
+    notify('导出失败: '+e.message,'err');
+  }
+}
+
+// ===== Drag & drop for images =====
+document.addEventListener('dragover', e=>e.preventDefault());
+document.addEventListener('drop', e=>{
+  e.preventDefault();
+  if(!e.dataTransfer.files.length) return;
+  const s = slides[selIdx];
+  if(s.layout!=='imagegrid') return;
+  const files = Array.from(e.dataTransfer.files).filter(f=>f.type.startsWith('image/'));
+  if(!files.length) return;
+  let pending = files.length;
+  files.forEach(f=>{
+    const reader = new FileReader();
+    reader.onload = function(ev){
+      s.data.images.push({name:f.name, data:ev.target.result});
+      if(--pending===0){ renderEditor(); renderPreview(); save(); }
+    };
+    reader.readAsDataURL(f);
+  });
+});
+
+// ===== Auto-save title/subtitle =====
+document.getElementById('pptTitle').addEventListener('input', save);
+document.getElementById('pptSubtitle').addEventListener('input', save);
+
+// ===== LLM Settings =====
+function openSettings(){
+  const s=JSON.parse(localStorage.getItem('llm_settings')||'{}');
+  document.getElementById('llmModel').value=s.model||'';
+  document.getElementById('llmUrl').value=s.url||'';
+  document.getElementById('llmKey').value=s.key||'';
+  document.getElementById('settingsModal').classList.add('on');
+  document.getElementById('llmModel').focus();
+}
+function closeSettings(){document.getElementById('settingsModal').classList.remove('on');}
+function saveSettings(){
+  const s={model:document.getElementById('llmModel').value.trim(),
+    url:document.getElementById('llmUrl').value.trim().replace(/\/$/,''),
+    key:document.getElementById('llmKey').value.trim()};
+  localStorage.setItem('llm_settings',JSON.stringify(s));
+  closeSettings();
+  notify('LLM 设置已保存','ok');
+}
+function getLLMSettings(){
+  const s=JSON.parse(localStorage.getItem('llm_settings')||'{}');
+  if(!s.model||!s.url||!s.key){openSettings();return null;}
+  return s;
+}
+
+// ===== System Prompt — Dual Mode Agent =====
+const SYSTEM_PROMPT = `你是幻灯片内容生成引擎。用户描述想要的幻灯片内容，你生成幻灯片代码。
+
+## 输出模式（二选一）
+
+### 模式A：JSON 模板调用（优先，成功率 ~100%）
+输出一个 JSON 对象，系统自动调用模板函数生成 HTML。只需填内容，不需写 HTML。
+
+\`\`\`json
+{"tpl":"模板名", "data":{...}}
+\`\`\`
+
+可用模板：
+
+**1. cards — 卡片要点（最常用）**
+\`\`\`json
+{"tpl":"cards","data":{"cols":3,"items":[
+  {"title":"标题","desc":"描述","color":"#ff6b6b"},
+  {"title":"标题","desc":"描述","color":"#ffa94d"}
+]}}
+\`\`\`
+cols: 2 或 3。颜色示例: #ff6b6b(红) #ffa94d(橙) #ffd43b(黄) #69db7c(绿) #4dabf7(蓝) #9775fa(紫)
+
+**2. metrics — 数据指标**
+\`\`\`json
+{"tpl":"metrics","data":{"items":[
+  {"value":"121K","label":"行代码","color":"cg"},
+  {"value":"328","label":"文件","color":"co"}
+]}}
+\`\`\`
+color 用颜色类名: cr/co/cy/cg/cb/cp/ck
+
+**3. blockquote — 引用金句**
+\`\`\`json
+{"tpl":"blockquote","data":{"quotes":[
+  {"text":"引用文字","size":"large","color":"#ff6b6b"}
+],"footer":"底部说明文字（可选）"}}
+\`\`\`
+size: normal / large / xlarge
+
+**4. split — 双栏对比**
+\`\`\`json
+{"tpl":"split","data":{"left":{"title":"左栏标题","content":"左栏内容","color":"cb"},"right":{"title":"右栏标题","content":"右栏内容","color":"cg"}}}
+\`\`\`
+
+**5. flow — 流程步骤**
+\`\`\`json
+{"tpl":"flow","data":{"steps":["步骤一","步骤二","步骤三"]}}
+\`\`\`
+
+**6. stages — 水平阶段时间线**
+\`\`\`json
+{"tpl":"stages","data":{"items":[
+  {"name":"阶段名","desc":"描述"},
+  {"name":"阶段名","desc":"描述"}
+]}}
+\`\`\`
+
+**7. title — 标题页**
+\`\`\`json
+{"tpl":"title","data":{"subtitle":"副标题","stats":[
+  {"value":"100","label":"标签","color":"cb"}
+]}}
+\`\`\`
+
+**8. list — 列表页**
+\`\`\`json
+{"tpl":"list","data":{"items":["要点一","要点二","要点三"]}}
+\`\`\`
+
+**多页输出：** 用 JSON 数组
+\`\`\`json
+[
+  {"tpl":"title","data":{"subtitle":"副标题"}},
+  {"tpl":"cards","data":{"cols":3,"items":[...]}}
+]
+\`\`\`
+
+### 模式B：自由 HTML（复杂/创意布局时使用）
+当内容结构无法匹配任何模板时，直接输出 HTML 代码块。
+
+**必须遵守的规则：**
+- 只输出 HTML 片段，不要 <html><head><body><style><script>
+- 只用这些 CSS 类: sub bq mets met-v met-l cards2 cards3 card split split-half split-divider cols col vlink flow fstep stages-row stage-item hrd cr co cy cg cb cp ck tg-r tg-o tg-y tg-g tg-b tg-p
+- 字号用 clamp(): 标题 clamp(2rem,4vw,3rem)，正文 clamp(.88rem,1.5vw,1.15rem)
+- 颜色用 CSS 变量: var(--text) var(--dim) var(--bg2) var(--bg3) var(--bdr) var(--accent)
+- 禁止: <script> position:fixed position:absolute 外部URL 自定义类名
+
+**输出前自检清单（逐项确认）：**
+1. ☐ 没有用 <script>/<style> 标签？
+2. ☐ 没有用 position:fixed/absolute？
+3. ☐ 所有 class 都在允许列表中？
+4. ☐ 字号用了 clamp()？
+5. ☐ 颜色用了 CSS 变量或预定义颜色类？
+6. ☐ 没有 src="http..." 外部图片链接？
+7. ☐ 标签都正确闭合？
+如果任一项不通过，先修复再输出。
+
+## 选择策略
+- 能用模式A（JSON）就用模式A → 保证100%合规
+- 需要创意/混合布局时才用模式B → 系统会自动验证和修复
+- 多页内容用 JSON 数组
+
+## 输出要求
+- 模式A只输出 JSON，不要多余解释
+- 模式B只输出 \`\`\`html 代码块，不要多余解释
+- 多页用 <!-- PAGE BREAK --> 分隔（模式B）或 JSON 数组（模式A）
+
+## 内嵌测试工具（系统自动执行）
+
+当你输出代码后，系统会自动调用以下工具进行验证：
+
+**Tool 1: validate** — HTML结构验证
+- 检测禁止标签: script, style, iframe, form, input
+- 检测禁止样式: position:fixed, position:absolute
+- 检测外部URL: src="http..."
+- 检测未知CSS类
+- 检测未闭合标签
+
+**Tool 2: render_template** — 模板渲染验证
+- 验证JSON模板能否成功渲染为HTML
+
+**Tool 3: sandbox_render** — 沙盒渲染验证
+- 在隔离iframe中实际渲染HTML
+- 验证DOM元素数量、文字内容长度
+
+**Tool 4: run_tests** — 批量测试
+- 输入测试用例: \`{tests:[{name, html, expectNoErrors, mustContain:[], mustNotContain:[]}]\`}
+- 自动执行所有断言，返回通过/失败
+
+**Tool 5: apply_slide** — 应用到幻灯片
+- 将HTML写入指定幻灯片
+- 自动触发验证
+
+## 自动修复循环
+
+如果验证失败，系统会自动：
+1. 将错误信息+原始代码回传给你
+2. 你输出修复后的代码
+3. 系统再次验证
+4. 最多循环 3 轮
+
+你不需要做额外的事情，只需在收到错误时修复代码重新输出即可。`;
+
+// ===== Template API Engine =====
+const TEMPLATES = {
+  cards(d){
+    const cols=d.cols||3;
+    const cls=cols===2?'cards2':'cards3';
+    let h=`<div class="${cls}">\n`;
+    (d.items||[]).forEach((c,i)=>{
+      h+=`  <div class="card" style="border-top:3px solid ${c.color||'#4dabf7'}"><h4>${c.title||''}</h4><p>${c.desc||''}</p></div>\n`;
+    });
+    h+='</div>';
+    return h;
+  },
+  metrics(d){
+    let h='<hr class="hrd">\n<div class="mets">\n';
+    (d.items||[]).forEach(m=>{
+      h+=`  <div style="text-align:center;"><div class="met-v ${m.color||'cb'}">${m.value||''}</div><div class="met-l">${m.label||''}</div></div>\n`;
+    });
+    h+='</div>\n<hr class="hrd">';
+    return h;
+  },
+  blockquote(d){
+    let h='';
+    (d.quotes||[]).forEach(q=>{
+      const fs=q.size==='xlarge'?'clamp(1.5rem,3vw,2.8rem)':q.size==='large'?'clamp(1.3rem,2.5vw,2.2rem)':'clamp(1rem,1.8vw,1.5rem)';
+      h+=`<div class="bq" style="font-size:${fs};border-left-width:5px;max-width:850px;text-align:center;border-left-color:${q.color||'#4dabf7'}">\n  ${q.text||''}\n</div>\n`;
+    });
+    if(d.footer) h+=`<div style="margin-top:3vh;font-size:clamp(.75rem,1.1vw,.9rem);color:var(--dim);max-width:650px;text-align:center">\n  ${d.footer}\n</div>\n`;
+    return h;
+  },
+  split(d){
+    const L=d.left||{},R=d.right||{};
+    return `<div class="split">\n  <div class="split-half">\n    <div style="padding:1.2vh 1.2vw;background:var(--bg2);border:1px solid var(--bdr);border-radius:8px">\n      <h4 class="${L.color||'cb'}">${L.title||''}</h4>\n      <p>${L.content||''}</p>\n    </div>\n  </div>\n  <div class="split-divider"></div>\n  <div class="split-half">\n    <div style="padding:1.2vh 1.2vw;background:var(--bg2);border:1px solid var(--bdr);border-radius:8px">\n      <h4 class="${R.color||'cg'}">${R.title||''}</h4>\n      <p>${R.content||''}</p>\n    </div>\n  </div>\n</div>`;
+  },
+  flow(d){
+    let h='<div class="flow">\n';
+    (d.steps||[]).forEach((s,i)=>{
+      h+=`  <div class="fstep">${s}</div>\n`;
+      if(i<d.steps.length-1) h+='  <div class="farrow">▼</div>\n';
+    });
+    h+='</div>';
+    return h;
+  },
+  stages(d){
+    let h='<div class="stages-row">\n';
+    (d.items||[]).forEach(s=>{
+      h+=`  <div class="stage-item"><div class="sn">${s.name||''}</div><div class="sd">${s.desc||''}</div></div>\n`;
+    });
+    h+='</div>';
+    return h;
+  },
+  title(d){
+    let h='';
+    if(d.subtitle) h+=`<p class="sub">${d.subtitle}</p>\n`;
+    if(d.stats&&d.stats.length){
+      h+='<div style="display:flex;gap:2.5vw;font-size:clamp(.78rem,1.15vw,.95rem);margin-top:2vh;color:var(--dim)">\n';
+      d.stats.forEach(s=>{
+        h+=`  <span><strong class="${s.color||'cb'}">${s.value||''}</strong> ${s.label||''}</span>\n`;
+      });
+      h+='</div>\n';
+    }
+    return h;
+  },
+  list(d){
+    let h='<div class="cols" style="max-width:800px">\n';
+    (d.items||[]).forEach(item=>{
+      h+=`  <div class="col" style="padding:.8vh 1vw;background:var(--bg2);border:1px solid var(--bdr);border-radius:6px;margin-bottom:.5vh;font-size:clamp(.88rem,1.3vw,1.05rem)">\n    ${item}\n  </div>\n`;
+    });
+    h+='</div>';
+    return h;
+  }
+};
+
+function renderTemplate(tplObj){
+  const fn=TEMPLATES[tplObj.tpl];
+  if(!fn) return null;
+  try{ return fn(tplObj.data||{}); }catch(e){ return null; }
+}
+
+// ===== Internal Tool Registry =====
+// These are the "tools" the mini agent can invoke.
+// LLM describes intent in JSON, our runtime executes the actual function.
+const AGENT_TOOLS = {
+  // Tool 1: Validate HTML against framework rules
+  // Input: {html: string}  Output: {passed: bool, errors: [...], warnings: [...]}
+  validate(args){
+    return validateSlideHTML(args.html||'');
+  },
+
+  // Tool 2: Render a template to HTML
+  // Input: {tpl: string, data: object}  Output: {html: string|null}
+  render_template(args){
+    const html = renderTemplate(args);
+    return {html, tpl:args.tpl, success:!!html};
+  },
+
+  // Tool 3: Render HTML in sandbox iframe and check for visual output
+  // Input: {html: string}  Output: {rendered: bool, hasContent: bool, elementCount: number}
+  sandbox_render(args){
+    const iframe = document.getElementById('sandboxPreview');
+    if(!iframe) return {rendered:false, error:'no iframe'};
+    const doc = iframe.contentDocument || iframe.contentWindow.document;
+    if(!doc) return {rendered:false, error:'no document access'};
+    doc.open();
+    doc.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+:root{--font:sans-serif;--bg:#0a0a14;--bg2:#12121f;--bg3:#1a1a2e;--text:#e8e8f0;--dim:#8888aa;--muted:#555570;--bdr:#2a2a40;--accent:#4dabf7;}
+*{margin:0;padding:0;box-sizing:border-box;}body{display:flex;flex-direction:column;justify-content:center;align-items:center;background:var(--bg);color:var(--text);font-family:var(--font);padding:10px;}
+.sub{font-size:12px;color:var(--dim);text-align:center;}.bq{font-size:16px;font-weight:600;border-left:4px solid var(--accent);padding:8px 12px;margin:6px 0;}
+.mets{display:flex;gap:20px;justify-content:center;}.met-v{font-size:24px;font-weight:800;}.met-l{font-size:10px;color:var(--dim);}
+.cards2,.cards3{display:grid;gap:8px;width:100%;}.cards2{grid-template-columns:1fr 1fr;}.cards3{grid-template-columns:1fr 1fr 1fr;}
+.card{background:var(--bg2);border:1px solid var(--bdr);border-radius:8px;padding:8px;}.card h4{font-size:12px;font-weight:700;margin-bottom:4px;}.card p{font-size:10px;color:var(--dim);}
+.split{display:flex;gap:10px;width:100%;}.split-half{flex:1;background:var(--bg2);border:1px solid var(--bdr);border-radius:8px;padding:8px;}
+.split-divider{width:1px;background:var(--bdr);}.flow{display:flex;flex-direction:column;align-items:center;gap:2px;width:80%;}.fstep{padding:4px 8px;border-radius:4px;background:var(--bg2);border:1px solid var(--bdr);width:100%;text-align:center;font-size:11px;}
+.stages-row{display:flex;gap:6px;width:100%;}.stage-item{flex:1;text-align:center;padding:6px;border-radius:6px;background:var(--bg2);}
+.stage-item .sn{font-size:11px;font-weight:700;}.stage-item .sd{font-size:9px;color:var(--dim);}
+.vlink{display:inline-block;padding:4px 10px;border-radius:6px;background:var(--bg3);border:1px solid var(--bdr);color:var(--accent);font-size:10px;}
+hrd{border:none;border-top:1px solid var(--bdr);margin:6px 0;}
+.cr{color:#ff6b6b;}.co{color:#ffa94d;}.cy{color:#ffd43b;}.cg{color:#69db7c;}.cb{color:#4dabf7;}.cp{color:#9775fa;}.ck{color:#e599f7;}
+img{max-width:100%;border-radius:4px;}
+</style></head><body>${args.html||''}</body></html>`);
+    doc.close();
+    const els = doc.body ? doc.body.querySelectorAll('*').length : 0;
+    const text = doc.body ? doc.body.textContent.trim() : '';
+    return {rendered:true, hasContent:text.length>0, elementCount:els, textLength:text.length};
+  },
+
+  // Tool 4: Run structured test cases
+  // Input: {tests: [{name, html, expectNoErrors: bool, mustContain: [string], mustNotContain: [string]}]}
+  // Output: {results: [{name, passed, failures: [string]}], allPassed: bool}
+  run_tests(args){
+    const results = (args.tests||[]).map(tc => {
+      const failures = [];
+      // Structural validation
+      const vr = validateSlideHTML(tc.html||'');
+      if(tc.expectNoErrors && vr.errors.length>0){
+        vr.errors.forEach(e => failures.push('ERROR: '+e.msg));
+      }
+      // Content assertions
+      (tc.mustContain||[]).forEach(s => {
+        if(!(tc.html||'').includes(s)) failures.push('mustContain: missing "'+s+'"');
+      });
+      (tc.mustNotContain||[]).forEach(s => {
+        if((tc.html||'').includes(s)) failures.push('mustNotContain: found "'+s+'"');
+      });
+      return {name:tc.name||'unnamed', passed:failures.length===0, failures};
+    });
+    return {results, allPassed:results.every(r=>r.passed)};
+  },
+
+  // Tool 5: Apply HTML to current slide
+  // Input: {html: string, slideIndex?: number}
+  // Output: {applied: bool, slideIndex: number, validation: ValidationResult}
+  apply_slide(args){
+    const idx = args.slideIndex!=null ? Math.min(args.slideIndex, slides.length-1) : selIdx;
+    slides[idx].layout='custom';
+    slides[idx].data={html:args.html||''};
+    if(idx===selIdx){
+      document.getElementById('layoutSelect').value='custom';
+      renderEditor();
+    }
+    const vr = validateSlideHTML(args.html||'');
+    return {applied:true, slideIndex:idx, validation:vr};
+  }
+};
+
+// Execute a tool call from LLM
+function executeTool(toolName, args){
+  const fn = AGENT_TOOLS[toolName];
+  if(!fn) return {error:'Unknown tool: '+toolName, available:Object.keys(AGENT_TOOLS)};
+  try{ return fn(args||{}); }catch(e){ return {error:e.message}; }
+}
+
+// ===== Agent Loop =====
+// Orchestrates: LLM generates → tools execute → validate → fix if needed
+const MAX_FIX_ROUNDS = 3;
+
+async function agentLoop(userPrompt, onProgress){
+  const settings = getLLMSettings();
+  if(!settings) return {success:false, error:'请先配置LLM设置'};
+
+  let round = 0;
+  let lastHtml = '';
+  let context = userPrompt;
+
+  while(round < MAX_FIX_ROUNDS){
+    round++;
+    if(onProgress) onProgress('round', round, lastHtml ? '验证修复中...' : '生成中...');
+
+    // Build messages
+    const sysMsg = SYSTEM_PROMPT + '\n\n## 当前任务\n' + context;
+    const msgs = [{role:'system',content:sysMsg}];
+    // Add existing slides context
+    let slideCtx = '演示共 '+slides.length+' 页：';
+    slides.forEach((s,i)=>{ slideCtx += '\n  第'+(i+1)+'页: ['+LAYOUTS[s.layout].label+'] '+(s.title||''); });
+    msgs.push({role:'user',content:userPrompt+'\n\n上下文: '+slideCtx});
+
+    // Call LLM
+    const resp = await callLLM(settings, msgs);
+    if(!resp.success) return resp;
+    const text = resp.text;
+
+    // Parse response: try JSON templates first
+    const tplObjs = parseJSONTemplates(text);
+    if(tplObjs && tplObjs.length>0){
+      // Mode A: JSON templates
+      const allResults = [];
+      let allPassed = true;
+      tplObjs.forEach(tpl => {
+        const html = renderTemplate(tpl);
+        if(!html){ allPassed=false; allResults.push({tpl:tpl.tpl,error:'render failed'}); return; }
+        const vr = validateSlideHTML(html);
+        if(vr.errors.length>0) allPassed=false;
+        allResults.push({tpl:tpl.tpl, html, validation:vr});
+      });
+
+      if(allPassed){
+        if(onProgress) onProgress('success', round, '所有模板验证通过');
+        return {success:true, mode:'json', slides:allResults, rounds:round};
+      }else{
+        // Build fix context
+        const errLines = allResults.filter(r=>r.validation&&r.validation.errors.length>0).map(r =>
+          '模板 "'+r.tpl+'" 错误: '+r.validation.errors.map(e=>e.msg).join('; ')
+        ).join('\n');
+        context = userPrompt + '\n\n## 上一轮生成的代码有验证错误，请修复：\n' + errLines + '\n\n请重新输出完整的JSON。';
+        lastHtml = allResults.map(r=>r.html).join('\n');
+        continue;
+      }
+    }else{
+      // Mode B: Free HTML
+      const codeBlocks = extractHTML(text);
+      if(codeBlocks.length===0){
+        if(onProgress) onProgress('fail', round, '未检测到有效代码');
+        return {success:false, error:'LLM未返回有效代码', rounds:round};
+      }
+      const html = codeBlocks[0];
+      lastHtml = html;
+      const vr = validateSlideHTML(html);
+      if(vr.errors.length===0){
+        if(onProgress) onProgress('success', round, 'HTML验证通过');
+        return {success:true, mode:'html', html, validation:vr, rounds:round};
+      }else{
+        // Build fix context with specific errors
+        const errList = vr.errors.map((e,i)=>(i+1)+'. '+e.msg+(e.ctx?' (上下文: '+e.ctx+')':'')).join('\n');
+        context = userPrompt + '\n\n## 上一轮生成的HTML有 '+vr.errors.length+' 个验证错误，请修复：\n'+errList+
+          '\n\n--- 原始代码 ---\n```html\n'+html+'\n```\n\n请输出修复后的完整HTML。';
+        continue;
+      }
+    }
+  }
+
+  // Max rounds reached
+  if(lastHtml){
+    if(onProgress) onProgress('partial', round, '达到最大修复轮数，使用最终结果');
+    return {success:true, mode:'html', html:lastHtml, rounds:round, note:'达到最大修复轮数('+MAX_FIX_ROUNDS+')'};
+  }
+  return {success:false, error:'生成失败，达到最大修复轮数', rounds:round};
+}
+
+// Low-level LLM call (non-streaming for agent loop)
+async function callLLM(settings, msgs){
+  const targetUrl = settings.url+'/chat/completions';
+  try{
+    let resp;
+    try{
+      resp=await fetch('/api/llm-proxy',{
+        method:'POST',
+        headers:{'Authorization':'Bearer '+settings.key,'Content-Type':'application/json','X-Target-URL':targetUrl},
+        body:JSON.stringify({model:settings.model,messages:msgs,stream:false})
+      });
+      if(!resp.ok) throw new Error('proxy returned '+resp.status);
+    }catch(e){
+      resp=await fetch(targetUrl,{
+        method:'POST',
+        headers:{'Authorization':'Bearer '+settings.key,'Content-Type':'application/json'},
+        body:JSON.stringify({model:settings.model,messages:msgs,stream:false})
+      });
+    }
+    if(!resp.ok){const t=await resp.text();return {success:false,error:'API错误 '+resp.status+': '+t.substring(0,200)};}
+    const j=await resp.json();
+    const text=j.choices&&j.choices[0]&&j.choices[0].message&&j.choices[0].message.content||'';
+    if(!text) return {success:false,error:'LLM返回空内容'};
+    return {success:true,text};
+  }catch(e){return {success:false,error:e.message};}
+}
+
+// Try to parse LLM output as JSON template calls
+function parseJSONTemplates(text){
+  // Strip markdown code fences
+  let clean=text.replace(/```(?:json)?\s*/gi,'').replace(/```/g,'').trim();
+  // Try direct parse
+  try{
+    const obj=JSON.parse(clean);
+    if(Array.isArray(obj)) return obj.map(o=>o.tpl?o:null).filter(Boolean);
+    if(obj.tpl) return [obj];
+  }catch(e){}
+  // Try to find JSON object/array in text
+  const jsonMatch=text.match(/\{[\s\S]*"tpl"\s*:\s*"[^"]+"[\s\S]*\}/);
+  if(jsonMatch){
+    try{
+      const obj=JSON.parse(jsonMatch[0]);
+      if(obj.tpl) return [obj];
+    }catch(e){}
+  }
+  const arrMatch=text.match(/\[[\s\S]*"tpl"\s*:\s*"[^"]+"[\s\S]*\]/);
+  if(arrMatch){
+    try{
+      const arr=JSON.parse(arrMatch[0]);
+      if(Array.isArray(arr)) return arr.filter(o=>o&&o.tpl);
+    }catch(e){}
+  }
+  return null;
+}
+
+// ===== Chat =====
+let chatHistory=[];
+
+function toggleChat(){document.getElementById('chatPanel').classList.toggle('on');}
+
+function addChatMsg(role, text){
+  const d=document.createElement('div');
+  d.className='chat-msg '+role;
+  d.textContent=text;
+  const c=document.getElementById('chatMsgs');
+  c.appendChild(d);
+  c.scrollTop=c.scrollHeight;
+}
+
+function addApplyButton(container, slideObj, label){
+  const btn=document.createElement('button');
+  btn.className='apply-btn';
+  btn.textContent=label||'✅ 应用到当前页';
+  btn.onclick=function(){
+    if(slideObj._mode==='json'){
+      // Map template names to internal layout names
+      const layoutMap={cards:'cards',metrics:'metrics',blockquote:'blockquote',split:'split',flow:'flow',stages:'stages',title:'title',list:'custom'};
+      const mappedLayout=layoutMap[slideObj.tpl]||'custom';
+      slides[selIdx].layout=mappedLayout;
+      document.getElementById('layoutSelect').value=mappedLayout;
+      // Convert template data to editor-compatible format
+      if(mappedLayout==='split'&&slideObj.data){
+        // split: LLM returns {left:{title,content,color}, right:{...}}
+        // editor expects {left:"HTML string", right:"HTML string"}
+        const L=slideObj.data.left||{}, R=slideObj.data.right||{};
+        slides[selIdx].data={
+          left:'<div style="padding:1.2vh 1.2vw;background:var(--bg2);border:1px solid var(--bdr);border-radius:8px">\n  <h4 class="'+(L.color||'cb')+'">'+(L.title||'')+'</h4>\n  <p>'+(L.content||'')+'</p>\n</div>',
+          right:'<div style="padding:1.2vh 1.2vw;background:var(--bg2);border:1px solid var(--bdr);border-radius:8px">\n  <h4 class="'+(R.color||'cg')+'">'+(R.title||'')+'</h4>\n  <p>'+(R.content||'')+'</p>\n</div>'
+        };
+      }else if(mappedLayout==='custom'){
+        slides[selIdx].data={html:renderTemplate(slideObj)||''};
+      }else{
+        slides[selIdx].data=slideObj.data;
+      }
+    }else{
+      // Free HTML
+      slides[selIdx].layout='custom';
+      slides[selIdx].data={html:slideObj.html};
+      document.getElementById('layoutSelect').value='custom';
+    }
+    renderEditor(); renderPreview(); renderList(); save();
+    // Auto-validate after apply
+    const s=slides[selIdx];
+    let html=s.layout==='custom'?(s.data.html||''):generateSlideMD(s,'');
+    const result=validateSlideHTML(html);
+    if(result.errors.length>0){
+      notify('已应用，但有 '+result.errors.length+' 个验证错误','err');
+    }else{
+      notify('已应用到第'+(selIdx+1)+'页','ok');
+    }
+  };
+  container.appendChild(btn);
+  return btn;
+}
+
+function addNewSlideButton(container, slideObj){
+  const btn=document.createElement('button');
+  btn.className='apply-btn';
+  btn.textContent='📄 应用并新建下一页';
+  btn.onclick=function(){
+    // Apply to current
+    if(slideObj._mode==='json'){
+      const layoutMap={cards:'cards',metrics:'metrics',blockquote:'blockquote',split:'split',flow:'flow',stages:'stages',title:'title',list:'custom'};
+      slides[selIdx].layout=layoutMap[slideObj.tpl]||'custom';
+      if(slides[selIdx].layout==='custom'){
+        slides[selIdx].data={html:renderTemplate(slideObj)||''};
+      }else if(slides[selIdx].layout==='split'&&slideObj.data){
+        const L=slideObj.data.left||{}, R=slideObj.data.right||{};
+        slides[selIdx].data={
+          left:'<div style="padding:1.2vh 1.2vw;background:var(--bg2);border:1px solid var(--bdr);border-radius:8px">\n  <h4 class="'+(L.color||'cb')+'">'+(L.title||'')+'</h4>\n  <p>'+(L.content||'')+'</p>\n</div>',
+          right:'<div style="padding:1.2vh 1.2vw;background:var(--bg2);border:1px solid var(--bdr);border-radius:8px">\n  <h4 class="'+(R.color||'cg')+'">'+(R.title||'')+'</h4>\n  <p>'+(R.content||'')+'</p>\n</div>'
+        };
+      }else{
+        slides[selIdx].data=slideObj.data;
+      }
+    }else{
+      slides[selIdx].layout='custom';
+      slides[selIdx].data={html:slideObj.html};
+    }
+    save();
+    // Add new slide
+    addSlide();
+    notify('已创建新页','ok');
+  };
+  container.appendChild(btn);
+}
+
+async function sendChat(){
+  const input=document.getElementById('chatInput');
+  const q=input.value.trim();
+  if(!q)return;
+  input.value='';
+  addChatMsg('user',q);
+  const settings=getLLMSettings();
+  if(!settings){addChatMsg('error','请先配置 LLM 设置（点击顶部 ⚙️ 按钮）');return;}
+
+  let context='当前正在编辑第 '+(selIdx+1)+' 页，布局: '+LAYOUTS[slides[selIdx].layout].label;
+  if(slides[selIdx].title) context+='，标题: '+slides[selIdx].title;
+  context+='\n\n整个演示共 '+slides.length+' 页：';
+  slides.forEach((s,i)=>{
+    context+='\n  第'+(i+1)+'页: ['+LAYOUTS[s.layout].label+'] '+(s.title||'（无标题）');
+  });
+
+  chatHistory.push({role:'user',content:q});
+  const msgs=[{role:'system',content:SYSTEM_PROMPT+'\n\n---当前编辑上下文---\n'+context}];
+  chatHistory.slice(-10).forEach(m=>msgs.push(m));
+
+  try{
+    const targetUrl=settings.url+'/chat/completions';
+    let resp;
+    try{
+      resp=await fetch('/api/llm-proxy',{
+        method:'POST',
+        headers:{'Authorization':'Bearer '+settings.key,'Content-Type':'application/json','X-Target-URL':targetUrl},
+        body:JSON.stringify({model:settings.model,messages:msgs,stream:true})
+      });
+      if(!resp.ok) throw new Error('proxy returned '+resp.status);
+    }catch(proxyErr){
+      resp=await fetch(targetUrl,{
+        method:'POST',
+        headers:{'Authorization':'Bearer '+settings.key,'Content-Type':'application/json'},
+        body:JSON.stringify({model:settings.model,messages:msgs,stream:true})
+      });
+    }
+    if(!resp.ok){const t=await resp.text();addChatMsg('error','API错误: '+resp.status+' '+t.substring(0,200));return;}
+    const reader=resp.body.getReader();
+    const decoder=new TextDecoder();
+    let assistantMsg='';
+    const msgEl=document.createElement('div');
+    msgEl.className='chat-msg assistant';
+    document.getElementById('chatMsgs').appendChild(msgEl);
+    while(true){
+      const{done,value}=await reader.read();
+      if(done)break;
+      const chunk=decoder.decode(value,{stream:true});
+      const lines=chunk.split('\n');
+      for(const line of lines){
+        if(!line.startsWith('data: '))continue;
+        const data=line.slice(6).trim();
+        if(data==='[DONE]')break;
+        try{
+          const j=JSON.parse(data);
+          const delta=j.choices&&j.choices[0]&&j.choices[0].delta;
+          if(delta&&delta.content){assistantMsg+=delta.content;msgEl.textContent=assistantMsg;
+            document.getElementById('chatMsgs').scrollTop=document.getElementById('chatMsgs').scrollHeight;}
+        }catch(e){}
+      }
+    }
+    if(assistantMsg){
+      chatHistory.push({role:'assistant',content:assistantMsg});
+      // === Dual-mode processing ===
+      // Mode A: Try JSON templates first
+      const tplObjs=parseJSONTemplates(assistantMsg);
+      if(tplObjs&&tplObjs.length>0){
+        const badge=document.createElement('div');
+        badge.style.cssText='font-size:10px;color:#69db7c;font-weight:600;margin-bottom:4px;';
+        badge.textContent='📋 JSON模板模式 · '+tplObjs.length+'页';
+        msgEl.appendChild(badge);
+
+        tplObjs.forEach((tpl,idx)=>{
+          const html=renderTemplate(tpl);
+          if(html){
+            const block=document.createElement('div');
+            block.style.cssText='background:var(--bg3);border:1px solid var(--bdr);border-radius:6px;padding:6px 8px;margin:4px 0;font-size:10px;color:var(--dim);max-height:60px;overflow-y:hidden;font-family:var(--mono);';
+            block.textContent=html.substring(0,300)+(html.length>300?'...':'');
+            msgEl.appendChild(block);
+            const btns=document.createElement('div');
+            btns.style.cssText='display:flex;gap:6px;margin-top:2px;';
+            if(tplObjs.length>1){
+              const lbl=document.createElement('span');
+              lbl.style.cssText='font-size:9px;color:var(--accent);font-weight:600;line-height:26px;';
+              lbl.textContent='第'+(idx+1)+'页:';
+              btns.appendChild(lbl);
+            }
+            const slideObj={_mode:'json',tpl:tpl.tpl,data:tpl.data};
+            addApplyButton(btns,slideObj,'✅ 应用');
+            addNewSlideButton(btns,slideObj);
+            msgEl.appendChild(btns);
+          }else{
+            const err=document.createElement('div');
+            err.style.cssText='color:#ff6b6b;font-size:10px;';
+            err.textContent='⚠ 模板 "'+tpl.tpl+'" 渲染失败';
+            msgEl.appendChild(err);
+          }
+        });
+        // Auto-apply first if only one page
+        if(tplObjs.length===1){
+          const html=renderTemplate(tplObjs[0]);
+          if(html){
+            const layoutMap={cards:'cards',metrics:'metrics',blockquote:'blockquote',split:'split',flow:'flow',stages:'stages',title:'title',list:'custom'};
+            const mapped=layoutMap[tplObjs[0].tpl]||'custom';
+            slides[selIdx].layout=mapped;
+            if(mapped==='custom') slides[selIdx].data={html};
+            else slides[selIdx].data=tplObjs[0].data;
+            document.getElementById('layoutSelect').value=mapped;
+            renderEditor(); renderPreview(); renderList(); save();
+            const note=document.createElement('div');
+            note.style.cssText='color:#69db7c;font-size:10px;margin-top:4px;';
+            note.textContent='✓ 已自动应用到第'+(selIdx+1)+'页';
+            msgEl.appendChild(note);
+          }
+        }
+      }else{
+        // Mode B: Free HTML
+        const codeBlocks=extractHTML(assistantMsg);
+        if(codeBlocks.length>0){
+          const badge=document.createElement('div');
+          badge.style.cssText='font-size:10px;color:#ffd43b;font-weight:600;margin-bottom:4px;';
+          badge.textContent='🔧 自由HTML模式 · '+codeBlocks.length+'页';
+          msgEl.appendChild(badge);
+
+          codeBlocks.forEach((code,idx)=>{
+            const btns=document.createElement('div');
+            btns.style.cssText='display:flex;gap:6px;margin-top:4px;';
+            if(codeBlocks.length>1){
+              const lbl=document.createElement('span');
+              lbl.style.cssText='font-size:9px;color:var(--accent);font-weight:600;line-height:26px;';
+              lbl.textContent='第'+(idx+1)+'页:';
+              btns.appendChild(lbl);
+            }
+            const slideObj={_mode:'html',html:code};
+            addApplyButton(btns,slideObj);
+            addNewSlideButton(btns,slideObj);
+            msgEl.appendChild(btns);
+          });
+        }else if(assistantMsg.includes('<div')||assistantMsg.includes('<p')){
+          const cleanCode=assistantMsg.replace(/```html?/g,'').replace(/```/g,'').trim();
+          const btn=document.createElement('button');
+          btn.className='apply-btn';
+          btn.textContent='✅ 作为HTML应用到当前页';
+          btn.onclick=function(){
+            slides[selIdx].layout='custom';
+            slides[selIdx].data={html:cleanCode};
+            document.getElementById('layoutSelect').value='custom';
+            renderEditor(); renderPreview(); renderList(); save();
+            notify('已应用','ok');
+          };
+          msgEl.appendChild(btn);
+        }
+      }
+      // Format display
+      const buttonsHtml=msgEl.querySelectorAll('button,div[style*="display:flex"],div[style*="font-size:10px"]');
+      let display=assistantMsg
+        .replace(/```(?:html|json)?\s*\n?([\s\S]*?)```/g,'<code>$1</code>')
+        .replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>')
+        .replace(/`(.*?)`/g,'<code style="display:inline;padding:1px 4px;font-size:10px">$1</code>');
+      msgEl.innerHTML=display;
+      buttonsHtml.forEach(b=>msgEl.appendChild(b));
+      document.getElementById('chatMsgs').scrollTop=document.getElementById('chatMsgs').scrollHeight;
+    }
+  }catch(e){addChatMsg('error','请求失败: '+e.message);}
+}
+
+// ===== Smart Generate — Agent Loop with auto-fix =====
+async function smartGenerate(){
+  const input=document.getElementById('chatInput');
+  const q=input.value.trim();
+  if(!q)return;
+  input.value='';
+  addChatMsg('user','🚀 '+q);
+
+  const msgEl=document.createElement('div');
+  msgEl.className='chat-msg assistant';
+  document.getElementById('chatMsgs').appendChild(msgEl);
+
+  // Progress indicator
+  const statusEl=document.createElement('div');
+  statusEl.style.cssText='font-size:11px;color:var(--accent);font-weight:600;margin-bottom:6px;';
+  statusEl.textContent='⏳ 启动智能生成引擎...';
+  msgEl.appendChild(statusEl);
+  document.getElementById('chatMsgs').scrollTop=document.getElementById('chatMsgs').scrollHeight;
+
+  const result = await agentLoop(q, (type, round, msg) => {
+    statusEl.textContent = '🔄 第'+round+'轮: '+msg;
+    document.getElementById('chatMsgs').scrollTop=document.getElementById('chatMsgs').scrollHeight;
+  });
+
+  if(result.success){
+    statusEl.textContent = '✅ 第'+result.rounds+'轮完成 · '+(result.mode==='json'?'JSON模板模式':'自由HTML模式');
+    statusEl.style.color='#69db7c';
+
+    if(result.mode==='json' && result.slides){
+      // Apply all template slides
+      result.slides.forEach((s,i)=>{
+        if(!s.html)return;
+        const layoutMap={cards:'cards',metrics:'metrics',blockquote:'blockquote',split:'split',flow:'flow',stages:'stages',title:'title',list:'custom'};
+        const mapped=layoutMap[s.tpl]||'custom';
+        let slideData;
+        if(mapped==='custom'){
+          slideData={html:s.html};
+        }else if(mapped==='split'&&s.data){
+          const L=s.data.left||{}, R=s.data.right||{};
+          slideData={
+            left:'<div style="padding:1.2vh 1.2vw;background:var(--bg2);border:1px solid var(--bdr);border-radius:8px">\n  <h4 class="'+(L.color||'cb')+'">'+(L.title||'')+'</h4>\n  <p>'+(L.content||'')+'</p>\n</div>',
+            right:'<div style="padding:1.2vh 1.2vw;background:var(--bg2);border:1px solid var(--bdr);border-radius:8px">\n  <h4 class="'+(R.color||'cg')+'">'+(R.title||'')+'</h4>\n  <p>'+(R.content||'')+'</p>\n</div>'
+          };
+        }else{
+          slideData=s;
+        }
+        if(i===0){
+          slides[selIdx].layout=mapped;
+          slides[selIdx].data=slideData;
+        }else{
+          slides.splice(selIdx+i,0,{title:'',layout:mapped,data:slideData});
+        }
+      });
+      renderEditor(); renderPreview(); renderList(); save();
+      const note=document.createElement('div');
+      note.style.cssText='color:#69db7c;font-size:11px;';
+      note.textContent='✓ 已自动应用 '+result.slides.length+' 页幻灯片';
+      msgEl.appendChild(note);
+    }else if(result.html){
+      // Apply free HTML
+      slides[selIdx].layout='custom';
+      slides[selIdx].data={html:result.html};
+      document.getElementById('layoutSelect').value='custom';
+      renderEditor(); renderPreview(); renderList(); save();
+      const note=document.createElement('div');
+      note.style.cssText='color:#69db7c;font-size:11px;';
+      note.textContent='✓ 已应用到第'+(selIdx+1)+'页';
+      msgEl.appendChild(note);
+
+      // Show sandbox preview result
+      const sr = executeTool('sandbox_render',{html:result.html});
+      const info=document.createElement('div');
+      info.style.cssText='color:var(--dim);font-size:10px;margin-top:4px;';
+      info.textContent='📊 沙盒渲染: '+(sr.rendered?'成功':'失败')+' · '+sr.elementCount+'个元素 · '+sr.textLength+'字符';
+      msgEl.appendChild(info);
+    }
+  }else{
+    statusEl.textContent = '❌ 失败: '+(result.error||'未知错误');
+    statusEl.style.color='#ff6b6b';
+    if(result.rounds) statusEl.textContent += ' (经过'+result.rounds+'轮尝试)';
+  }
+  document.getElementById('chatMsgs').scrollTop=document.getElementById('chatMsgs').scrollHeight;
+}
+
+function extractHTML(text){
+  const blocks=[];
+  const regex=/```(?:html)?\s*\n?([\s\S]*?)```/g;
+  let m;
+  while((m=regex.exec(text))!==null){
+    const code=m[1].trim();
+    if(code.includes('<'))blocks.push(code);
+  }
+  if(blocks.length===1&&blocks[0].includes('<!-- PAGE BREAK -->')){
+    return blocks[0].split('<!-- PAGE BREAK -->').map(s=>s.trim()).filter(s=>s.length>0);
+  }
+  return blocks;
+}
+
+// ===== Start =====
+init();
+</script>
+</body>
+</html>

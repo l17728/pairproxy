@@ -1,0 +1,34 @@
+{
+  "name": "slides-maker",
+  "version": "1.0.0",
+  "description": "PPT 制作器 - AI 驱动的 HTML 演示文稿生成工具",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win --dir --config.directories.output=dist"
+  },
+  "author": "PairProxy",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^35.0.0",
+    "electron-builder": "^26.0.0"
+  },
+  "build": {
+    "appId": "com.pairproxy.slides-maker",
+    "productName": "PPT制作器",
+    "win": {
+      "target": ["portable"],
+      "icon": "icon.ico"
+    },
+    "portable": {
+      "artifactName": "PPT制作器-${version}-portable.exe"
+    },
+    "files": [
+      "main.js",
+      "www/**/*"
+    ],
+    "directories": {
+      "output": "dist"
+    }
+  }
+}

@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Session Analysis</title>
+<style>
+  :root {
+    --c-bg:#0f0f1a; --c-text:#d0d0e0; --c-h:#fff;
+    --c-code-bg:#1a1a2e; --c-code-bdr:#2a2a44; --c-code:#e0e0f0;
+    --c-bq-bdr:#4a4a6a; --c-a:#6db3f2; --c-table-bdr:#2a2a44;
+    --c-table-head:#1a1a30; --c-hr:#2a2a44;
+  }
+  [data-theme="light"] {
+    --c-bg:#fafbfe; --c-text:#2a2a3e; --c-h:#111;
+    --c-code-bg:#f0f1f5; --c-code-bdr:#d0d1d8; --c-code:#333;
+    --c-bq-bdr:#b0b0c0; --c-a:#1a73e8; --c-table-bdr:#d0d1d8;
+    --c-table-head:#e8e9ee; --c-hr:#d0d1d8;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    background:var(--c-bg); color:var(--c-text);
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
+    padding:3vh 5vw 5vh; line-height:1.7; overflow-y:auto;
+    max-width:960px; margin:0 auto;
+  }
+  body h1,body h2,body h3,body h4 { color:var(--c-h); margin:1.5em 0 .5em; font-weight:700; }
+  body h1 { font-size:1.6em; border-bottom:2px solid var(--c-hr); padding-bottom:.3em; }
+  body h2 { font-size:1.3em; border-bottom:1px solid var(--c-hr); padding-bottom:.2em; }
+  body h3 { font-size:1.1em; }
+  body p { margin:.5em 0; }
+  body a { color:var(--c-a); text-decoration:none; }
+  body a:hover { text-decoration:underline; }
+  body code {
+    background:var(--c-code-bg); border:1px solid var(--c-code-bdr);
+    border-radius:4px; padding:1px 5px; font-size:.88em;
+    font-family:'Cascadia Code','Fira Code','JetBrains Mono',monospace;
+    color:var(--c-code);
+  }
+  body pre {
+    background:var(--c-code-bg); border:1px solid var(--c-code-bdr);
+    border-radius:8px; padding:1em; overflow-x:auto; margin:1em 0;
+  }
+  body pre code { background:none; border:none; padding:0; }
+  body blockquote { border-left:3px solid var(--c-bq-bdr); padding-left:1em; margin:1em 0; color:var(--c-text); opacity:.85; }
+  body table { border-collapse:collapse; width:100%; margin:1em 0; }
+  body th,body td { border:1px solid var(--c-table-bdr); padding:.4em .8em; text-align:left; }
+  body th { background:var(--c-table-head); font-weight:600; }
+  body hr { border:none; border-top:1px solid var(--c-hr); margin:1.5em 0; }
+  body ul,body ol { padding-left:1.5em; margin:.5em 0; }
+  body img { max-width:100%; }
+</style>
+</head>
+<body>
+<div id="content">Loading...</div>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script>
+const MD="# Claude Session 会话分析报告\n\n> 数据来源：本地 Claude Code 项目 session 历史记录\n> 分析日期：2026-04-14\n> 数据量：57 sessions, 834 条有效用户消息\n\n---\n\n## 一、数据源概览\n\n| 项目目录 | Sessions | 有效消息数 | 数据量 |\n|---------|----------|-----------|--------|\n| D--pairproxy | 39 | 549 | 123 MB |\n| D--ChatLab-main | 16 | 279 | 60 MB |\n| D--lsm-project | 2 | 5 | 66 KB |\n| D-- | 2 | 1 | 61 KB |\n| C--Users-HW | 13 | 0（仅 hello 测试） | 261 KB |\n| **合计** | **72** | **834** | **~184 MB** |\n\n### 提取方法\n\n从 JSONL 格式的 session 文件中提取 `type=user` 且 `role=user` 的消息，过滤掉：\n- `<local-command-*` 系统命令\n- `<command-name>*` 命令消息\n- `<task-notification>*` 后台任务通知\n- `This session is being continued from a previous conversation` 上下文续接\n- 纯 `hello` / `hi` 测试消息\n- 长度 < 5 字符的噪声\n\n### Session 文件结构\n\n每个 JSONL 文件中包含以下 type：\n- `permission-mode`: 权限设置\n- `file-history-snapshot`: 文件快照\n- `user`: 用户消息\n- `assistant`: AI 回复\n- `system`: 系统消息\n- `progress`: 进度更新\n- `queue-operation`: 队列操作\n- `last-prompt`: 最后提示\n\n---\n\n## 二、模式频率统计\n\n### 按出现次数排名\n\n| 排名 | 模式 | 出现次数 | 占总消息比 |\n|------|------|---------|-----------|\n| 1 | 质询确认（\"是否...\"） | 270 | 32% |\n| 2 | 测试验证 | 194 | 23% |\n| 3 | Review / 检查 | 128 | 15% |\n| 4 | 文档更新 | 112 | 13% |\n| 5 | Bug 修复 | 96 | 12% |\n| 6 | Commit & Release | 92 | 11% |\n| 7 | 举一反三 | 37 | 4% |\n| 8 | Spec / Plan | 36 | 4% |\n| 9 | 统计数据 | 22 | 3% |\n| 10 | CI 检查 | 21 | 3% |\n\n> 注：单条消息可能匹配多个模式，因此总占比超过 100%。\n\n### PairProxy 项目模式分布（549 条）\n\n| 模式 | 次数 |\n|------|------|\n| 文档更新 | 25 |\n| 测试验证 | 24 |\n| Release | 19 |\n| Review/检查 | 12 |\n| Bug 修复 | 12 |\n| CI 检查 | 10 |\n| Commit & Push | 9 |\n| 错误处理 | 9 |\n| Spec/Plan | 6 |\n| CLOC 统计 | 5 |\n| 回归测试 | 5 |\n| Implement Plan | 2 |\n\n### ChatLab 项目模式分布（279 条）\n\n| 模式 | 次数 |\n|------|------|\n| 测试验证 | 42 |\n| Review/检查 | 37 |\n| Bug 修复 | 31 |\n| 文档更新 | 15 |\n| 回归测试 | 14 |\n| 错误处理 | 14 |\n| Commit & Push | 13 |\n| Spec/Plan | 11 |\n| CI 检查 | 4 |\n| CLOC 统计 | 3 |\n| Implement Plan | 1 |\n\n---\n\n## 三、10 条方法论原则（含原文证据）\n\n### ① 质询确认 — 用\"是否\"推进确认（270 次）\n\n核心行为：不给 AI 含糊空间，用封闭式问题迫使 AI 给出明确回答。\n\n代表消息：\n- `是否所有本次特性设计的需求全部实现，测试用例通过`\n- `是否已经发布`\n- `CI是否结束`\n- `是否满足2000+测试用例全回归`\n- `是否需要更新README，以及备注，手册，运维手册，API手册，以及changlog和 release notes等文档`\n- `是否需要日志和测试`\n- `是否补成足够充分的测试用例`\n- `是否是一处修改导致全部报错返回不同的值，或者本来就有相同的问题。请研究一下`\n- `是否通过所有的测试`\n- `是否已经出新的release版本`\n\n### ② 测试验证 — 每一步的验证门（194 次）\n\n核心行为：每次改动后必问测试结果，不是\"建议跑测试\"而是\"确认全部通过\"。高频使用\"继续直到全部通过\"的循环指令。\n\n代表消息：\n- `回归所有2000+测试用例`\n- `请继续，直到全部通过`\n- `全量回归`\n- `继续剩余工作`\n- `是否补成足够充分的测试用例`\n- `是否通过所有的测试`\n- `运行全量测试`\n- `请跑一下全量测试`\n- `回归测试`\n- `请继续下一轮，直到全部通过`（ChatLab 中出现 8+ 次）\n\n### ③ Review / 检查 — 设计中就 Review（128 次）\n\n核心行为：不是事后 review，而是**设计中就 review**。流程是 设计 → review → 修改 → 开发。\n\n代表消息：\n- `请组织专家对该设计进行review发现并修正问题，完善测试用例`\n- `请评价一下之前的设计和review质量如何`\n- `请检查是否实现了这个功能`\n- `检视交付物尽量回顾本项目的开发过程`\n- `请检查最新的release版本，文档是否刷新了，release notes写了没有`\n- `请检查我们的代码是否实现了这个功能`\n- `看看是否有类似的问题`（举一反三 + review 结合）\n\n### ④ 文档更新 — 文档即流程（112 次）\n\n核心行为：每次版本变更必同步文档，文档不是额外任务而是流程的一部分。\n\n代表消息：\n- `更新相应的文档`\n- `更新到CLAUDE.md`\n- `commit & push & release & 写release notes，notes中要说明新增了哪些重要的特性以及文档`\n- `是否需要更新README，以及备注，手册，运维手册，API手册，以及changlog和 release notes等文档`\n- `请新建一个目录，将以上讨论完整的写入文档，并整理出配套的模板`\n- `更新相应的文档`（同一条在多个 session 中重复出现）\n- `请检查最新的release版本，文档是否刷新了`\n\n### ⑤ Bug 修复 — 定向修复（96 次）\n\n核心行为：发现 bug 后定向修复，通常与举一反三结合。\n\n代表消息：\n- `在实现时按照建议，增加必要的告警，以方便不管是配置错误还是其他情况能够指出问题和可能的原因`\n- `报告里有错误信息即可。如果已满足，请模拟测试一下`\n- `错误和返回用户友好的提示`\n- `修复这个错误`\n\n### ⑥ Commit & Release — 版本纪律（92 次）\n\n核心行为：一条消息同时要求 commit + push + release + notes，说明这是标准流程。\n\n代表消息：\n- `commit & push & release & 写release notes`\n- `commit & push`\n- `git push`\n- `请帮我打个 tag v2.14.0 的 release commit 并写 release notes`\n- `打 v2.14.0 的 release commit 并写 release notes`\n- `发布到 GitHub 并创建 release`\n\n### ⑦ 举一反三 — 发现一个 bug 普查全部（37 次）\n\n核心行为：修复 bug 后必问\"同类问题还有哪些地方\"，并要求补测试。这是与普通用户最大的差异点之一。\n\n代表消息：\n- `每一个bug都要举一反三，对每一个问题补充分的测试用例`\n- `每一个bug修复后都要举一反三，想一下为什么会出这个问题，并且检查是否有类似问题`\n- `举一反三，查一下是否还有其他地方存在相同的问题`\n- `发现一个bug，需要修复。此外每次worker启动都会提供服务的webUI的服务，会导致故障。举一反三。`\n- `是否举一反三了，有没有类似的错误，并补齐测试`\n- `举一反三，每一处类似的问题都找出来`\n- `是否需要举一反三，全面的测试和回归`\n\n### ⑧ Spec / Plan — 粘贴完整计划让 AI 执行（36 次）\n\n核心行为：自己或让 AI 写计划 → 自己审核修改 → 粘贴给 AI 执行。绝不直接说\"加个功能\"。消息中经常出现 `Implement the following plan:` 后跟完整的 Markdown 计划文档。\n\n代表消息：\n- `Implement the following plan: # PostgreSQL Peer Mode（对等节点模式）计划 ...`（完整粘贴 300+ 行计划）\n- `Implement the following plan: # PostgreSQL 支持计划 ...`\n- `现在请启动开发，请制定计划和任务，然后完成。注意日志打印要完备，测试用例要充分。`\n- `请组织专家对该设计进行review发现并修正问题，完善测试用例`\n\n### ⑨ 统计数据 — 数据说话（22 次）\n\n核心行为：用数字量化结果，不满足于\"完成了\"。\n\n代表消息：\n- `cloc统计规模`\n- `是否有请求次数的统计，例如一共多少次请求，请求的分布情况，按照范围，按照TOP10的请求人`\n- `要统计实际发送给LLM端点的有效载荷。请求体中的prompt是不大，但实际请求的文本比较大`\n- `实际统计的数据是否实际发给那个LLM的统计`\n- `用户使用统计`\n\n### ⑩ CI 检查 — 交付的最后一道门（21 次）\n\n核心行为：release 后必跟踪 CI，不等别人反馈。\n\n代表消息：\n- `CI是否结束`\n- `查看一下 CI 测试结果`\n- `查看 CI 结果`\n- `查看ci展廊`\n- `检查 CI 结果`\n- `看 CI 状态`\n\n---\n\n## 四、跨项目一致性对比\n\n| 维度 | PairProxy | ChatLab | 一致性 |\n|------|-----------|---------|--------|\n| 测试验证 | 24次（高频） | 42次（最高频） | ✅ 完全一致 |\n| Review/检查 | 12次 | 37次 | ✅ 完全一致 |\n| Bug修复 | 12次 | 31次 | ✅ 完全一致 |\n| 文档更新 | 25次 | 15次 | ✅ 完全一致 |\n| Commit&Release | 9次 | 13次 | ✅ 完全一致 |\n| 举一反三 | 有（显式要求） | 有（\"继续直到全部通过\"） | ✅ 完全一致 |\n| Spec/Plan | 6次（粘贴完整计划） | 11次 | ✅ 完全一致 |\n| CI检查 | 10次 | 4次 | ✅ 完全一致 |\n\n**结论**：两个项目中的使用模式高度一致，说明这些是已内化的习惯而非项目特定的行为。\n\n---\n\n## 五、上下文续接模式\n\n多个 session 中出现 `This session is being continued from a previous conversation that ran out of context` 消息，用户通过 summary 机制无缝续接工作。\n\n统计出现次数：PairProxy 中约 15 次，ChatLab 中约 12 次。\n\n用户行为特征：\n- Context 溢出是常态，不视为异常\n- 通过自动 summary 保持连续性\n- 续接后通常第一条消息就是继续上一个任务（如\"继续剩余工作\"）\n- 从不因 context 丢失而放弃或重做\n\n---\n\n## 六、用户沟通风格\n\n### 语言\n- 主要使用中文\n- 技术术语使用英文（commit, push, release, CI, test, review, plan, spec）\n- 混合使用中英文，不刻意统一\n\n### 简洁度\n- 大部分指令非常简洁（\"commit & push\"、\"CI是否结束\"、\"继续剩余工作\"）\n- Spec/Plan 消息则非常详细（粘贴完整 300+ 行 Markdown 计划）\n- 两极分化：执行指令极简，规划文档极详\n\n### 交互密度\n- 平均每个 session 约 14 条有效消息\n- 高密度 session（如 025ccfd6）可达 225 条 user 消息\n- 密集使用\"是否\"质询模式（32% 的消息包含质询）\n\n---\n\n## 七、与典型 AI Coding 用户的差异\n\n| 维度 | 典型用户 | 本用户 |\n|------|---------|--------|\n| 提示词风格 | 一句话描述需求 | 粘贴完整 Spec/Plan（300+行） |\n| 验证习惯 | 信任 AI 输出 | 每步验证测试+CI+review（194+21+128=343次验证） |\n| 文档态度 | 可选，最后补 | 强制同步，流程的一部分（112次） |\n| Bug 处理 | 修完即走 | 举一反三+补测试（37次显式要求） |\n| 交互密度 | 稀疏，放手让 AI 做 | 密集质询（270次\"是否\"） |\n| 版本管理 | 偶尔 commit | commit+push+release+notes 一条龙（92次） |\n| 上下文管理 | 单次会话 | 跨 session 续接（27次） |\n| 数据意识 | \"完成了\" | 用数字量化（22次要求统计数据） |\n| 计划深度 | 无计划或一句话 | 完整 Markdown 计划文档（36次） |\n| Review 时机 | 事后 review | 设计中 review（先 review 后开发） |\n\n---\n\n## 八、方法论核心总结\n\n从 834 条消息中提炼的核心工作流：\n\n```\n设计 Spec → 专家 Review → 粘贴 Plan → AI 执行 → 测试验证 → CI 检查 → Commit & Release → 文档同步\n                  ↑                                                         |\n                  └───────── Bug 修复 → 举一反三 → 补测试 ←────────────────┘\n```\n\n关键原则：\n1. **不信任，要验证** — 343 次验证操作（测试+CI+review）\n2. **不模糊，要质询** — 270 次封闭式确认\n3. **不遗漏，要文档** — 112 次文档同步\n4. **不放过，要普查** — 37 次举一反三\n5. **不手松，要纪律** — 92 次标准 commit/release 流程\n";
+document.getElementById('content').innerHTML=marked.parse(MD);
+window.addEventListener('message',e=>{
+  if(e.data&&e.data.type==='theme'){
+    document.documentElement.setAttribute('data-theme',e.data.theme);
+  }
+});
+</script>
+</body>
+</html>

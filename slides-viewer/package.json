@@ -1,0 +1,40 @@
+{
+  "name": "slides-viewer",
+  "version": "1.0.0",
+  "description": "AI Coding 课件查看器",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win",
+    "build:dir": "electron-builder --win --dir"
+  },
+  "author": "PairProxy",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^35.0.0",
+    "electron-builder": "^26.0.0"
+  },
+  "build": {
+    "appId": "com.pairproxy.slides-viewer",
+    "productName": "课件查看器",
+    "win": {
+      "target": ["nsis"],
+      "icon": "icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "课件查看器"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "icon.ico",
+      "icon.png"
+    ],
+    "directories": {
+      "output": "dist"
+    }
+  }
+}

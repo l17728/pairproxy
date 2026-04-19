@@ -1,0 +1,78 @@
+{
+  "title": "AI Coding 的五个控制点",
+  "subtitle": "一个 44 天完成的企业级项目背后的工程方法论",
+  "slides": [
+    {
+      "dir": "00-opening",
+      "title": "AI Coding的编程范式：启发式+五个控制点"
+    },
+    {
+      "dir": "01-product-intro",
+      "title": "PairProxy-稳定运行1个月，支持300+用户，日均流量~2B"
+    },
+    {
+      "dir": "02-product-demo",
+      "title": "产品展示"
+    },
+    {
+      "dir": "03-project-scale",
+      "title": "项目规模 — 121K行 / 328文件 / 2894测试"
+    },
+    {
+      "dir": "04-dev-history",
+      "title": "44天全生命周期 — 7阶段时间线"
+    },
+    {
+      "dir": "05-cicd",
+      "title": "CI/CD 流水线"
+    },
+    {
+      "dir": "06-turning-point",
+      "title": ""
+    },
+    {
+      "dir": "07-five-controls",
+      "title": "五个控制点概览 — 流程管线"
+    },
+    {
+      "dir": "08-agents-md",
+      "title": "① 上下文管理 — AGENTS.md 员工手册"
+    },
+    {
+      "dir": "09-spec-plan-tdd",
+      "title": "②③ Spec → Plan → TDD — 合并页"
+    },
+    {
+      "dir": "10-failure-patterns",
+      "title": "④ 六类失败模式 — 4个真实案例"
+    },
+    {
+      "dir": "11-acceptance",
+      "title": "⑤ 验收机制 — 让数字说话"
+    },
+    {
+      "dir": "12-harness",
+      "title": "Harness 脚手架 — 六个配置面"
+    },
+    {
+      "dir": "13-skills-memory",
+      "title": "Skill 体系 & 记忆 — 闭环机制"
+    },
+    {
+      "dir": "18-dependency-trap",
+      "title": "依赖陷阱 — 五阶段"
+    },
+    {
+      "dir": "19-closing",
+      "title": ""
+    },
+    {
+      "dir": "20-session-analysis",
+      "title": "Session 分析 — 数据驱动的 AI 使用画像"
+    },
+    {
+      "dir": "21-summary",
+      "title": "总结"
+    }
+  ]
+}

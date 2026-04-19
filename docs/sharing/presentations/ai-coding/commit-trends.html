@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PairProxy 390 次提交的节奏分析</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3"></script>
+<style>
+  :root {
+    --c-bg:#0f0f1a; --c-bg2:#161625;
+    --c-text:#e0e0e0; --c-text2:#aaaacc;
+    --c-dim:#7777aa; --c-dim2:#8888aa; --c-muted:#555570;
+    --c-bdr:#2a2a40; --c-grid:#2a2a40;
+    --c-h1:#ffffff; --c-tip-bg:#222240; --c-tip-bdr:#444466;
+  }
+  [data-theme="light"] {
+    --c-bg:#f8f9fc; --c-bg2:#ffffff;
+    --c-text:#1a1a2e; --c-text2:#555570;
+    --c-dim:#666680; --c-dim2:#555570; --c-muted:#9999aa;
+    --c-bdr:#d0d2dd; --c-grid:#d8dae5;
+    --c-h1:#111; --c-tip-bg:rgba(255,255,255,0.96); --c-tip-bdr:#c0c0d0;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--c-bg);
+    color: var(--c-text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    padding: 30px 20px 60px;
+    max-width: 1100px;
+    margin: 0 auto;
+    transition: background .3s, color .3s;
+  }
+  .header {
+    text-align: center;
+    margin-bottom: 40px;
+  }
+  .header h1 {
+    font-size: 28px;
+    font-weight: 700;
+    color: var(--c-h1);
+    margin-bottom: 8px;
+    letter-spacing: 1px;
+  }
+  .header .subtitle {
+    font-size: 14px;
+    color: var(--c-dim2);
+    letter-spacing: 0.5px;
+  }
+  .chart-section {
+    margin-bottom: 50px;
+    background: var(--c-bg2);
+    border-radius: 12px;
+    padding: 24px 20px 16px;
+    border: 1px solid var(--c-bdr);
+  }
+  .chart-section h2 {
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--c-h1);
+    margin-bottom: 4px;
+  }
+  .chart-section .desc {
+    font-size: 13px;
+    color: var(--c-dim);
+    margin-bottom: 16px;
+  }
+  .chart-container {
+    position: relative;
+    width: 100%;
+  }
+  .chart-container.tall { height: 460px; }
+  .chart-container.normal { height: 340px; }
+  .footer {
+    text-align: center;
+    margin-top: 30px;
+    font-size: 12px;
+    color: var(--c-muted);
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>PairProxy 390 次提交的节奏分析</h1>
+  <div class="subtitle">v1.0 → v2.24.6 &nbsp;|&nbsp; 2026-02-27 → 2026-04-11 &nbsp;|&nbsp; 44 天 &nbsp;|&nbsp; 133,000 行代码</div>
+</div>
+
+<!-- Chart 1: Daily Commits with Phase Overlays -->
+<div class="chart-section">
+  <h2>每日提交量与开发阶段</h2>
+  <div class="desc">7 个开发阶段的提交密度分布，W10-W11 两周贡献了 46% 的提交量</div>
+  <div class="chart-container tall">
+    <canvas id="chart1"></canvas>
+  </div>
+</div>
+
+<!-- Chart 2: Commit Type Distribution per Phase -->
+<div class="chart-section">
+  <h2>各阶段提交类型分布</h2>
+  <div class="desc">每个阶段都遵循 feat → fix → test → docs 的生命周期</div>
+  <div class="chart-container normal">
+    <canvas id="chart2"></canvas>
+  </div>
+</div>
+
+<!-- Chart 3: Version Release Timeline -->
+<div class="chart-section">
+  <h2>版本发布时间线</h2>
+  <div class="desc">版本号加速后减速，v2.22 之后进入维护模式</div>
+  <div class="chart-container normal">
+    <canvas id="chart3"></canvas>
+  </div>
+</div>
+
+<!-- Chart 4: Weekly Commit Density -->
+<div class="chart-section">
+  <h2>每周提交密度</h2>
+  <div class="desc">提交密度呈钟形曲线，峰值出现在 W10-W11（功能爆发 + 协议转换）</div>
+  <div class="chart-container normal">
+    <canvas id="chart4"></canvas>
+  </div>
+</div>
+
+<div class="footer">
+  基于 Git 提交记录生成 &nbsp;|&nbsp; PairProxy AI Coding 方法论分享
+</div>
+
+<script>
+// Shared palette — dynamically read from CSS vars
+function getColors() {
+  const cs = getComputedStyle(document.documentElement);
+  return {
+    bg: cs.getPropertyValue('--c-bg2').trim(),
+    grid: cs.getPropertyValue('--c-grid').trim(),
+    text: cs.getPropertyValue('--c-text2').trim(),
+    feat: '#4fc3f7',
+    fix: '#ef5350',
+    test: '#66bb6a',
+    docs: '#ffa726',
+    other: '#ab47bc',
+    tipBg: cs.getPropertyValue('--c-tip-bg').trim(),
+    tipBdr: cs.getPropertyValue('--c-tip-bdr').trim(),
+  };
+}
+
+let COLORS = getColors();
+
+function makeChartDefaults() {
+  const C = getColors();
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: { labels: { color: C.text, font: { size: 12 } } },
+    },
+    scales: {
+      x: { ticks: { color: C.text, font: { size: 11 } }, grid: { color: C.grid } },
+      y: { ticks: { color: C.text, font: { size: 11 } }, grid: { color: C.grid } },
+    },
+  };
+}
+
+let chartDefaults = makeChartDefaults();
+
+// ============================================================
+// Chart 1 — Daily Commits with Phase Overlays
+// ============================================================
+(function() {
+  const labels = [
+    '02-27','02-28','03-01','03-02','03-04','03-05','03-06','03-07','03-08','03-09',
+    '03-10','03-11','03-13','03-14','03-16','03-17','03-18','03-19','03-22','03-24',
+    '03-26','03-27','03-28','04-03','04-04','04-05','04-06','04-07','04-08','04-09','04-11'
+  ];
+  const data = [13,18,1,1,9,20,21,25,12,37,19,31,9,13,6,15,12,3,2,2,10,21,11,11,13,3,3,20,10,2,2];
+
+  const phases = [
+    { label: 'P1 基础搭建',   start: '02-27', end: '03-02', color: 'rgba(66,133,244,0.13)',  border: 'rgba(66,133,244,0.3)' },
+    { label: 'P2 功能爆发',   start: '03-04', end: '03-09', color: 'rgba(76,175,80,0.13)',   border: 'rgba(76,175,80,0.3)' },
+    { label: 'P3 协议转换',   start: '03-10', end: '03-14', color: 'rgba(255,167,38,0.13)',  border: 'rgba(255,167,38,0.3)' },
+    { label: 'P4 稳定化',     start: '03-16', end: '03-19', color: 'rgba(171,71,188,0.13)',  border: 'rgba(171,71,188,0.3)' },
+    { label: 'P5 智能化',     start: '03-22', end: '03-28', color: 'rgba(0,188,212,0.13)',   border: 'rgba(0,188,212,0.3)' },
+    { label: 'P6 Bug 收敛',   start: '04-03', end: '04-09', color: 'rgba(239,83,80,0.13)',   border: 'rgba(239,83,80,0.3)' },
+    { label: 'P7 收尾打磨',   start: '04-11', end: '04-11', color: 'rgba(158,158,158,0.13)', border: 'rgba(158,158,158,0.3)' },
+  ];
+
+  function labelIdx(l) { return labels.indexOf(l); }
+
+  const annotations = {};
+  phases.forEach((p, i) => {
+    const s = labelIdx(p.start);
+    const e = labelIdx(p.end);
+    annotations['phase' + i] = {
+      type: 'box',
+      xMin: s - 0.45,
+      xMax: e + 0.45,
+      backgroundColor: p.color,
+      borderColor: p.border,
+      borderWidth: 1,
+    };
+    annotations['label' + i] = {
+      type: 'label',
+      xValue: (s + e) / 2,
+      yValue: 40,
+      content: p.label,
+      color: p.border.replace('0.3', '0.8'),
+      font: { size: 11, weight: 'bold' },
+    };
+  });
+
+  new Chart(document.getElementById('chart1'), {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        label: '提交数',
+        data,
+        backgroundColor: data.map(v => {
+          if (v >= 25) return 'rgba(79,195,247,0.85)';
+          if (v >= 15) return 'rgba(79,195,247,0.6)';
+          if (v >= 8)  return 'rgba(79,195,247,0.4)';
+          return 'rgba(79,195,247,0.25)';
+        }),
+        borderRadius: 3,
+        borderSkipped: false,
+      }],
+    },
+    options: {
+      ...chartDefaults,
+      plugins: {
+        ...chartDefaults.plugins,
+        annotation: { annotations },
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: getColors().tipBg,
+          titleColor: '#fff',
+          bodyColor: '#ccc',
+          borderColor: getColors().tipBdr,
+          borderWidth: 1,
+        },
+      },
+      scales: {
+        x: {
+          ...chartDefaults.scales.x,
+          ticks: { ...chartDefaults.scales.x.ticks, maxRotation: 45, minRotation: 45 },
+        },
+        y: {
+          ...chartDefaults.scales.y,
+          beginAtZero: true,
+          title: { display: true, text: '提交数', color: chartDefaults.scales.y.ticks.color },
+        },
+      },
+    },
+  });
+})();
+
+// ============================================================
+// Chart 2 — Commit Type Distribution per Phase (Stacked Bar)
+// ============================================================
+(function() {
+  const phases = ['P1 基础搭建','P2 功能爆发','P3 协议转换','P4 稳定化','P5 智能化','P6 Bug 收敛','P7 收尾打磨'];
+  const feat  = [13,48,38,8,22,16,1];
+  const fix   = [5,26,20,12,16,18,1];
+  const test  = [3,24,12,6,8,8,0];
+  const docs  = [5,16,10,5,8,7,0];
+  const other = [7,10,5,5,3,3,0];
+
+  new Chart(document.getElementById('chart2'), {
+    type: 'bar',
+    data: {
+      labels: phases,
+      datasets: [
+        { label: 'feat',  data: feat,  backgroundColor: 'rgba(79,195,247,0.8)' },
+        { label: 'fix',   data: fix,   backgroundColor: 'rgba(239,83,80,0.8)' },
+        { label: 'test',  data: test,  backgroundColor: 'rgba(102,187,106,0.8)' },
+        { label: 'docs',  data: docs,  backgroundColor: 'rgba(255,167,38,0.8)' },
+        { label: 'other', data: other, backgroundColor: 'rgba(171,71,188,0.8)' },
+      ],
+    },
+    options: {
+      ...chartDefaults,
+      plugins: {
+        ...chartDefaults.plugins,
+        tooltip: {
+          backgroundColor: getColors().tipBg,
+          titleColor: '#fff',
+          bodyColor: '#ccc',
+          borderColor: getColors().tipBdr,
+          borderWidth: 1,
+        },
+      },
+      scales: {
+        x: {
+          ...chartDefaults.scales.x,
+          stacked: true,
+        },
+        y: {
+          ...chartDefaults.scales.y,
+          stacked: true,
+          beginAtZero: true,
+          title: { display: true, text: '提交数', color: chartDefaults.scales.y.ticks.color },
+        },
+      },
+    },
+  });
+})();
+
+// ============================================================
+// Chart 3 — Version Release Timeline (Step Line)
+// ============================================================
+(function() {
+  // All version data sorted chronologically
+  const versions = [
+    { v: '1.0',   d: '02-27' }, { v: '1.1',   d: '02-28' }, { v: '1.2',   d: '02-28' },
+    { v: '1.3',   d: '02-28' }, { v: '1.4',   d: '02-28' }, { v: '1.4.1', d: '02-28' },
+    { v: '2.0',   d: '02-28' }, { v: '2.1',   d: '03-02' }, { v: '2.2',   d: '03-05' },
+    { v: '2.3',   d: '03-06' }, { v: '2.3.1', d: '03-06' }, { v: '2.3.2', d: '03-07' },
+    { v: '2.4',   d: '03-07' }, { v: '2.5',   d: '03-08' }, { v: '2.6',   d: '03-09' },
+    { v: '2.7',   d: '03-09' }, { v: '2.8',   d: '03-11' }, { v: '2.9',   d: '03-11' },
+    { v: '2.9.1', d: '03-13' }, { v: '2.9.2', d: '03-13' }, { v: '2.9.3', d: '03-13' },
+    { v: '2.9.4', d: '03-14' }, { v: '2.10',  d: '03-14' }, { v: '2.10.1',d: '03-16' },
+    { v: '2.11',  d: '03-16' }, { v: '2.12',  d: '03-17' }, { v: '2.13',  d: '03-18' },
+    { v: '2.14',  d: '03-18' }, { v: '2.14.1',d: '03-18' }, { v: '2.15',  d: '03-18' },
+    { v: '2.18',  d: '03-22' }, { v: '2.19',  d: '03-26' }, { v: '2.20',  d: '03-26' },
+    { v: '2.21',  d: '03-28' }, { v: '2.21.1',d: '03-28' }, { v: '2.22',  d: '03-28' },
+    { v: '2.22.1',d: '03-28' }, { v: '2.23',  d: '04-04' }, { v: '2.24',  d: '04-04' },
+    { v: '2.24.1',d: '04-06' }, { v: '2.24.2',d: '04-07' }, { v: '2.24.3',d: '04-08' },
+    { v: '2.24.4',d: '04-09' }, { v: '2.24.5',d: '04-09' },
+  ];
+
+  // Parse version to numeric for Y-axis
+  function vNum(s) {
+    const p = s.split('.');
+    return parseFloat(p[0]) + parseFloat(p[1]) / 100 + (p[2] ? parseFloat(p[2]) / 10000 : 0);
+  }
+
+  const labels = versions.map(v => v.d);
+  const data = versions.map(v => vNum(v.v));
+
+  // Only show label for major/minor versions (skip patch)
+  const pointLabels = versions.map(v => {
+    const parts = v.v.split('.');
+    if (parts.length <= 2 && vNum(v.v) >= 2.0) return v.v;
+    if (v.v === '1.0') return v.v;
+    return '';
+  });
+
+  new Chart(document.getElementById('chart3'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        label: '版本号',
+        data,
+        borderColor: '#4fc3f7',
+        backgroundColor: 'rgba(79,195,247,0.1)',
+        fill: true,
+        stepped: 'before',
+        pointRadius: data.map((_, i) => pointLabels[i] ? 5 : 2),
+        pointBackgroundColor: '#4fc3f7',
+        pointBorderColor: '#4fc3f7',
+        borderWidth: 2,
+      }],
+    },
+    options: {
+      ...chartDefaults,
+      plugins: {
+        ...chartDefaults.plugins,
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: getColors().tipBg,
+          titleColor: '#fff',
+          bodyColor: '#ccc',
+          borderColor: getColors().tipBdr,
+          borderWidth: 1,
+          callbacks: {
+            label: function(ctx) {
+              return 'v' + versions[ctx.dataIndex].v;
+            },
+          },
+        },
+      },
+      scales: {
+        x: {
+          ...chartDefaults.scales.x,
+          ticks: { ...chartDefaults.scales.x.ticks, maxRotation: 45, minRotation: 45 },
+        },
+        y: {
+          ...chartDefaults.scales.y,
+          title: { display: true, text: '版本号', color: chartDefaults.scales.y.ticks.color },
+          min: 0.9,
+          max: 2.3,
+          ticks: {
+            ...chartDefaults.scales.y.ticks,
+            callback: function(val) {
+              if (val >= 1 && val < 2) return 'v1.x';
+              if (val >= 2) return 'v2.' + Math.round((val - 2) * 100);
+              return '';
+            },
+          },
+        },
+      },
+    },
+  });
+})();
+
+// ============================================================
+// Chart 4 — Weekly Commit Density
+// ============================================================
+(function() {
+  const labels = ['W09\n02/27-03/02', 'W10\n03/03-03/09', 'W11\n03/10-03/16', 'W12\n03/17-03/23', 'W13\n03/24-03/30', 'W14\n03/31-04/06', 'W15\n04/07-04/13'];
+  const data = [32, 88, 109, 41, 44, 27, 37];
+  const total = data.reduce((a, b) => a + b, 0);
+
+  // Color gradient based on density (green = high, dim blue = low)
+  const maxVal = Math.max(...data);
+  const colors = data.map(v => {
+    const ratio = v / maxVal;
+    const r = Math.round(79 + (1 - ratio) * 40);
+    const g = Math.round(100 + ratio * 95);
+    const b = Math.round(180 + ratio * 67);
+    return `rgba(${r},${g},${b},0.85)`;
+  });
+
+  new Chart(document.getElementById('chart4'), {
+    type: 'bar',
+    data: {
+      labels: ['W09', 'W10', 'W11', 'W12', 'W13', 'W14', 'W15'],
+      datasets: [{
+        label: '提交数',
+        data,
+        backgroundColor: colors,
+        borderRadius: 4,
+        borderSkipped: false,
+      }],
+    },
+    options: {
+      ...chartDefaults,
+      plugins: {
+        ...chartDefaults.plugins,
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: getColors().tipBg,
+          titleColor: '#fff',
+          bodyColor: '#ccc',
+          borderColor: getColors().tipBdr,
+          borderWidth: 1,
+          callbacks: {
+            afterLabel: function(ctx) {
+              const pct = ((ctx.raw / total) * 100).toFixed(1);
+              return '占比: ' + pct + '%';
+            },
+          },
+        },
+      },
+      scales: {
+        x: { ...chartDefaults.scales.x },
+        y: {
+          ...chartDefaults.scales.y,
+          beginAtZero: true,
+          title: { display: true, text: '提交数', color: chartDefaults.scales.y.ticks.color },
+        },
+      },
+    },
+  });
+})();
+
+// Theme sync from parent
+window.addEventListener('message', e => {
+  if (e.data && e.data.type === 'theme') {
+    document.documentElement.setAttribute('data-theme', e.data.theme);
+  }
+});
+</script>
+</body>
+</html>
