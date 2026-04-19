@@ -49,8 +49,8 @@ func TestLLMTargetDelete(t *testing.T) {
 		assert.Error(t, err)
 	})
 
-	t.Run("cannot delete config-sourced target", func(t *testing.T) {
-		// 创建一个配置文件来源的 target
+	t.Run("can delete config-sourced target via CLI", func(t *testing.T) {
+		// CLI（admin API）可以删除 config-sourced target；WebUI 才拦截。
 		target := &db.LLMTarget{
 			ID:         uuid.NewString(),
 			URL:        "http://test-config.local:11434",
@@ -67,10 +67,9 @@ func TestLLMTargetDelete(t *testing.T) {
 		err := repo.Upsert(target)
 		require.NoError(t, err)
 
-		// 尝试删除应该失败
+		// Repo 层不拦截，应成功
 		err = repo.Delete(target.ID)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "not editable")
+		assert.NoError(t, err)
 	})
 
 	t.Run("delete non-existent target", func(t *testing.T) {

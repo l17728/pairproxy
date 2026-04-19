@@ -258,11 +258,6 @@ var llmTargetUpdateCmd = &cobra.Command{
 			return err
 		}
 
-		// 检查是否可编辑
-		if !target.IsEditable {
-			return fmt.Errorf("cannot update config-sourced target: %s\nConfig-sourced targets must be modified in sproxy.yaml", targetURL)
-		}
-
 		// 记录变更前的值（用于审计日志）
 		changes := []string{}
 
@@ -431,11 +426,6 @@ var llmTargetDeleteCmd = &cobra.Command{
 		target, err := resolveUniqueTarget(repo, targetURL)
 		if err != nil {
 			return err
-		}
-
-		// 检查是否可编辑
-		if !target.IsEditable {
-			return fmt.Errorf("cannot delete config-sourced target: %s\nConfig-sourced targets must be removed from sproxy.yaml", targetURL)
 		}
 
 		// 删除 target
