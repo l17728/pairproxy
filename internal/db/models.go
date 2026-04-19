@@ -48,6 +48,7 @@ type UsageLog struct {
 	RequestID    string    `gorm:"uniqueIndex;not null"` // 幂等防重
 	UserID       string    `gorm:"not null;index"`
 	Model        string
+	ActualModel  string    `gorm:"default:''"` // 实际转发的模型名（model mapping / auto 模式后）
 	InputTokens  int       `gorm:"default:0"`
 	OutputTokens int       `gorm:"default:0"`
 	TotalTokens  int       `gorm:"default:0"`

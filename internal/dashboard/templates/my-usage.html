@@ -87,7 +87,8 @@
       <thead class="bg-gray-50 text-xs text-gray-500 uppercase">
         <tr>
           <th class="px-4 py-3 text-left">时间</th>
-          <th class="px-4 py-3 text-left">模型</th>
+          <th class="px-4 py-3 text-left">请求模型</th>
+          <th class="px-4 py-3 text-left">实际模型</th>
           <th class="px-4 py-3 text-right">输入</th>
           <th class="px-4 py-3 text-right">输出</th>
           <th class="px-4 py-3 text-right">费用($)</th>
@@ -96,7 +97,7 @@
         </tr>
       </thead>
       <tbody class="divide-y divide-gray-50 text-gray-700" id="recentRequestsBody">
-        <tr><td colspan="7" class="px-4 py-6 text-center text-gray-400">请先选择用户</td></tr>
+        <tr><td colspan="8" class="px-4 py-6 text-center text-gray-400">请先选择用户</td></tr>
       </tbody>
     </table>
   </div>
@@ -343,7 +344,7 @@ async function loadRecentRequests(page) {
   const days = parseInt(document.getElementById('logsDaysSelect').value) || 7;
   const pageSize = parseInt(document.getElementById('logsPageSizeSelect').value) || 10;
   const tbody = document.getElementById('recentRequestsBody');
-  tbody.innerHTML = '<tr><td colspan="7" class="px-4 py-6 text-center text-gray-400">加载中...</td></tr>';
+  tbody.innerHTML = '<tr><td colspan="8" class="px-4 py-6 text-center text-gray-400">加载中...</td></tr>';
 
   try {
     const url = `/api/dashboard/user-logs?username=${encodeURIComponent(currentUsername)}&days=${days}&page=${page}&page_size=${pageSize}`;
@@ -365,13 +366,14 @@ async function loadRecentRequests(page) {
 function renderLogsTable(logs) {
   const tbody = document.getElementById('recentRequestsBody');
   if (!logs || logs.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="7" class="px-4 py-6 text-center text-gray-400">暂无请求记录</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" class="px-4 py-6 text-center text-gray-400">暂无请求记录</td></tr>';
     return;
   }
   tbody.innerHTML = logs.map(l => `
     <tr class="hover:bg-gray-50">
       <td class="px-4 py-3 text-gray-400 text-xs whitespace-nowrap">${l.created_at}</td>
       <td class="px-4 py-3 text-gray-500 text-xs">${l.model || '—'}</td>
+      <td class="px-4 py-3 text-xs">${l.actual_model ? `<span class="text-indigo-600">${l.actual_model}</span>` : '<span class="text-gray-300">—</span>'}</td>
       <td class="px-4 py-3 text-right">${l.input_tokens.toLocaleString()}</td>
       <td class="px-4 py-3 text-right">${l.output_tokens.toLocaleString()}</td>
       <td class="px-4 py-3 text-right text-amber-600">${l.cost_usd > 0 ? l.cost_usd.toFixed(4) : '<span class="text-gray-300">—</span>'}</td>

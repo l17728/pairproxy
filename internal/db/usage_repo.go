@@ -29,6 +29,7 @@ type UsageRecord struct {
 	RequestID    string
 	UserID       string
 	Model        string
+	ActualModel  string // 实际转发的模型名（model mapping / auto 模式后）；空表示与 Model 相同
 	InputTokens  int
 	OutputTokens int
 	IsStreaming  bool
@@ -251,6 +252,7 @@ func (w *UsageWriter) writeBatch(batch []UsageRecord) {
 			RequestID:    r.RequestID,
 			UserID:       r.UserID,
 			Model:        r.Model,
+			ActualModel:  r.ActualModel,
 			InputTokens:  r.InputTokens,
 			OutputTokens: r.OutputTokens,
 			TotalTokens:  total,

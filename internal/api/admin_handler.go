@@ -652,6 +652,7 @@ type logEntryResponse struct {
 	RequestID    string `json:"request_id"`
 	UserID       string `json:"user_id"`
 	Model        string `json:"model"`
+	ActualModel  string `json:"actual_model"` // 实际转发的模型名（model mapping 后）；空表示与 model 相同
 	InputTokens  int    `json:"input_tokens"`
 	OutputTokens int    `json:"output_tokens"`
 	TotalTokens  int    `json:"total_tokens"`
@@ -686,6 +687,7 @@ func (h *AdminHandler) handleStatsLogs(w http.ResponseWriter, r *http.Request) {
 			RequestID:    l.RequestID,
 			UserID:       l.UserID,
 			Model:        l.Model,
+			ActualModel:  l.ActualModel,
 			InputTokens:  l.InputTokens,
 			OutputTokens: l.OutputTokens,
 			TotalTokens:  l.TotalTokens,

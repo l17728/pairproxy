@@ -464,6 +464,7 @@ func (h *KeygenHandler) handleLogs(w http.ResponseWriter, r *http.Request) {
 	type logEntry struct {
 		CreatedAt    string  `json:"created_at"`
 		Model        string  `json:"model"`
+		ActualModel  string  `json:"actual_model"`
 		InputTokens  int     `json:"input_tokens"`
 		OutputTokens int     `json:"output_tokens"`
 		CostUSD      float64 `json:"cost_usd"`
@@ -524,6 +525,7 @@ func (h *KeygenHandler) handleLogs(w http.ResponseWriter, r *http.Request) {
 		entries = append(entries, logEntry{
 			CreatedAt:    l.CreatedAt.Local().Format("2006-01-02 15:04:05"),
 			Model:        l.Model,
+			ActualModel:  l.ActualModel,
 			InputTokens:  l.InputTokens,
 			OutputTokens: l.OutputTokens,
 			CostUSD:      l.CostUSD,
@@ -737,7 +739,8 @@ const keygenHTML = `<!DOCTYPE html>
           <thead class="bg-gray-50 text-xs text-gray-500 uppercase">
             <tr>
               <th class="px-4 py-3 text-left">时间</th>
-              <th class="px-4 py-3 text-left">模型</th>
+              <th class="px-4 py-3 text-left">请求模型</th>
+              <th class="px-4 py-3 text-left">实际模型</th>
               <th class="px-4 py-3 text-right">输入</th>
               <th class="px-4 py-3 text-right">输出</th>
               <th class="px-4 py-3 text-right">费用($)</th>
@@ -746,7 +749,7 @@ const keygenHTML = `<!DOCTYPE html>
             </tr>
           </thead>
           <tbody class="divide-y divide-gray-50 text-gray-700" id="logsBody">
-            <tr><td colspan="7" class="px-4 py-8 text-center text-gray-400 text-sm">加载中...</td></tr>
+            <tr><td colspan="8" class="px-4 py-8 text-center text-gray-400 text-sm">加载中...</td></tr>
           </tbody>
         </table>
       </div>
@@ -977,20 +980,21 @@ async function loadLogs(page) {
     renderLogsPagination(data.page, data.total_pages, data.total, data.page_size);
   } catch (e) {
     console.error('loadLogs failed:', e);
-    tbody.innerHTML = '<tr><td colspan="7" class="px-4 py-8 text-center text-red-400">请求失败</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" class="px-4 py-8 text-center text-red-400">请求失败</td></tr>';
   }
 }
 
 function renderLogsTable(logs) {
   const tbody = document.getElementById('logsBody');
   if (!logs || logs.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="7" class="px-4 py-8 text-center text-gray-400">暂无请求记录</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" class="px-4 py-8 text-center text-gray-400">暂无请求记录</td></tr>';
     return;
   }
   tbody.innerHTML = logs.map(l => ` + "`" + `
     <tr class="hover:bg-gray-50">
       <td class="px-4 py-3 text-gray-400 text-xs whitespace-nowrap">${l.created_at}</td>
       <td class="px-4 py-3 text-gray-500 text-xs">${l.model || '—'}</td>
+      <td class="px-4 py-3 text-xs">${l.actual_model ? ` + "`" + `<span class="text-indigo-600">${l.actual_model}</span>` + "`" + ` : '<span class="text-gray-300">—</span>'}</td>
       <td class="px-4 py-3 text-right text-xs">${l.input_tokens.toLocaleString()}</td>
       <td class="px-4 py-3 text-right text-xs">${l.output_tokens.toLocaleString()}</td>
       <td class="px-4 py-3 text-right text-xs text-amber-600">${l.cost_usd > 0 ? l.cost_usd.toFixed(4) : '<span class="text-gray-300">—</span>'}</td>

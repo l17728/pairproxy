@@ -1537,6 +1537,10 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 	// OtoA 场景：此值为 OpenAI 客户端发送的模型名（如 "gpt-4o"），
 	//   不是 Anthropic 模型名，响应时用于日志记录和 UsageRecord.Model 字段。
 
+	// recordedActualModel 追踪经过 auto/model-mapping 等变换后实际发往上游的模型名。
+	// 空字符串表示与 requestedModel 相同（无变换）。
+	var recordedActualModel string
+
 	// Auto 模式处理（F3）：选定 target 后，用 target 的 auto_model 重写请求体中的 model 字段
 	if requestedModel == "auto" && sp.llmBalancer != nil && len(bodyBytes) > 0 {
 		actualModel := sp.autoModelFromURL(firstInfo.URL)
@@ -1546,6 +1550,7 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 				bodyBytes = rewritten
 				r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 				r.ContentLength = int64(len(bodyBytes))
+				recordedActualModel = actualModel
 				sp.logger.Info("auto mode: rewrote model in request body",
 					zap.String("request_id", reqID),
 					zap.String("target_url", firstInfo.URL),
@@ -1607,6 +1612,12 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 				// 更新 body
 				r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 				r.ContentLength = int64(len(bodyBytes))
+				// 记录实际模型（AtoO 转换内部应用了 model mapping）
+				if len(modelMapping) > 0 {
+					if mapped := mapModelName(requestedModel, modelMapping); mapped != requestedModel {
+						recordedActualModel = mapped
+					}
+				}
 
 				sp.logger.Info("request converted successfully",
 					zap.String("request_id", reqID),
@@ -1650,6 +1661,12 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 				convertedPath = newPath
 				r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 				r.ContentLength = int64(len(bodyBytes))
+				// 记录实际模型（OtoA 转换内部应用了 model mapping）
+				if len(modelMapping) > 0 {
+					if mapped := mapModelName(requestedModel, modelMapping); mapped != requestedModel {
+						recordedActualModel = mapped
+					}
+				}
 				sp.logger.Info("OtoA request converted successfully",
 					zap.String("request_id", reqID),
 					zap.String("new_path", newPath),
@@ -1685,6 +1702,7 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 					bodyBytes = rewritten
 					r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 					r.ContentLength = int64(len(bodyBytes))
+					recordedActualModel = mappedModel
 					sp.logger.Debug("model name mapped (passthrough)",
 						zap.String("request_id", reqID),
 						zap.String("original_model", requestedModel),
@@ -1715,6 +1733,7 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 		RequestID:   reqID,
 		UserID:      claims.UserID,
 		Model:       model,
+		ActualModel: recordedActualModel,
 		UpstreamURL: firstInfo.URL,
 		SourceNode:  sp.sourceNode,
 		CreatedAt:   time.Now().UTC(),

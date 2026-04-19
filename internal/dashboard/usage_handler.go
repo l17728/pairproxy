@@ -248,6 +248,7 @@ func (h *Handler) handleDashboardUserLogs(w http.ResponseWriter, r *http.Request
 	type logEntry struct {
 		CreatedAt    string  `json:"created_at"`
 		Model        string  `json:"model"`
+		ActualModel  string  `json:"actual_model"`
 		InputTokens  int     `json:"input_tokens"`
 		OutputTokens int     `json:"output_tokens"`
 		CostUSD      float64 `json:"cost_usd"`
@@ -261,6 +262,7 @@ func (h *Handler) handleDashboardUserLogs(w http.ResponseWriter, r *http.Request
 		entries = append(entries, logEntry{
 			CreatedAt:    l.CreatedAt.Local().Format("2006-01-02 15:04:05"),
 			Model:        l.Model,
+			ActualModel:  l.ActualModel,
 			InputTokens:  l.InputTokens,
 			OutputTokens: l.OutputTokens,
 			CostUSD:      l.CostUSD,

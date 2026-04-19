@@ -95,8 +95,8 @@ func TestSyncConfigTargetsToDatabase(t *testing.T) {
 	// Verify properties
 	for _, target := range targets {
 		assert.Equal(t, "config", target.Source)
-		// Seed sets IsEditable=true on first insert, allowing WebUI modifications (F1)
-		assert.True(t, target.IsEditable)
+		// config-sourced targets are NOT editable via WebUI (IsEditable=false)
+		assert.False(t, target.IsEditable)
 		assert.True(t, target.IsActive)
 	}
 }
