@@ -35,7 +35,8 @@ type TargetCredential struct {
 // 认证支持：支持 Bearer 认证（OpenAI/OpenAI-compatible）和 x-api-key 认证（Anthropic）。
 // 被动熔断：调用方通过 RecordSuccess/RecordFailure 上报结果，
 // 连续 failThreshold 次失败后将节点标记为不健康。
-// 自动恢复：recoveryDelay > 0 时，节点进入不健康状态后自动在 recoveryDelay 后恢复（半开状态）。
+// 自动恢复：recoveryDelay > 0 时，节点进入不健康状态后等待 recoveryDelay，然后发起即时健康检查；
+// 检查通过才恢复健康，检查失败则继续标记为不健康并再次等待（检查驱动，非半开状态直接放行）。
 type HealthChecker struct {
 	balancer      Balancer
 	client        *http.Client
@@ -92,9 +93,10 @@ func WithHealthPath(p string) HealthCheckerOption {
 	return func(h *HealthChecker) { h.healthPath = p }
 }
 
-// WithRecoveryDelay 设置熔断后自动恢复延迟（默认 0=禁用）。
-// 当节点被标记为不健康后，经过 d 时长会自动重置为健康（半开状态）；
-// 若下次真实请求依然失败，节点会再次进入不健康状态。
+// WithRecoveryDelay 设置熔断后自动恢复的检查延迟（默认 0=禁用）。
+// 当节点被标记为不健康后，等待 d 时长，然后发起即时健康检查：
+//   - 检查通过 → 节点恢复健康；
+//   - 检查失败 → 节点继续不健康，再次等待 d 时长后重试。
 // 注意：recoveryDelay goroutine 依赖 Start() 关闭的 stopCh 信号来感知关闭；
 // 若仅使用被动熔断（不调用 Start），应将 recoveryDelay 设为 0（默认值）。
 func WithRecoveryDelay(d time.Duration) HealthCheckerOption {
@@ -564,8 +566,10 @@ func (hc *HealthChecker) recordFailure(id string) {
 				},
 			})
 		}
-		// 自动恢复（半开状态）：经过 recoveryDelay 后自动重置为健康
-		if hc.recoveryDelay > 0 {
+		// 自动恢复：等待 recoveryDelay 后根据是否配置主动健康检查选择恢复策略。
+		// 只在首次达到阈值时（count == failThreshold）启动恢复 goroutine，
+		// 避免后续连续失败重复启动多个 goroutine 造成堆积。
+		if hc.recoveryDelay > 0 && count == hc.failThreshold {
 			hc.wg.Add(1)
 			go func() {
 				defer hc.wg.Done()
@@ -581,13 +585,34 @@ func (hc *HealthChecker) recordFailure(id string) {
 					hc.mu.Unlock()
 					return
 				}
-				hc.failures[id] = 0
-				hc.mu.Unlock()
-				hc.balancer.MarkHealthy(id)
-				hc.logger.Info("target auto-recovered after delay",
-					zap.String("target", id),
-					zap.Duration("recovery_delay", hc.recoveryDelay),
-				)
+				// 判断是否配置了主动健康检查（有认证凭证或显式路径）
+				_, hasCredential := hc.credentials[id]
+				_, hasExplicitPath := hc.healthPaths[id]
+				hasActiveCheck := hasCredential || hasExplicitPath
+
+				if hasActiveCheck {
+					// 检查驱动恢复（有主动健康检查配置）：重置到阈值-1，由 CheckTarget 结果决定；
+					// CheckTarget 成功 → recordSuccess → MarkHealthy；
+					// CheckTarget 失败 → failures 回到 failThreshold，再次触发恢复 goroutine。
+					// 避免 API Key 失效、认证错误等场景出现假阳性健康状态。
+					hc.failures[id] = hc.failThreshold - 1
+					hc.mu.Unlock()
+					hc.logger.Info("target recovery check triggered",
+						zap.String("target", id),
+						zap.Duration("recovery_delay", hc.recoveryDelay),
+					)
+					hc.CheckTarget(id)
+				} else {
+					// 半开恢复（纯被动熔断，无主动检查配置）：直接放行，让真实流量检验健康状态；
+					// 若下次真实请求失败，RecordFailure 会再次触发熔断。
+					hc.failures[id] = 0
+					hc.mu.Unlock()
+					hc.balancer.MarkHealthy(id)
+					hc.logger.Info("target auto-recovered after delay (passive mode)",
+						zap.String("target", id),
+						zap.Duration("recovery_delay", hc.recoveryDelay),
+					)
+				}
 			}()
 		}
 	} else {
