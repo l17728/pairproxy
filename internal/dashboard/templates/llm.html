@@ -606,7 +606,7 @@
 
 <!-- 绑定数据（供 JS 过滤分页使用） -->
 <script id="bindingsDataScript" type="application/json">
-[{{range .Bindings}}{"id":"{{.ID}}","type":"{{if .UserID}}user{{else}}group{{end}}","name":"{{if .UserID}}{{username .UserID $.UserIDToName}}{{else if .GroupID}}{{username .GroupID $.GroupIDToName}}{{end}}","targetURL":"{{.TargetURL}}","createdAt":"{{.CreatedAt.Format "2006-01-02 15:04"}}"},{{end}}]
+{{.BindingsJSON}}
 </script>
 
 {{end}}
