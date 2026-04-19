@@ -1,5 +1,45 @@
 # PairProxy Changelog
 
+## [v3.0.0] - 2026-04-19
+
+### 🚀 Major Version Release
+
+#### AtoO 协议转换路径修复（Breaking Improvement）
+
+**问题**：Anthropic → OpenAI 协议转换时，`convertedPath` 固定为 `/v1/chat/completions`，完全忽略 target URL 中的 base path（如 `/v2`、`/openai/v1`），导致此类端点返回 404。
+
+**修复**：
+- `internal/proxy/protocol_converter.go` — `convertAnthropicToOpenAIRequest` 返回路径后缀 `/chat/completions`（不含版本前缀）
+- `internal/proxy/sproxy.go` — Director 按 target base path 动态拼接最终路径：有 base path 时使用 `basePath + /chat/completions`，无 base path 时保持 `/v1/chat/completions` 兼容标准 OpenAI 端点
+
+**效果**：
+| target_url | 最终请求路径 |
+|---|---|
+| `https://api.openai.com` | `/v1/chat/completions` |
+| `https://api.example.com/v2` | `/v2/chat/completions` |
+| `https://api.example.com/openai/v1` | `/openai/v1/chat/completions` |
+
+#### CLI 可修改 config-sourced LLM Target
+
+**变更**：通过命令行（`sproxy admin llm target update/delete`）现在可以修改或删除来自配置文件的 LLM target（`source=config`），WebUI 界面仍保持拦截。
+
+**修改文件**：
+- `internal/db/llmtarget_repo.go` — `Update()` / `Delete()` 移除 `IsEditable` 拦截
+- `internal/api/admin_llm_target_handler.go` — API handler 移除 `IsEditable` 拦截
+- `cmd/sproxy/admin_llm_target.go` — CLI 命令移除 client 侧 `IsEditable` 检查
+
+#### Dashboard 绑定关系列表修复
+
+- 修复绑定关系列表不显示数据（`html/template` HTML 转义破坏 JSON.parse）
+- 修复搜索过滤时表格列宽抖动
+- 绑定关系列表支持分页、搜索、用户下拉框
+
+#### 代码国际化
+
+- 将 Go 源文件及设计文档中的日文注释全部替换为中文或英文
+
+---
+
 ## [v2.24.8] - 2026-04-16
 
 ### 🐛 Bug Fixes

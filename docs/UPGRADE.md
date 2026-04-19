@@ -1,6 +1,6 @@
 # PairProxy 升级指南
 
-> 当前版本：**v2.24.8** | 更新日期：2026-04-16
+> 当前版本：**v3.0.0** | 更新日期：2026-04-19
 
 本文档描述各版本间的升级步骤、数据库 Schema 变更、回滚方法及不兼容变更。
 
@@ -51,6 +51,39 @@
 ---
 
 ## 版本变更记录
+
+### v3.0.0 — AtoO 路径修复 + CLI 管理增强 + Dashboard 修复
+
+**数据库 Schema 变更**
+
+无新增 Schema 变更（与 v2.24.8 兼容，直接替换二进制即可）。
+
+**不兼容变更**
+
+- AtoO 协议转换路径行为变更：target URL 中的 base path（如 `/v2`）现在会被正确拼接到请求路径中。若已有 target URL 以 base path 结尾（如 `https://api.openai.com/v1`），请确认实际需要的路径为 `/v1/chat/completions`——此时无需修改，系统会正确处理；若 target URL 为根域名（如 `https://api.openai.com`），行为与之前完全一致。
+
+**升级步骤**
+
+```bash
+# 1. 备份数据库
+cp pairproxy.db pairproxy.db.bak
+
+# 2. 替换二进制
+cp sproxy-v3.0.0 /usr/local/bin/sproxy
+cp cproxy-v3.0.0 /usr/local/bin/cproxy
+
+# 3. 重启（无 Schema 迁移，直接重启即可）
+systemctl restart sproxy
+```
+
+**v2.24.8 → v3.0.0 验证清单**
+
+- [ ] `GET /health` 返回 `{"status":"ok"}`
+- [ ] Anthropic → OpenAI 协议转换正常（检查带 base path 的 target）
+- [ ] CLI `sproxy admin llm target update` 可修改 config-sourced target
+- [ ] Dashboard 绑定关系列表正常显示
+
+---
 
 ### v2.24.8 — 配额直连修复 + 旧 Key 吊销 + Model Mapping 透传 + 用户管理分页
 

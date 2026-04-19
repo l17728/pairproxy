@@ -1,6 +1,6 @@
 # PairProxy Security Guide
 
-> **版本**：v2.18.0 | 最后更新：2026-03-22
+> **版本**：v3.0.0 | 最后更新：2026-04-19
 
 This document describes the security model of PairProxy, the threats it addresses, the mitigations in place, and operational hardening recommendations.
 
