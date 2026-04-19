@@ -481,7 +481,8 @@ func (sp *SProxy) loadAllTargets(repo *db.LLMTargetRepo) ([]config.LLMTarget, er
 // resolveAPIKey 根据 API Key ID 查询 API Key 值。
 // 根据 key_scheme 字段选择解密方式：
 //   - "aes"：使用 keyDecryptFn（AES-256-GCM）解密，由 Admin API 或 CLI apikey add 写入；
-//   - "obfuscated"（默认）：使用 obfuscateKey 还原，由 config-sync 路径写入。
+//   - "obfuscated"：使用 obfuscateKey 还原，由 config-sync 路径写入；
+//   - ""（空，迁移前历史记录）：先尝试 AES，失败则回退 obfuscateKey，兼容旧数据。
 func (sp *SProxy) resolveAPIKey(apiKeyID *string) (string, error) {
 	if apiKeyID == nil || *apiKeyID == "" {
 		return "", nil // API Key 可选
@@ -492,7 +493,9 @@ func (sp *SProxy) resolveAPIKey(apiKeyID *string) (string, error) {
 		return "", fmt.Errorf("query api key: %w", err)
 	}
 
-	if apiKey.KeyScheme == "aes" {
+	switch apiKey.KeyScheme {
+	case "aes":
+		// 明确标记为 AES（Admin API / CLI 新建），硬错误，不静默降级
 		if sp.keyDecryptFn == nil {
 			return "", fmt.Errorf("key %s uses AES scheme but keyDecryptFn is not configured", *apiKeyID)
 		}
@@ -501,10 +504,21 @@ func (sp *SProxy) resolveAPIKey(apiKeyID *string) (string, error) {
 			return "", fmt.Errorf("AES decrypt api key %s: %w", *apiKeyID, err)
 		}
 		return plain, nil
-	}
 
-	// "obfuscated" 或空（历史记录兜底）
-	return obfuscateKey(apiKey.EncryptedValue), nil
+	case "obfuscated":
+		// 明确标记为混淆（config-sync），直接还原
+		return obfuscateKey(apiKey.EncryptedValue), nil
+
+	default:
+		// key_scheme 为空：迁移前的历史记录，来源未知。
+		// 先尝试 AES（Admin API 路径），失败则回退 obfuscateKey（config-sync 路径）。
+		if sp.keyDecryptFn != nil {
+			if plain, err := sp.keyDecryptFn(apiKey.EncryptedValue); err == nil {
+				return plain, nil
+			}
+		}
+		return obfuscateKey(apiKey.EncryptedValue), nil
+	}
 }
 
 // swapFirstLast 交换字符串的首尾字符（对称操作）。
