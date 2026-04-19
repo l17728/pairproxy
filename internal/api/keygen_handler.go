@@ -822,7 +822,7 @@ function updateKeyDisplay(key) {
   currentKey = key;
   document.getElementById('apiKeyDisplay').textContent = key;
   document.getElementById('ccSettingsSnippet').textContent =
-    '{\n  "env": {\n    "ANTHROPIC_API_KEY": "' + key + '"\n  }\n}';
+    '{\n  "env": {\n    "ANTHROPIC_AUTH_TOKEN": "' + key + '"\n  }\n}';
 }
 
 function logout() {
