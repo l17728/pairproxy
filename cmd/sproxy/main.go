@@ -2831,7 +2831,7 @@ var adminApikeyAddCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("encrypt key: %w", err)
 		}
-		key, err := repo.Create(name, encrypted, apikeyAddProvider)
+		key, err := repo.Create(name, encrypted, apikeyAddProvider, "aes")
 		if err != nil {
 			return fmt.Errorf("create api key: %w", err)
 		}

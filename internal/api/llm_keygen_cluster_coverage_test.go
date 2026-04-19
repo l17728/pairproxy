@@ -1050,7 +1050,7 @@ func TestAssignAPIKey_InvalidJSON(t *testing.T) {
 	tok := adminToken(t, jwtMgr)
 
 	// 先创建一个 key
-	key, err := apiKeyRepo.Create("assign-test-key", "enc:val", "anthropic")
+	key, err := apiKeyRepo.Create("assign-test-key", "enc:val", "anthropic", "obfuscated")
 	if err != nil {
 		t.Fatalf("create key: %v", err)
 	}
@@ -1069,7 +1069,7 @@ func TestAssignAPIKey_MissingFields(t *testing.T) {
 	_, jwtMgr, mux, apiKeyRepo := setupAdminWithAPIKeyRepo(t)
 	tok := adminToken(t, jwtMgr)
 
-	key, err := apiKeyRepo.Create("assign-miss-key", "enc:val", "anthropic")
+	key, err := apiKeyRepo.Create("assign-miss-key", "enc:val", "anthropic", "obfuscated")
 	if err != nil {
 		t.Fatalf("create key: %v", err)
 	}
@@ -1089,7 +1089,7 @@ func TestAssignAPIKey_ByGroupID(t *testing.T) {
 	_, jwtMgr, mux, apiKeyRepo := setupAdminWithAPIKeyRepo(t)
 	tok := adminToken(t, jwtMgr)
 
-	key, err := apiKeyRepo.Create("assign-group-key", "enc:val", "anthropic")
+	key, err := apiKeyRepo.Create("assign-group-key", "enc:val", "anthropic", "obfuscated")
 	if err != nil {
 		t.Fatalf("create key: %v", err)
 	}

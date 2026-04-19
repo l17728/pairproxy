@@ -975,7 +975,7 @@ func (h *AdminHandler) handleCreateAPIKey(w http.ResponseWriter, r *http.Request
 		writeJSONError(w, http.StatusInternalServerError, "internal_error", "failed to encrypt api key")
 		return
 	}
-	key, err := h.apiKeyRepo.Create(req.Name, encrypted, req.Provider)
+	key, err := h.apiKeyRepo.Create(req.Name, encrypted, req.Provider, "aes")
 	if err != nil {
 		h.logger.Error("create api key failed", zap.String("name", req.Name), zap.Error(err))
 		writeJSONError(w, http.StatusInternalServerError, "internal_error", "failed to create api key")

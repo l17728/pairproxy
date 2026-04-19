@@ -85,7 +85,8 @@ type Peer struct {
 type APIKey struct {
 	ID             string    `gorm:"primarykey"`
 	Name           string    `gorm:"uniqueIndex;not null"` // 标识名称（唯一）
-	EncryptedValue string    `gorm:"not null"`             // AES-256-GCM + base64
+	EncryptedValue string    `gorm:"not null"`             // 加密/混淆后的 Key 值；格式由 KeyScheme 决定
+	KeyScheme      string    `gorm:"default:'obfuscated'"` // "obfuscated"（config-sync 路径）| "aes"（Admin API 路径）
 	Provider       string    `gorm:"default:'anthropic'"`  // "anthropic" | "openai" | "ollama"
 	IsActive       bool      `gorm:"default:true"`
 	CreatedAt      time.Time

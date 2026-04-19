@@ -108,11 +108,11 @@ func TestAPIKeyRepo_Assign_ConcurrentConsistency(t *testing.T) {
 	}
 
 	// Create two API keys
-	keyA, err := apiKeyRepo.Create("key-a", "enc-a", "anthropic")
+	keyA, err := apiKeyRepo.Create("key-a", "enc-a", "anthropic", "obfuscated")
 	if err != nil {
 		t.Fatalf("create keyA: %v", err)
 	}
-	keyB, err := apiKeyRepo.Create("key-b", "enc-b", "openai")
+	keyB, err := apiKeyRepo.Create("key-b", "enc-b", "openai", "obfuscated")
 	if err != nil {
 		t.Fatalf("create keyB: %v", err)
 	}

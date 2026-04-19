@@ -21,15 +21,20 @@ func NewAPIKeyRepo(db *gorm.DB, logger *zap.Logger) *APIKeyRepo {
 	return &APIKeyRepo{db: db, logger: logger.Named("apikey_repo")}
 }
 
-// Create 创建新的 API Key 记录（encryptedValue 已加密）。
-func (r *APIKeyRepo) Create(name, encryptedValue, provider string) (*APIKey, error) {
+// Create 创建新的 API Key 记录（encryptedValue 已加密/混淆）。
+// keyScheme 指定存储格式："aes"（AES-256-GCM）或 "obfuscated"（config-sync 路径，默认）。
+func (r *APIKeyRepo) Create(name, encryptedValue, provider, keyScheme string) (*APIKey, error) {
 	if provider == "" {
 		provider = "anthropic"
+	}
+	if keyScheme == "" {
+		keyScheme = "obfuscated"
 	}
 	key := &APIKey{
 		ID:             uuid.New().String(),
 		Name:           name,
 		EncryptedValue: encryptedValue,
+		KeyScheme:      keyScheme,
 		Provider:       provider,
 		IsActive:       true,
 		CreatedAt:      time.Now(),

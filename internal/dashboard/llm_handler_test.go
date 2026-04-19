@@ -671,11 +671,11 @@ func TestHandleLLMCreateTarget_SameURLDifferentKey_Succeeds(t *testing.T) {
 	cookie := &http.Cookie{Name: api.AdminCookieName, Value: tok}
 
 	// Create two API keys
-	keyA, err := apiKeyRepo.Create("keyA", "enc-A", "anthropic")
+	keyA, err := apiKeyRepo.Create("keyA", "enc-A", "anthropic", "obfuscated")
 	if err != nil {
 		t.Fatalf("create keyA: %v", err)
 	}
-	keyB, err := apiKeyRepo.Create("keyB", "enc-B", "openai")
+	keyB, err := apiKeyRepo.Create("keyB", "enc-B", "openai", "obfuscated")
 	if err != nil {
 		t.Fatalf("create keyB: %v", err)
 	}
@@ -759,7 +759,7 @@ func TestHandleLLMCreateTarget_SameURLSameKey_IsRejected(t *testing.T) {
 	tok, _ := jwtMgr.Sign(auth.JWTClaims{UserID: "__admin__", Username: "admin", Role: "admin"}, time.Hour)
 	cookie := &http.Cookie{Name: api.AdminCookieName, Value: tok}
 
-	keyA, err := apiKeyRepo.Create("keyA", "enc-A", "anthropic")
+	keyA, err := apiKeyRepo.Create("keyA", "enc-A", "anthropic", "obfuscated")
 	if err != nil {
 		t.Fatalf("create keyA: %v", err)
 	}
@@ -824,11 +824,11 @@ func TestHandleLLMUpdateTarget_ChangeAPIKeyID_CheckCombo(t *testing.T) {
 	cookie := &http.Cookie{Name: api.AdminCookieName, Value: tok}
 
 	// Create two API keys
-	keyA, err := apiKeyRepo.Create("keyA", "enc-A", "anthropic")
+	keyA, err := apiKeyRepo.Create("keyA", "enc-A", "anthropic", "obfuscated")
 	if err != nil {
 		t.Fatalf("create keyA: %v", err)
 	}
-	keyB, err := apiKeyRepo.Create("keyB", "enc-B", "openai")
+	keyB, err := apiKeyRepo.Create("keyB", "enc-B", "openai", "obfuscated")
 	if err != nil {
 		t.Fatalf("create keyB: %v", err)
 	}

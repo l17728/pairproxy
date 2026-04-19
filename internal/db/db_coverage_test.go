@@ -327,7 +327,7 @@ func TestAPIKeyRepo_FindForUser_BothEmpty_Cov(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	repo := NewAPIKeyRepo(db, logger)
 
-	_, err := repo.Create("unassigned-cov", "enc", "anthropic")
+	_, err := repo.Create("unassigned-cov", "enc", "anthropic", "obfuscated")
 	require.NoError(t, err)
 
 	found, err := repo.FindForUser("", "")
@@ -356,7 +356,7 @@ func TestAPIKeyRepo_Assign_WithGroupOnly(t *testing.T) {
 	g := &Group{Name: "assign-group-only-cov"}
 	require.NoError(t, groupRepo.Create(g))
 
-	key, err := repo.Create("group-only-key-cov", "enc", "anthropic")
+	key, err := repo.Create("group-only-key-cov", "enc", "anthropic", "obfuscated")
 	require.NoError(t, err)
 
 	gid := g.ID
@@ -1259,7 +1259,7 @@ func TestAPIKeyRepo_ErrorPaths_OnClosedDB(t *testing.T) {
 	gormDB := openTestDB(t)
 	repo := NewAPIKeyRepo(gormDB, logger)
 
-	key, err := repo.Create("err-key", "enc", "anthropic")
+	key, err := repo.Create("err-key", "enc", "anthropic", "obfuscated")
 	require.NoError(t, err)
 
 	sqlDB, dbErr := gormDB.DB()
@@ -1267,7 +1267,7 @@ func TestAPIKeyRepo_ErrorPaths_OnClosedDB(t *testing.T) {
 	require.NoError(t, sqlDB.Close())
 
 	t.Run("Create error", func(t *testing.T) {
-		_, err := repo.Create("new-key", "enc", "anthropic")
+		_, err := repo.Create("new-key", "enc", "anthropic", "obfuscated")
 		assert.Error(t, err)
 	})
 
@@ -1498,7 +1498,7 @@ func TestAPIKeyRepo_Assign_DeleteThenCreateError(t *testing.T) {
 	gormDB := openTestDB(t)
 	repo := NewAPIKeyRepo(gormDB, logger)
 
-	key, err := repo.Create("assign-err-key", "enc", "anthropic")
+	key, err := repo.Create("assign-err-key", "enc", "anthropic", "obfuscated")
 	require.NoError(t, err)
 
 	sqlDB, dbErr := gormDB.DB()
@@ -1628,7 +1628,7 @@ func TestAPIKeyRepo_FindForUser_KeyRevoked(t *testing.T) {
 	repo := NewAPIKeyRepo(gormDB, logger)
 
 	// 创建 key，然后将其设为 inactive
-	key, err := repo.Create("revoked-key", "enc-val", "anthropic")
+	key, err := repo.Create("revoked-key", "enc-val", "anthropic", "obfuscated")
 	require.NoError(t, err)
 	require.NoError(t, gormDB.Model(&APIKey{}).Where("id = ?", key.ID).Update("is_active", false).Error)
 
@@ -1795,7 +1795,7 @@ func TestAPIKeyRepo_FindForUser_GroupAssignmentFound(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	repo := NewAPIKeyRepo(gormDB, logger)
 
-	key, err := repo.Create("grp-assign-key", "enc", "anthropic")
+	key, err := repo.Create("grp-assign-key", "enc", "anthropic", "obfuscated")
 	require.NoError(t, err)
 
 	gid := uuid.NewString()

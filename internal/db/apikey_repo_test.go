@@ -34,7 +34,7 @@ func TestAPIKeyRepo_CreateAndFind(t *testing.T) {
 	repo, _, _, cleanup := setupAPIKeyTest(t)
 	defer cleanup()
 
-	key, err := repo.Create("prod-key", "enc-value-xyz", "anthropic")
+	key, err := repo.Create("prod-key", "enc-value-xyz", "anthropic", "obfuscated")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestAPIKeyRepo_DefaultProvider(t *testing.T) {
 	repo, _, _, cleanup := setupAPIKeyTest(t)
 	defer cleanup()
 
-	key, err := repo.Create("default-prov", "enc-val", "")
+	key, err := repo.Create("default-prov", "enc-val", "", "obfuscated")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestAPIKeyRepo_List(t *testing.T) {
 	defer cleanup()
 
 	for i, name := range []string{"k1", "k2", "k3"} {
-		_, err := repo.Create(name, "enc-"+name, "")
+		_, err := repo.Create(name, "enc-"+name, "", "obfuscated")
 		if err != nil {
 			t.Fatalf("Create %d: %v", i, err)
 		}
@@ -109,7 +109,7 @@ func TestAPIKeyRepo_Revoke(t *testing.T) {
 	repo, userRepo, groupRepo, cleanup := setupAPIKeyTest(t)
 	defer cleanup()
 
-	key, err := repo.Create("to-revoke", "enc-val", "anthropic")
+	key, err := repo.Create("to-revoke", "enc-val", "anthropic", "obfuscated")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -163,8 +163,8 @@ func TestAPIKeyRepo_UserAssignment(t *testing.T) {
 		t.Fatalf("Create user: %v", err)
 	}
 
-	userKey, _ := repo.Create("user-key", "enc-user", "anthropic")
-	groupKey, _ := repo.Create("group-key", "enc-group", "anthropic")
+	userKey, _ := repo.Create("user-key", "enc-user", "anthropic", "obfuscated")
+	groupKey, _ := repo.Create("group-key", "enc-group", "anthropic", "obfuscated")
 
 	uid := user.ID
 	// 用户级分配
@@ -206,7 +206,7 @@ func TestAPIKeyRepo_GroupFallback(t *testing.T) {
 		t.Fatalf("Create user: %v", err)
 	}
 
-	groupKey, _ := repo.Create("fallback-key", "enc-fallback", "openai")
+	groupKey, _ := repo.Create("fallback-key", "enc-fallback", "openai", "obfuscated")
 
 	// 仅分组级分配（无用户级）
 	if err := repo.Assign(groupKey.ID, nil, &gid); err != nil {
@@ -261,7 +261,7 @@ func TestAPIKeyRepo_Assign_IsTransactional(t *testing.T) {
 	// Create a user and key
 	user := &User{Username: "alice", PasswordHash: "h1"}
 	require.NoError(t, userRepo.Create(user))
-	key1, err := repo.Create("key1", "enc1", "anthropic")
+	key1, err := repo.Create("key1", "enc1", "anthropic", "obfuscated")
 	require.NoError(t, err)
 
 	// Initial assignment
@@ -275,7 +275,7 @@ func TestAPIKeyRepo_Assign_IsTransactional(t *testing.T) {
 
 	// Key point: Assign is now transactional and returns errors immediately
 	// (Previously, delete errors were logged but ignored with "Warn" not "Error")
-	key2, err := repo.Create("key2", "enc2", "openai")
+	key2, err := repo.Create("key2", "enc2", "openai", "obfuscated")
 	require.NoError(t, err)
 
 	// Successful re-assignment: key1 → key2
@@ -308,7 +308,7 @@ func TestAPIKeyRepo_Assign_UserAndGroupSeparate(t *testing.T) {
 	require.NoError(t, userRepo.Create(user))
 	group := &Group{Name: "dev"}
 	require.NoError(t, groupRepo.Create(group))
-	key, err := repo.Create("key1", "enc1", "anthropic")
+	key, err := repo.Create("key1", "enc1", "anthropic", "obfuscated")
 	require.NoError(t, err)
 
 	// Assign same key to both user and group (should be allowed - different composite constraints)
@@ -332,7 +332,7 @@ func TestAPIKeyRepo_FindByProviderAndValue_Found(t *testing.T) {
 	repo, _, _, cleanup := setupAPIKeyTest(t)
 	defer cleanup()
 
-	key, err := repo.Create("test-key", "encrypted-value-abc", "anthropic")
+	key, err := repo.Create("test-key", "encrypted-value-abc", "anthropic", "obfuscated")
 	require.NoError(t, err)
 
 	found, err := repo.FindByProviderAndValue("anthropic", "encrypted-value-abc")
@@ -356,7 +356,7 @@ func TestAPIKeyRepo_FindByProviderAndValue_DifferentProvider(t *testing.T) {
 	repo, _, _, cleanup := setupAPIKeyTest(t)
 	defer cleanup()
 
-	_, err := repo.Create("test-key-openai", "same-encrypted-value", "openai")
+	_, err := repo.Create("test-key-openai", "same-encrypted-value", "openai", "obfuscated")
 	require.NoError(t, err)
 
 	// 用 anthropic 查相同值，不应找到
@@ -386,11 +386,11 @@ func TestAPIKeyRepo_FindForUser_OnlyReturnsFirst_CurrentBehavior(t *testing.T) {
 	require.NoError(t, groupRepo.Create(grp))
 
 	// 创建 3 个 key，都分配给同一 group
-	key1, err := repo.Create("pool-key-1", "enc-pool-1", "openai")
+	key1, err := repo.Create("pool-key-1", "enc-pool-1", "openai", "obfuscated")
 	require.NoError(t, err)
-	key2, err := repo.Create("pool-key-2", "enc-pool-2", "openai")
+	key2, err := repo.Create("pool-key-2", "enc-pool-2", "openai", "obfuscated")
 	require.NoError(t, err)
-	key3, err := repo.Create("pool-key-3", "enc-pool-3", "openai")
+	key3, err := repo.Create("pool-key-3", "enc-pool-3", "openai", "obfuscated")
 	require.NoError(t, err)
 
 	gid := grp.ID
@@ -424,11 +424,11 @@ func TestAPIKeyRepo_FindAllForGroup_ReturnsAllKeys(t *testing.T) {
 	grp := &Group{ID: "grp-all", Name: "all-keys-group"}
 	require.NoError(t, groupRepo.Create(grp))
 
-	key1, err := repo.Create("all-key-1", "enc-all-1", "openai")
+	key1, err := repo.Create("all-key-1", "enc-all-1", "openai", "obfuscated")
 	require.NoError(t, err)
-	key2, err := repo.Create("all-key-2", "enc-all-2", "openai")
+	key2, err := repo.Create("all-key-2", "enc-all-2", "openai", "obfuscated")
 	require.NoError(t, err)
-	key3, err := repo.Create("all-key-3", "enc-all-3", "openai")
+	key3, err := repo.Create("all-key-3", "enc-all-3", "openai", "obfuscated")
 	require.NoError(t, err)
 
 	gid := grp.ID
@@ -457,9 +457,9 @@ func TestAPIKeyRepo_FindAllForGroup_ExcludesRevoked(t *testing.T) {
 	grp := &Group{ID: "grp-revoke", Name: "revoke-group"}
 	require.NoError(t, groupRepo.Create(grp))
 
-	keyActive, err := repo.Create("active-key", "enc-active", "openai")
+	keyActive, err := repo.Create("active-key", "enc-active", "openai", "obfuscated")
 	require.NoError(t, err)
-	keyRevoked, err := repo.Create("revoked-key", "enc-revoked", "openai")
+	keyRevoked, err := repo.Create("revoked-key", "enc-revoked", "openai", "obfuscated")
 	require.NoError(t, err)
 
 	gid := grp.ID
@@ -494,9 +494,9 @@ func TestAPIKeyRepo_FindAllForGroup_IgnoresUserAssignments(t *testing.T) {
 	user := &User{ID: "usr-sep", Username: "sep-user", PasswordHash: "x"}
 	require.NoError(t, userRepo.Create(user))
 
-	groupKey, err := repo.Create("group-only-key", "enc-grp", "openai")
+	groupKey, err := repo.Create("group-only-key", "enc-grp", "openai", "obfuscated")
 	require.NoError(t, err)
-	userKey, err := repo.Create("user-only-key", "enc-usr", "openai")
+	userKey, err := repo.Create("user-only-key", "enc-usr", "openai", "obfuscated")
 	require.NoError(t, err)
 
 	gid := grp.ID

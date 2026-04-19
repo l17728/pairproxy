@@ -440,6 +440,7 @@ func TestLoadAllTargets_AdminAPIKey_ReturnsCorrectAPIKey(t *testing.T) {
 		ID:             keyID,
 		Name:           "admin-created-key",
 		EncryptedValue: encrypted, // AES 加密
+		KeyScheme:      "aes",
 		Provider:       "anthropic",
 		IsActive:       true,
 	}).Error)
