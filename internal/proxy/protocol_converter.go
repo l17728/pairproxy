@@ -75,7 +75,7 @@ func mapModelName(model string, mapping map[string]string) string {
 // modelMapping 可选，非 nil 时将 Anthropic 模型名转换为目标提供商的本地模型名。
 // 返回转换后的 body 和新的请求路径。
 func convertAnthropicToOpenAIRequest(body []byte, logger *zap.Logger, reqID string, modelMapping map[string]string) ([]byte, string, error) {
-	const newPath = "/v1/chat/completions"
+	const newPath = "/chat/completions"
 	if len(body) == 0 {
 		return body, newPath, nil
 	}

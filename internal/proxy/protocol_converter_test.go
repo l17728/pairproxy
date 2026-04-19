@@ -419,7 +419,7 @@ func TestConvertAnthropicToOpenAIRequest(t *testing.T) {
 
 		converted, newPath, err := convertAnthropicToOpenAIRequest(body, logger, "test-req-id", nil)
 		require.NoError(t, err)
-		assert.Equal(t, "/v1/chat/completions", newPath)
+		assert.Equal(t, "/chat/completions", newPath)
 
 		var openaiReq map[string]interface{}
 		require.NoError(t, json.Unmarshal(converted, &openaiReq))
@@ -535,7 +535,7 @@ func TestConvertAnthropicToOpenAIRequest(t *testing.T) {
 	t.Run("empty body", func(t *testing.T) {
 		converted, newPath, err := convertAnthropicToOpenAIRequest([]byte{}, logger, "test-req-id", nil)
 		require.NoError(t, err)
-		assert.Equal(t, "/v1/chat/completions", newPath)
+		assert.Equal(t, "/chat/completions", newPath)
 		assert.Empty(t, converted)
 	})
 
@@ -543,7 +543,7 @@ func TestConvertAnthropicToOpenAIRequest(t *testing.T) {
 		body := []byte(`{invalid json}`)
 		converted, newPath, err := convertAnthropicToOpenAIRequest(body, logger, "test-req-id", nil)
 		assert.Error(t, err)
-		assert.Equal(t, "/v1/chat/completions", newPath)
+		assert.Equal(t, "/chat/completions", newPath)
 		assert.Equal(t, body, converted) // Should return original
 	})
 }
@@ -793,7 +793,7 @@ func TestProtocolConversionRoundTrip(t *testing.T) {
 
 	openaiBody, newPath, err := convertAnthropicToOpenAIRequest(anthropicBody, logger, "test-req", nil)
 	require.NoError(t, err)
-	assert.Equal(t, "/v1/chat/completions", newPath)
+	assert.Equal(t, "/chat/completions", newPath)
 
 	var openaiReq map[string]interface{}
 	require.NoError(t, json.Unmarshal(openaiBody, &openaiReq))
@@ -2306,7 +2306,7 @@ func TestConvertDebugTxt_MultiTurnNoLastAssistant(t *testing.T) {
 
 	converted, newPath, err := convertAnthropicToOpenAIRequest(body, logger, "req-debug-multiturn", nil)
 	require.NoError(t, err, "multi-turn conversation not ending with assistant must not be rejected")
-	assert.Equal(t, "/v1/chat/completions", newPath)
+	assert.Equal(t, "/chat/completions", newPath)
 
 	var req map[string]interface{}
 	require.NoError(t, json.Unmarshal(converted, &req))
@@ -2346,7 +2346,7 @@ func TestProtocolConversion_EmptyBody(t *testing.T) {
 
 	converted, path, err := convertAnthropicToOpenAIRequest([]byte{}, logger, "test", nil)
 	require.NoError(t, err)
-	assert.Equal(t, "/v1/chat/completions", path)
+	assert.Equal(t, "/chat/completions", path)
 	assert.Empty(t, converted)
 
 	converted, err = convertOpenAIToAnthropicResponse([]byte{}, logger, "test", "")
@@ -2362,7 +2362,7 @@ func TestProtocolConversion_MalformedJSON(t *testing.T) {
 
 	converted, path, err := convertAnthropicToOpenAIRequest(body, logger, "test", nil)
 	assert.Error(t, err)
-	assert.Equal(t, "/v1/chat/completions", path)
+	assert.Equal(t, "/chat/completions", path)
 	assert.Equal(t, body, converted) // 原样返回
 
 	converted, err = convertOpenAIToAnthropicResponse(body, logger, "test", "")

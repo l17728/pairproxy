@@ -1842,9 +1842,17 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 			req.Host = targetURL.Host
 
 			// 协议转换：修改请求路径
+			// convertedPath 是不含版本前缀的路径后缀（如 /chat/completions）。
+			// 若 target URL 带有自定义 base path（如 /v2、/openai/v1），则拼接在前面；
+			// 若无 base path（标准 OpenAI 端点），则补全为 /v1/chat/completions。
 			if convDir != conversionNone && convertedPath != "" {
 				originalPath := req.URL.Path
-				req.URL.Path = convertedPath
+				basePath := strings.TrimRight(targetURL.Path, "/")
+				if basePath == "" {
+					req.URL.Path = "/v1" + convertedPath
+				} else {
+					req.URL.Path = basePath + convertedPath
+				}
 				sp.logger.Debug("request path converted for protocol conversion",
 					zap.String("request_id", reqID),
 					zap.String("original_path", originalPath),
