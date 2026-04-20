@@ -1058,11 +1058,15 @@ func (sp *SProxy) pickLLMTarget(path, userID, groupID, requestedModel string, tr
 		alreadyTried := triedSet[boundID]
 		if !alreadyTried {
 			healthy := true
+			targetFound := false
+			targetAddr := ""
 			if sp.llmBalancer != nil {
 				healthy = false
 				for _, t := range sp.llmBalancer.Targets() {
 					// 同时匹配 ID（UUID）和 Addr（URL），兼容 YAML 导入或旧版创建的 URL 格式绑定
 					if t.ID == boundID || t.Addr == boundID {
+						targetFound = true
+						targetAddr = t.Addr
 						if triedSet[t.Addr] {
 							// RetryTransport 使用 URL 加入 tried，此 target 已被重试过
 							alreadyTried = true
@@ -1083,20 +1087,33 @@ func (sp *SProxy) pickLLMTarget(path, userID, groupID, requestedModel string, tr
 				)
 				return info, nil
 			}
+			// 绑定 target 不健康或已试过 → 报错，不 fall through
+			if alreadyTried {
+				sp.logger.Warn("assigned LLM target already tried, request rejected",
+					zap.String("bound_id", boundID),
+					zap.String("target_addr", targetAddr),
+					zap.String("user_id", userID),
+				)
+			} else if !targetFound {
+				sp.logger.Warn("assigned LLM target not found in balancer (disabled or removed), request rejected",
+					zap.String("bound_id", boundID),
+					zap.String("user_id", userID),
+				)
+			} else {
+				sp.logger.Warn("assigned LLM target is unhealthy, request rejected",
+					zap.String("bound_id", boundID),
+					zap.String("target_addr", targetAddr),
+					zap.String("user_id", userID),
+				)
+			}
+			return nil, ErrBoundTargetUnavailable
 		}
 
-		// 绑定 target 不健康或已试过 → 报错，不 fall through
-		if alreadyTried {
-			sp.logger.Warn("assigned LLM target already tried, request rejected",
-				zap.String("bound_id", boundID),
-				zap.String("user_id", userID),
-			)
-		} else {
-			sp.logger.Warn("assigned LLM target is unhealthy, request rejected",
-				zap.String("bound_id", boundID),
-				zap.String("user_id", userID),
-			)
-		}
+		// alreadyTried=true（由 triedSet[boundID] 直接命中，未进入上方分支）
+		sp.logger.Warn("assigned LLM target already tried, request rejected",
+			zap.String("bound_id", boundID),
+			zap.String("user_id", userID),
+		)
 		return nil, ErrBoundTargetUnavailable
 	}
 
