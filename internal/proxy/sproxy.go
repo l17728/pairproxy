@@ -415,13 +415,17 @@ func (sp *SProxy) loadAllTargets(repo *db.LLMTargetRepo) ([]config.LLMTarget, er
 		}
 
 		// 解密 API Key
-		apiKey, err := sp.resolveAPIKey(dt.APIKeyID)
-		if err != nil {
-			sp.logger.Warn("failed to resolve api key for target",
+		apiKey, keyErr := sp.resolveAPIKey(dt.APIKeyID)
+		apiKeyError := false
+		if keyErr != nil {
+			sp.logger.Warn("failed to resolve api key for target, target will be kept in balancer but marked unhealthy",
 				zap.String("url", dt.URL),
 				zap.String("api_key_id", ptrToString(dt.APIKeyID)),
-				zap.Error(err))
-			continue
+				zap.Error(keyErr))
+			apiKeyError = true
+			// 不 continue：继续将 target 加入列表，SyncLLMTargets 会将其强制标为不健康。
+			// 这样 dashboard 能显示正确的不健康状态，绑定该 target 的请求也会得到
+			// "unhealthy" 错误而非 "not found in balancer" 错误。
 		}
 
 		// 反序列化 ModelMappingJSON
@@ -447,12 +451,13 @@ func (sp *SProxy) loadAllTargets(repo *db.LLMTargetRepo) ([]config.LLMTarget, er
 			URL:             dt.URL,
 			APIKey:          apiKey,
 			Provider:        dt.Provider,
-			Name:            dt.Name,
+			Name:             dt.Name,
 			Weight:          dt.Weight,
 			HealthCheckPath: dt.HealthCheckPath,
 			ModelMapping:    modelMapping,
 			SupportedModels: supportedModels,
 			AutoModel:       dt.AutoModel,
+			APIKeyError:     apiKeyError,
 		})
 	}
 
@@ -615,7 +620,12 @@ func (sp *SProxy) SyncLLMTargets() {
 			// config-sourced targets without DB ID: fall back to URL as key
 			targetID = t.URL
 		}
-		if h, exists := existingHealth[targetID]; exists {
+		if t.APIKeyError {
+			// API Key 解析失败：强制标为不健康，阻止流量路由到无法认证的节点。
+			// 即使该 target 之前是健康的，也必须重置，因为缺少凭证无法正常转发。
+			healthy = false
+			draining = false
+		} else if h, exists := existingHealth[targetID]; exists {
 			// 存量 target：保留当前健康/排水状态
 			healthy = h
 			draining = existingDrain[targetID]
@@ -644,6 +654,7 @@ func (sp *SProxy) SyncLLMTargets() {
 			zap.String("url", t.URL),
 			zap.String("name", t.Name),
 			zap.Bool("is_new", isNew),
+			zap.Bool("api_key_error", t.APIKeyError),
 		)
 		if t.HealthCheckPath != "" {
 			healthPaths[targetID] = t.HealthCheckPath

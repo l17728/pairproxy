@@ -167,6 +167,8 @@ type LLMTarget struct {
 	ModelMapping    map[string]string `yaml:"model_mapping,omitempty"` // Anthropic 模型名 → Ollama/OpenAI 模型名映射；"*" 匹配所有未命中的模型
 	SupportedModels []string          `yaml:"supported_models,omitempty"` // 该 target 支持的模型名列表（支持通配符，空表示支持所有）
 	AutoModel       string            `yaml:"auto_model,omitempty"` // auto 模式下使用的模型名（空表示降级或透传）
+	// 运行时标志（不序列化）
+	APIKeyError     bool              `yaml:"-"` // true = API Key 解析失败；SyncLLMTargets 会将该 target 强制标记为不健康
 }
 
 // DatabaseConfig 数据库配置（支持 SQLite 和 PostgreSQL）
