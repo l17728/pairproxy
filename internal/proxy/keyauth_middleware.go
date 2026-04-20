@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 
@@ -51,7 +52,7 @@ func NewKeyAuthMiddleware(
 				zap.String("request_id", reqID),
 				zap.String("path", r.URL.Path),
 			)
-			writeJSONError(w, http.StatusUnauthorized, "missing_authorization",
+			writeDirectAuthError(w, r, http.StatusUnauthorized, "authentication_error",
 				"Authorization: Bearer <sk-pp-key> or x-api-key: <sk-pp-key> required")
 			return
 		}
@@ -62,8 +63,8 @@ func NewKeyAuthMiddleware(
 				zap.String("request_id", reqID),
 				zap.String("key_prefix", safePrefix(token, 12)),
 			)
-			writeJSONError(w, http.StatusUnauthorized, "invalid_key_format",
-				"API key must be in format sk-pp-<48 alphanumeric chars>")
+			writeDirectAuthError(w, r, http.StatusUnauthorized, "authentication_error",
+				"invalid x-api-key: must be sk-pp-<48 alphanumeric chars>")
 			return
 		}
 
@@ -91,7 +92,7 @@ func NewKeyAuthMiddleware(
 						zap.String("username", cached.Username),
 						zap.String("user_id", cached.UserID),
 					)
-					writeJSONError(w, http.StatusUnauthorized, "account_disabled", "user account has been disabled")
+					writeDirectAuthError(w, r, http.StatusUnauthorized, "permission_error", "user account has been disabled")
 					return
 				}
 				userID = cached.UserID
@@ -122,7 +123,7 @@ func NewKeyAuthMiddleware(
 					zap.String("request_id", reqID),
 					zap.Error(valErr),
 				)
-				writeJSONError(w, http.StatusUnauthorized, "key_collision",
+				writeDirectAuthError(w, r, http.StatusUnauthorized, "authentication_error",
 					"api key matches multiple users; contact administrator")
 				return
 			}
@@ -141,7 +142,7 @@ func NewKeyAuthMiddleware(
 					zap.String("request_id", reqID),
 					zap.String("key_prefix", safePrefix(token, 12)),
 				)
-				writeJSONError(w, http.StatusUnauthorized, "invalid_api_key", "invalid API key")
+				writeDirectAuthError(w, r, http.StatusUnauthorized, "authentication_error", "invalid x-api-key")
 				return
 			}
 
@@ -185,6 +186,39 @@ func NewKeyAuthMiddleware(
 
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// writeDirectAuthError 根据请求路径写入对应协议格式的认证错误响应。
+//
+// 直连客户端（Claude Code、OpenAI SDK 等）只认识自身协议的错误格式；
+// 如果收到 {"error":"invalid_api_key","message":"..."} 这种通用格式，
+// 它们会把错误当成未知/可重试错误而不停重试，用户看不到有意义的提示。
+//
+// 映射规则：
+//   - /v1/chat/completions → OpenAI format
+//   - 其余（/v1/messages、/anthropic/*）→ Anthropic format（默认）
+func writeDirectAuthError(w http.ResponseWriter, r *http.Request, httpStatus int, authErrType, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(httpStatus)
+	if strings.Contains(r.URL.Path, "/chat/completions") {
+		// OpenAI 错误格式
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": map[string]interface{}{
+				"message": message,
+				"type":    "invalid_request_error",
+				"code":    authErrType,
+			},
+		})
+	} else {
+		// Anthropic 错误格式（Claude Code 期待的格式）
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"type": "error",
+			"error": map[string]interface{}{
+				"type":    authErrType,
+				"message": message,
+			},
+		})
+	}
 }
 
 // extractDirectAPIKey 从请求头提取 API Key，支持两种格式：

@@ -289,7 +289,7 @@ func TestKeyAuthMiddleware_CacheHit_UserDisabled(t *testing.T) {
 	mw.ServeHTTP(rr, req)
 
 	assert.Equal(t, http.StatusUnauthorized, rr.Code, "禁用用户应立即返回 401，不等缓存 TTL 过期")
-	assert.Contains(t, rr.Body.String(), "account_disabled")
+	assert.Contains(t, rr.Body.String(), "permission_error")
 }
 
 // TestKeyAuthMiddleware_CacheHit_UserDisabled_CacheEvicted 验证：用户被禁用并
