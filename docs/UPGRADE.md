@@ -1,6 +1,6 @@
 # PairProxy 升级指南
 
-> 当前版本：**v3.0.1** | 更新日期：2026-04-20
+> 当前版本：**v3.0.2** | 更新日期：2026-04-20
 
 本文档描述各版本间的升级步骤、数据库 Schema 变更、回滚方法及不兼容变更。
 
@@ -51,6 +51,31 @@
 ---
 
 ## 版本变更记录
+
+### v3.0.2 — LLM 目标稳定性 + 直连认证错误格式修复
+
+**数据库 Schema 变更**
+
+无。直接替换二进制重启即可。
+
+**问题修复**
+
+| # | 修复内容 |
+|---|---------|
+| 1 | **LLM 目标消失问题**：API Key 解析失败时目标从负载均衡器中消失（原因：`resolveAPIKey` 报错后直接 `continue` 跳过目标，下次 `SyncLLMTargets` 原子替换后目标彻底丢失）。现改为保留目标但强制标记为 unhealthy，ERROR 日志明确指出需要修复哪个 API Key |
+| 2 | **绑定目标拒绝日志区分**：之前"未找到目标"和"目标不健康"使用同一条日志，难以区分。现分三种情况独立记录：`not found in balancer`、`is unhealthy`、`already tried` |
+| 3 | **直连认证错误格式**：`sk-pp-` Key 无效时，客户端（Claude Code）收到通用 `{"error":"..."}` 格式，无法识别为终态认证错误而持续重试。现改为按协议返回对应格式：`/v1/messages` 和 `/anthropic/*` 返回 Anthropic 格式 `{"type":"error","error":{"type":"authentication_error",...}}`；`/v1/chat/completions` 返回 OpenAI 格式 |
+| 4 | **`/v1/` 路由缺失 `x-api-key` 检测**：使用 Anthropic 风格 `x-api-key: sk-pp-...` 请求 `/v1/chat/completions` 时，路由器未识别为直连请求，返回 `missing_auth` 而非正确的认证错误 |
+| 5 | **Dashboard 用户统计缓存**：群组变更、用户创建、激活状态变更后统计缓存未失效 |
+
+**升级步骤**
+
+```bash
+# 无 Schema 变更，直接替换二进制重启
+systemctl restart sproxy
+```
+
+---
 
 ### v3.0.1 — API Key 存储格式修复 + 健康检查假阳性修复 + LLM 目标同步状态
 
