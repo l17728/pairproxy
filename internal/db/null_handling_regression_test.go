@@ -3,8 +3,8 @@ package db_test
 import (
 	"testing"
 
-	"go.uber.org/zap/zaptest"
 	"github.com/l17728/pairproxy/internal/db"
+	"go.uber.org/zap/zaptest"
 )
 
 // TestUser_Composite_NULLHandling tests the (username, auth_provider) composite constraint
@@ -96,9 +96,10 @@ func TestUser_Composite_NULLHandling(t *testing.T) {
 	}
 }
 
-// TestLLMTarget_Composite_NULLHandling tests the (url, api_key_id) composite constraint
-// with NULL api_key_id. Since NULL != NULL, multiple targets with the same URL but no APIKeyID
-// can coexist (but this should be validated at application level for semantics).
+// TestLLMTarget_Composite_NULLHandling tests the URL-unique constraint on llm_targets.
+// Since v3.1.0 the URL column has a single-column UNIQUE index; the old composite
+// (url, api_key_id) constraint no longer exists. Any second target at the same URL
+// must be rejected regardless of the APIKeyID value.
 func TestLLMTarget_Composite_NULLHandling(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	gormDB, err := db.Open(logger, ":memory:")
@@ -112,35 +113,31 @@ func TestLLMTarget_Composite_NULLHandling(t *testing.T) {
 	llmTargetRepo := db.NewLLMTargetRepo(gormDB, logger)
 
 	const targetURL = "https://llm.example.com"
+	const targetURL2 = "https://llm2.example.com"
 
-	// Create target with APIKeyID = NULL
+	// Create target with APIKeyID = NULL — succeeds.
 	target1 := &db.LLMTarget{
 		ID:       "target-1",
 		URL:      targetURL,
 		Provider: "anthropic",
-		APIKeyID: nil, // NULL
+		APIKeyID: nil,
 	}
 	if err := llmTargetRepo.Create(target1); err != nil {
 		t.Fatalf("create target1: %v", err)
 	}
 
-	// Due to NULL != NULL, creating another target at same URL with APIKeyID = NULL
-	// is technically allowed by the constraint (but bad semantics).
-	// Application should prevent this at the handler level (ComboExists check).
+	// Second target at the same URL with NULL APIKeyID — must fail (URL unique).
 	target2 := &db.LLMTarget{
 		ID:       "target-2",
 		URL:      targetURL,
 		Provider: "openai",
-		APIKeyID: nil, // NULL again
+		APIKeyID: nil,
 	}
-	err = llmTargetRepo.Create(target2)
-	// Both succeed due to NULL semantics; application layer should validate this
-	// (e.g., at most one target per URL without API key)
-	if err != nil {
-		t.Logf("create target2: %v (NULL != NULL allows this in DB, but application should prevent)", err)
+	if err := llmTargetRepo.Create(target2); err == nil {
+		t.Error("expected error creating second target at same URL with nil APIKeyID, but succeeded")
 	}
 
-	// Create target with APIKeyID = "key-1"
+	// Second target at the same URL with a non-NULL APIKeyID — must also fail (URL unique).
 	keyID := "key-1"
 	target3 := &db.LLMTarget{
 		ID:       "target-3",
@@ -148,20 +145,19 @@ func TestLLMTarget_Composite_NULLHandling(t *testing.T) {
 		Provider: "anthropic",
 		APIKeyID: &keyID,
 	}
-	if err := llmTargetRepo.Create(target3); err != nil {
-		t.Fatalf("create target3: %v", err)
+	if err := llmTargetRepo.Create(target3); err == nil {
+		t.Error("expected error creating second target at same URL with non-nil APIKeyID, but succeeded")
 	}
 
-	// Try to create duplicate (url, key-1) — should fail
+	// A target at a different URL is allowed even with the same APIKeyID.
 	target4 := &db.LLMTarget{
 		ID:       "target-4",
-		URL:      targetURL,
+		URL:      targetURL2,
 		Provider: "openai",
-		APIKeyID: &keyID, // Same API key
+		APIKeyID: &keyID,
 	}
-	err = llmTargetRepo.Create(target4)
-	if err == nil {
-		t.Error("expected error creating duplicate (url, api_key_id), but succeeded")
+	if err := llmTargetRepo.Create(target4); err != nil {
+		t.Fatalf("create target4 (different URL): %v", err)
 	}
 }
 

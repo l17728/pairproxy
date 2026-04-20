@@ -238,6 +238,13 @@ func Migrate(logger *zap.Logger, db *gorm.DB) error {
 		logger.Debug("users.external_id: empty strings normalized to NULL")
 	}
 
+	// 数据迁移：llm_targets URL 唯一化（废弃同 URL 多 APIKey 场景）。
+	// 若存在同 URL 的多条记录，保留最早创建的那条；将指向被删除记录的 llm_bindings 重定向到保留记录；
+	// 删除多余记录。之后 AutoMigrate 将添加 URL 的唯一索引。
+	if err := deduplicateLLMTargetsByURL(logger, db); err != nil {
+		logger.Warn("llm_targets URL dedup failed (non-fatal)", zap.Error(err))
+	}
+
 	// AutoMigrate 创建/更新表结构
 	models := []interface{}{
 		&Group{},
@@ -292,6 +299,10 @@ func Migrate(logger *zap.Logger, db *gorm.DB) error {
 			logger.Debug("index ensured", zap.String("index", idx.name))
 		}
 	}
+
+	// 索引迁移：废弃 idx_llm_target_url_apikey 复合索引，改为 URL 单列唯一索引。
+	// AutoMigrate 已通过 model tag 创建 idx_llm_targets_url，此处仅清理旧索引。
+	dropLLMTargetCompositeIndex(logger, db)
 
 	// 数据迁移：llm_bindings.target_url → target_id
 	// 若存在 target_url 列但 target_id 列值为空，则通过 JOIN 填充；无法匹配的行（孤儿）删除。
@@ -478,4 +489,84 @@ func migrateGroupTargetSetMemberTargetID(logger *zap.Logger, db *gorm.DB) error 
 
 	logger.Info("group_target_set_members target_id migration completed")
 	return nil
+}
+
+// deduplicateLLMTargetsByURL 合并同 URL 的多条 llm_targets 记录。
+// 对每组同 URL 的记录，保留 created_at 最早的一条（保持原有绑定稳定），
+// 将 llm_bindings 中指向被删除记录的 target_id 更新为保留记录的 ID，
+// 然后删除多余记录。
+func deduplicateLLMTargetsByURL(logger *zap.Logger, db *gorm.DB) error {
+	// 找出有重复 URL 的记录
+	type urlGroup struct {
+		URL string
+	}
+	var duplicates []urlGroup
+	if err := db.Raw(`
+		SELECT url FROM llm_targets
+		GROUP BY url
+		HAVING COUNT(*) > 1
+	`).Scan(&duplicates).Error; err != nil {
+		return fmt.Errorf("find duplicate urls: %w", err)
+	}
+
+	if len(duplicates) == 0 {
+		return nil
+	}
+
+	logger.Info("deduplicating llm_targets", zap.Int("duplicate_url_count", len(duplicates)))
+
+	for _, dup := range duplicates {
+		// 取该 URL 下所有记录，按 created_at ASC 排序（保留最早的）
+		type targetRow struct {
+			ID string
+		}
+		var rows []targetRow
+		if err := db.Raw(`SELECT id FROM llm_targets WHERE url = ? ORDER BY created_at ASC`, dup.URL).Scan(&rows).Error; err != nil {
+			logger.Warn("dedup: failed to list targets for url", zap.String("url", dup.URL), zap.Error(err))
+			continue
+		}
+		if len(rows) <= 1 {
+			continue
+		}
+
+		keepID := rows[0].ID
+		removeIDs := make([]string, 0, len(rows)-1)
+		for _, r := range rows[1:] {
+			removeIDs = append(removeIDs, r.ID)
+		}
+
+		// 更新绑定：将指向 removeIDs 的 llm_bindings.target_id 改为 keepID
+		if err := db.Exec(`UPDATE llm_bindings SET target_id = ? WHERE target_id IN ?`, keepID, removeIDs).Error; err != nil {
+			logger.Warn("dedup: failed to redirect bindings", zap.String("url", dup.URL), zap.Error(err))
+		}
+
+		// 删除多余记录
+		if err := db.Exec(`DELETE FROM llm_targets WHERE id IN ?`, removeIDs).Error; err != nil {
+			logger.Warn("dedup: failed to delete duplicate targets", zap.String("url", dup.URL), zap.Error(err))
+			continue
+		}
+
+		logger.Info("dedup: merged duplicate targets",
+			zap.String("url", dup.URL),
+			zap.String("kept_id", keepID),
+			zap.Strings("removed_ids", removeIDs))
+	}
+	return nil
+}
+
+// dropLLMTargetCompositeIndex 删除废弃的 (url, api_key_id) 复合索引。
+// 迁移到 URL 单列唯一索引后，旧复合索引变为冗余。
+func dropLLMTargetCompositeIndex(logger *zap.Logger, db *gorm.DB) {
+	var sql string
+	switch DriverName(db) {
+	case "postgres":
+		sql = `DROP INDEX IF EXISTS idx_llm_target_url_apikey`
+	default: // sqlite
+		sql = `DROP INDEX IF EXISTS idx_llm_target_url_apikey`
+	}
+	if err := db.Exec(sql).Error; err != nil {
+		logger.Debug("drop composite index (may not exist)", zap.Error(err))
+	} else {
+		logger.Info("dropped deprecated composite index idx_llm_target_url_apikey")
+	}
 }

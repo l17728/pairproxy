@@ -396,13 +396,13 @@ func TestLLMTargetManagement_ConfigChangeRestartSync(t *testing.T) {
 
 	// 模拟配置文件变更（移除一个，添加一个）
 	updatedURLs := []string{
-		"https://api.anthropic.com", // 保留
+		"https://api.anthropic.com",  // 保留
 		"http://ollama2.local:11434", // 新增
 	}
 
 	// 同步更新后的配置
 	keepKeys := make([]db.ConfigTargetKey, 0, len(updatedURLs))
-		for _, url := range updatedURLs {
+	for _, url := range updatedURLs {
 		target := &db.LLMTarget{
 			ID:         uuid.NewString(),
 			URL:        url,
@@ -419,7 +419,7 @@ func TestLLMTargetManagement_ConfigChangeRestartSync(t *testing.T) {
 		if err := repo.Upsert(target); err != nil {
 			t.Fatalf("Upsert updated target: %v", err)
 		}
-		keepKeys = append(keepKeys, db.ConfigTargetKey{URL: url, APIKeyID: &apiKey.ID})
+		keepKeys = append(keepKeys, db.ConfigTargetKey{URL: url})
 	}
 
 	// 删除不在新配置中的 config targets

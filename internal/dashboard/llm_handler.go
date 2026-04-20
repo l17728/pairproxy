@@ -287,15 +287,12 @@ func (h *Handler) handleLLMCreateBinding(w http.ResponseWriter, r *http.Request)
 		if t, err := h.llmTargetRepo.GetByID(targetRaw); err == nil {
 			targetID = t.ID
 		} else {
-			// 回退：按 URL 查找（旧版表单提交 URL 的兼容路径）
-			matches, err := h.llmTargetRepo.ListByURL(targetRaw)
-			if err == nil && len(matches) == 1 {
-				targetID = matches[0].ID
-			} else if err == nil && len(matches) > 1 {
-				http.Redirect(w, r, bindTab+"&error=target_url_ambiguous", http.StatusSeeOther)
-				return
+			// 回退：按 URL 查找（旧版表单提交 URL 的兼容路径；URL 现为全局唯一）
+			match, err := h.llmTargetRepo.GetByURL(targetRaw)
+			if err == nil && match != nil {
+				targetID = match.ID
 			}
-			// err != nil 或 0 matches：targetID = targetRaw（config-sourced 兜底）
+			// err != nil 或 nil match：targetID = targetRaw（config-sourced 兜底）
 		}
 	}
 
@@ -460,16 +457,11 @@ func (h *Handler) handleLLMCreateTarget(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// 检查 URL 冲突（考虑 api_key_id 组合）
-	var apiKeyIDPtr *string
-	if apiKeyID != "" {
-		apiKeyIDPtr = &apiKeyID
-	}
-	exists, err := h.llmTargetRepo.ComboExists(targetURL, apiKeyIDPtr)
+	// 检查 URL 冲突（URL 现为全局唯一）
+	exists, err := h.llmTargetRepo.URLExists(targetURL)
 	if err != nil {
-		h.logger.Error("failed to check combo exists",
+		h.logger.Error("failed to check url exists",
 			zap.String("url", targetURL),
-			zap.Any("api_key_id", apiKeyIDPtr),
 			zap.Error(err))
 		http.Redirect(w, r, "/dashboard/llm?error=internal+error", http.StatusSeeOther)
 		return
@@ -477,7 +469,6 @@ func (h *Handler) handleLLMCreateTarget(w http.ResponseWriter, r *http.Request) 
 	if exists {
 		h.logger.Warn("rejected duplicate llm target",
 			zap.String("url", targetURL),
-			zap.Any("api_key_id", apiKeyIDPtr),
 		)
 		http.Redirect(w, r, "/dashboard/llm?error=URL+already+exists", http.StatusSeeOther)
 		return
@@ -488,6 +479,11 @@ func (h *Handler) handleLLMCreateTarget(w http.ResponseWriter, r *http.Request) 
 		if w, err := strconv.Atoi(weightStr); err == nil && w > 0 {
 			weight = w
 		}
+	}
+
+	var apiKeyIDPtr *string
+	if apiKeyID != "" {
+		apiKeyIDPtr = &apiKeyID
 	}
 
 	target := &db.LLMTarget{
@@ -568,23 +564,13 @@ func (h *Handler) handleLLMUpdateTarget(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// 检查URL或APIKeyID变更时的冲突（考虑完整的(url, api_key_id)组合）
-	if targetURL != existing.URL || apiKeyID != (func() string {
-		if existing.APIKeyID == nil {
-			return ""
-		}
-		return *existing.APIKeyID
-	}()) {
-		var apiKeyIDPtr *string
-		if apiKeyID != "" {
-			apiKeyIDPtr = &apiKeyID
-		}
-		exists, err := h.llmTargetRepo.ComboExists(targetURL, apiKeyIDPtr)
+	// 检查 URL 变更时的冲突（URL 现为全局唯一）
+	if targetURL != existing.URL {
+		exists, err := h.llmTargetRepo.URLExists(targetURL)
 		if err != nil {
-			h.logger.Error("failed to check combo exists during update",
+			h.logger.Error("failed to check url exists during update",
 				zap.String("id", id),
 				zap.String("new_url", targetURL),
-				zap.Any("api_key_id", apiKeyIDPtr),
 				zap.Error(err))
 			http.Redirect(w, r, "/dashboard/llm?error=internal+error", http.StatusSeeOther)
 			return
@@ -593,7 +579,6 @@ func (h *Handler) handleLLMUpdateTarget(w http.ResponseWriter, r *http.Request) 
 			h.logger.Warn("rejected duplicate llm target during update",
 				zap.String("id", id),
 				zap.String("new_url", targetURL),
-				zap.Any("api_key_id", apiKeyIDPtr),
 			)
 			http.Redirect(w, r, "/dashboard/llm?error=URL+already+exists", http.StatusSeeOther)
 			return

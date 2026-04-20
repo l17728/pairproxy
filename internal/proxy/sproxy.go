@@ -367,13 +367,13 @@ func (sp *SProxy) syncConfigTargetsToDatabase(repo *db.LLMTargetRepo) error {
 			continue
 		}
 
-		keepKeys = append(keepKeys, db.ConfigTargetKey{URL: ct.URL, APIKeyID: apiKeyID})
+		keepKeys = append(keepKeys, db.ConfigTargetKey{URL: ct.URL})
 		logger.Debug("config target synced",
 			zap.String("url", ct.URL))
 	}
 
 	// 3. 清理：删除数据库中 source='config' 但不在配置文件中的记录
-	// 使用 (url, api_key_id) 复合键精确匹配，支持同 URL 多 Key 场景
+	// 按 URL 匹配（URL 现为全局唯一）
 	deleted, err := repo.DeleteConfigTargetsNotInList(keepKeys)
 	if err != nil {
 		logger.Error("failed to clean up config targets", zap.Error(err))

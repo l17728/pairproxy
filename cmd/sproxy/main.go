@@ -1309,36 +1309,19 @@ func auditCLI(gormDB *gorm.DB, logger *zap.Logger, action, target, detail string
 }
 
 // resolveTargetID 将 URL 或 UUID 字符串解析为 LLM target UUID。
-// 若输入已是 UUID，直接返回；否则按 URL 查找。
-// 当 URL 对应多条记录（同 URL 多 APIKey）时，返回错误并列出所有匹配的 UUID，
-// 要求调用方改用 UUID 明确指定目标。
+// 若输入已是 UUID，直接返回；否则按 URL 查找（URL 现为全局唯一）。
 func resolveTargetID(repo *db.LLMTargetRepo, urlOrID string) (string, error) {
 	// 先尝试按 ID 查
 	t, err := repo.GetByID(urlOrID)
 	if err == nil && t != nil {
 		return t.ID, nil
 	}
-	// 再按 URL 查（可能有多条）
-	matches, err := repo.ListByURL(urlOrID)
+	// 再按 URL 查（URL 现为全局唯一）
+	match, err := repo.GetByURL(urlOrID)
 	if err != nil {
-		return "", fmt.Errorf("target lookup failed: %w", err)
-	}
-	switch len(matches) {
-	case 0:
 		return "", fmt.Errorf("target not found: %s", urlOrID)
-	case 1:
-		return matches[0].ID, nil
-	default:
-		// 多条：URL 对应多个不同 APIKey，需要用 UUID 明确指定
-		ids := make([]string, len(matches))
-		for i, m := range matches {
-			ids[i] = m.ID
-		}
-		return "", fmt.Errorf(
-			"URL %q matches %d targets (multiple API keys configured for this URL).\n"+
-				"Please use a UUID to specify the target:\n  %s",
-			urlOrID, len(matches), strings.Join(ids, "\n  "))
 	}
+	return match.ID, nil
 }
 
 // resolveUser 按用户名查找用户；在混合认证场景下若同名用户存在于多个 provider 则返回错误，
@@ -3221,18 +3204,16 @@ var adminLLMDistributeCmd = &cobra.Command{
 			return fmt.Errorf("no LLM targets configured in %s", cfgPath)
 		}
 
-		// 解析 URL → UUID（通过 DB）。同一 URL 可能有多个 APIKey，全部展开。
+		// 解析 URL → UUID（通过 DB）。URL 现为全局唯一，每个 URL 对应至多一条记录。
 		llmTargetRepo := db.NewLLMTargetRepo(database, logger)
 		var targetIDs []string
 		for _, url := range targetURLs {
-			matches, err := llmTargetRepo.ListByURL(url)
-			if err != nil || len(matches) == 0 {
+			match, err := llmTargetRepo.GetByURL(url)
+			if err != nil || match == nil {
 				logger.Warn("target not found in DB, skipping", zap.String("url", url))
 				continue
 			}
-			for _, m := range matches {
-				targetIDs = append(targetIDs, m.ID)
-			}
+			targetIDs = append(targetIDs, match.ID)
 		}
 		if len(targetIDs) == 0 {
 			return fmt.Errorf("no LLM targets found in database for configured URLs")

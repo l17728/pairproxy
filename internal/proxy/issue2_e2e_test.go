@@ -494,17 +494,19 @@ func TestIssue2_AutoName_Uniqueness_Always(t *testing.T) {
 // 同 URL 多 Key 场景（Issue #2 扩展：多账号同一服务商）
 // ---------------------------------------------------------------------------
 
-// TestIssue2_SameURL_MultipleKeys_E2E 验证同一 URL 配置两个 key（多账号同一服务商）的完整流程：
-// 1. config sync：同 URL 两个 key → DB 中有 2 个 llm_targets
+// TestIssue2_TwoTargets_E2E 验证两个不同 URL target 的完整流程：
+// 1. config sync：两个 URL 各一个 key → DB 中有 2 个 llm_targets
 // 2. SyncLLMTargets：balancer 中有 2 个 UUID 不同的 target
 // 3. 请求：两个 target 都能被路由，各自的 key 正确注入
-func TestIssue2_SameURL_MultipleKeys_E2E(t *testing.T) {
+// (URL 现为全局唯一，每个 URL 只有一个 target)
+func TestIssue2_TwoTargets_E2E(t *testing.T) {
 	const (
 		keyAccountA = "sk-ant-account-a-key"
 		keyAccountB = "sk-ant-account-b-key"
 	)
 
-	cs := newCaptureServer(t) // 两个 target 指向同一个后端（测试用）
+	cs := newCaptureServer(t)
+	cs2 := newCaptureServer(t)
 
 	logger := zap.NewNop()
 	gormDB, err := db.Open(logger, ":memory:")
@@ -515,7 +517,7 @@ func TestIssue2_SameURL_MultipleKeys_E2E(t *testing.T) {
 		LLM: config.LLMConfig{
 			Targets: []config.LLMTarget{
 				{URL: cs.srv.URL, APIKey: keyAccountA, Provider: "anthropic", Name: "Account A", Weight: 1},
-				{URL: cs.srv.URL, APIKey: keyAccountB, Provider: "anthropic", Name: "Account B", Weight: 1},
+				{URL: cs2.srv.URL, APIKey: keyAccountB, Provider: "anthropic", Name: "Account B", Weight: 1},
 			},
 		},
 	}
@@ -534,16 +536,10 @@ func TestIssue2_SameURL_MultipleKeys_E2E(t *testing.T) {
 	repo := db.NewLLMTargetRepo(gormDB, logger)
 	require.NoError(t, sp.syncConfigTargetsToDatabase(repo))
 
-	// 验证 DB 中有 2 个独立 target（同 URL 不同 key）
+	// 验证 DB 中有 2 个独立 target（不同 URL 各一个 key）
 	targets, err := repo.ListAll()
 	require.NoError(t, err)
-	assert.Len(t, targets, 2, "同 URL 两个 key 应创建两个独立的 DB target")
-	if len(targets) == 2 {
-		require.NotNil(t, targets[0].APIKeyID)
-		require.NotNil(t, targets[1].APIKeyID)
-		assert.NotEqual(t, *targets[0].APIKeyID, *targets[1].APIKeyID,
-			"两个 target 的 APIKeyID 应不同")
-	}
+	assert.Len(t, targets, 2, "两个不同 URL 应创建两个独立的 DB target")
 
 	sp.SyncLLMTargets()
 
@@ -585,6 +581,11 @@ func TestIssue2_SameURL_MultipleKeys_E2E(t *testing.T) {
 		usedKeys[a]++
 	}
 	cs.mu.Unlock()
+	cs2.mu.Lock()
+	for _, a := range cs2.auths {
+		usedKeys[a]++
+	}
+	cs2.mu.Unlock()
 
 	t.Logf("key 使用分布: %v", usedKeys)
 	assert.Greater(t, usedKeys["Bearer "+keyAccountA], 0,

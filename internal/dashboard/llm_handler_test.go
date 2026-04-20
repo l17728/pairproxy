@@ -631,102 +631,12 @@ func TestHandleLLMDistribute(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Fix 3: handleLLMCreateTarget and handleLLMUpdateTarget use ComboExists
+// URL uniqueness: handleLLMCreateTarget and handleLLMUpdateTarget use URLExists
 // ---------------------------------------------------------------------------
 
-// TestHandleLLMCreateTarget_SameURLDifferentKey_Succeeds verifies that when an LLM
-// target exists for (url, keyA), creating another target at (url, keyB) succeeds.
-// This is the regression test for Fix 3 (ComboExists vs URLExists).
-func TestHandleLLMCreateTarget_SameURLDifferentKey_Succeeds(t *testing.T) {
-	logger := zaptest.NewLogger(t)
-	gdb, err := db.Open(logger, ":memory:")
-	if err != nil {
-		t.Fatalf("db.Open: %v", err)
-	}
-	if err := db.Migrate(logger, gdb); err != nil {
-		t.Fatalf("db.Migrate: %v", err)
-	}
-
-	userRepo := db.NewUserRepo(gdb, logger)
-	groupRepo := db.NewGroupRepo(gdb, logger)
-	usageRepo := db.NewUsageRepo(gdb, logger)
-	auditRepo := db.NewAuditRepo(logger, gdb)
-	llmTargetRepo := db.NewLLMTargetRepo(gdb, logger)
-	apiKeyRepo := db.NewAPIKeyRepo(gdb, logger)
-
-	jwtMgr, err := auth.NewManager(logger, "test-secret")
-	if err != nil {
-		t.Fatalf("NewManager: %v", err)
-	}
-	hash, _ := bcrypt.GenerateFromPassword([]byte("pw"), bcrypt.MinCost)
-	h := dashboard.NewHandler(logger, jwtMgr, userRepo, groupRepo, usageRepo, auditRepo, string(hash), time.Hour)
-	h.SetLLMTargetRepo(llmTargetRepo)
-	h.SetLLMDeps(db.NewLLMBindingRepo(gdb, logger), func() []proxy.LLMTargetStatus { return nil })
-	h.SetDrainFunctions(func() error { return nil }, func() error { return nil }, func() proxy.DrainStatus { return proxy.DrainStatus{} })
-
-	mux := http.NewServeMux()
-	h.RegisterRoutes(mux)
-
-	tok, _ := jwtMgr.Sign(auth.JWTClaims{UserID: "__admin__", Username: "admin", Role: "admin"}, time.Hour)
-	cookie := &http.Cookie{Name: api.AdminCookieName, Value: tok}
-
-	// Create two API keys
-	keyA, err := apiKeyRepo.Create("keyA", "enc-A", "anthropic", "obfuscated")
-	if err != nil {
-		t.Fatalf("create keyA: %v", err)
-	}
-	keyB, err := apiKeyRepo.Create("keyB", "enc-B", "openai", "obfuscated")
-	if err != nil {
-		t.Fatalf("create keyB: %v", err)
-	}
-
-	const targetURL = "https://api.llm.example.com"
-
-	// Create first target: (url, keyA) — should succeed
-	form1 := url.Values{
-		"url":        {targetURL},
-		"provider":   {"anthropic"},
-		"api_key_id": {keyA.ID},
-	}
-	req1 := httptest.NewRequest(http.MethodPost, "/dashboard/llm/targets", strings.NewReader(form1.Encode()))
-	req1.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req1.AddCookie(cookie)
-	rr1 := httptest.NewRecorder()
-	mux.ServeHTTP(rr1, req1)
-	if loc := rr1.Header().Get("Location"); strings.Contains(loc, "error=") {
-		t.Fatalf("first target (url, keyA) creation failed: redirect to %q", loc)
-	}
-
-	// Create second target: (url, keyB) — should succeed (different API key)
-	form2 := url.Values{
-		"url":        {targetURL},
-		"provider":   {"openai"},
-		"api_key_id": {keyB.ID},
-	}
-	req2 := httptest.NewRequest(http.MethodPost, "/dashboard/llm/targets", strings.NewReader(form2.Encode()))
-	req2.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req2.AddCookie(cookie)
-	rr2 := httptest.NewRecorder()
-	mux.ServeHTTP(rr2, req2)
-	loc2 := rr2.Header().Get("Location")
-	if strings.Contains(loc2, "error=") {
-		t.Errorf("second target (url, keyB) should succeed with ComboExists; redirect to %q — "+
-			"old URLExists would have wrongly blocked this", loc2)
-	}
-
-	// Verify two targets exist
-	targets, err := llmTargetRepo.ListAll()
-	if err != nil {
-		t.Fatalf("ListAll: %v", err)
-	}
-	if len(targets) != 2 {
-		t.Errorf("expected 2 targets in DB, got %d", len(targets))
-	}
-}
-
-// TestHandleLLMCreateTarget_SameURLSameKey_IsRejected verifies that creating
-// a duplicate (url, apiKeyID) combo is rejected.
-func TestHandleLLMCreateTarget_SameURLSameKey_IsRejected(t *testing.T) {
+// TestHandleLLMCreateTarget_DuplicateURL_IsRejected verifies that creating
+// a target with a duplicate URL is rejected (URL is now globally unique).
+func TestHandleLLMCreateTarget_DuplicateURL_IsRejected(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	gdb, err := db.Open(logger, ":memory:")
 	if err != nil {
@@ -766,15 +676,18 @@ func TestHandleLLMCreateTarget_SameURLSameKey_IsRejected(t *testing.T) {
 
 	const targetURL = "https://api.llm.example.com"
 
-	// Create first target: (url, keyA)
+	// Create first target
 	form := url.Values{"url": {targetURL}, "provider": {"anthropic"}, "api_key_id": {keyA.ID}}
 	req1 := httptest.NewRequest(http.MethodPost, "/dashboard/llm/targets", strings.NewReader(form.Encode()))
 	req1.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req1.AddCookie(cookie)
 	rr1 := httptest.NewRecorder()
 	mux.ServeHTTP(rr1, req1)
+	if loc := rr1.Header().Get("Location"); strings.Contains(loc, "error=") {
+		t.Fatalf("first target creation failed: redirect to %q", loc)
+	}
 
-	// Create duplicate (url, keyA) — should redirect with error
+	// Create duplicate URL — should redirect with error (URL uniqueness)
 	req2 := httptest.NewRequest(http.MethodPost, "/dashboard/llm/targets", strings.NewReader(form.Encode()))
 	req2.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req2.AddCookie(cookie)
@@ -782,15 +695,22 @@ func TestHandleLLMCreateTarget_SameURLSameKey_IsRejected(t *testing.T) {
 	mux.ServeHTTP(rr2, req2)
 	loc2 := rr2.Header().Get("Location")
 	if !strings.Contains(loc2, "error=") {
-		t.Errorf("duplicate (url, keyA) should be rejected; redirect location: %q", loc2)
+		t.Errorf("duplicate URL should be rejected; redirect location: %q", loc2)
+	}
+
+	// Verify only 1 target exists
+	targets, err := llmTargetRepo.ListAll()
+	if err != nil {
+		t.Fatalf("ListAll: %v", err)
+	}
+	if len(targets) != 1 {
+		t.Errorf("expected 1 target in DB, got %d", len(targets))
 	}
 }
 
-// TestHandleLLMUpdateTarget_ChangeAPIKeyID_CheckCombo verifies that when updating an LLM
-// target's API key (but keeping URL the same), the ComboExists check is performed.
-// This is the regression test for Fix #23: previously only URL changes triggered the check,
-// allowing APIKeyID changes to bypass the uniqueness constraint.
-func TestHandleLLMUpdateTarget_ChangeAPIKeyID_CheckCombo(t *testing.T) {
+// TestHandleLLMUpdateTarget_ChangeURL_ConflictRejected verifies that updating
+// a target's URL to one already in use is rejected (URL uniqueness enforced).
+func TestHandleLLMUpdateTarget_ChangeURL_ConflictRejected(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	gdb, err := db.Open(logger, ":memory:")
 	if err != nil {
@@ -823,46 +743,47 @@ func TestHandleLLMUpdateTarget_ChangeAPIKeyID_CheckCombo(t *testing.T) {
 	tok, _ := jwtMgr.Sign(auth.JWTClaims{UserID: "__admin__", Username: "admin", Role: "admin"}, time.Hour)
 	cookie := &http.Cookie{Name: api.AdminCookieName, Value: tok}
 
-	// Create two API keys
 	keyA, err := apiKeyRepo.Create("keyA", "enc-A", "anthropic", "obfuscated")
 	if err != nil {
 		t.Fatalf("create keyA: %v", err)
 	}
-	keyB, err := apiKeyRepo.Create("keyB", "enc-B", "openai", "obfuscated")
-	if err != nil {
-		t.Fatalf("create keyB: %v", err)
-	}
 
-	const targetURL = "https://api.llm.example.com"
+	const urlA = "https://api-a.llm.example.com"
+	const urlB = "https://api-b.llm.example.com"
 
-	// Create target1: (url, keyA)
+	// Create target1 at urlA
 	target1 := &db.LLMTarget{
-		ID:       uuid.New().String(),
-		URL:      targetURL,
-		Provider: "anthropic",
-		APIKeyID: &keyA.ID,
+		ID:         uuid.New().String(),
+		URL:        urlA,
+		Provider:   "anthropic",
+		APIKeyID:   &keyA.ID,
+		IsEditable: true,
+		IsActive:   true,
+		Source:     "database",
 	}
 	if err := llmTargetRepo.Create(target1); err != nil {
 		t.Fatalf("create target1: %v", err)
 	}
 
-	// Create target2: (url, keyB)
+	// Create target2 at urlB
 	target2 := &db.LLMTarget{
-		ID:       uuid.New().String(),
-		URL:      targetURL,
-		Provider: "openai",
-		APIKeyID: &keyB.ID,
+		ID:         uuid.New().String(),
+		URL:        urlB,
+		Provider:   "anthropic",
+		APIKeyID:   &keyA.ID,
+		IsEditable: true,
+		IsActive:   true,
+		Source:     "database",
 	}
 	if err := llmTargetRepo.Create(target2); err != nil {
 		t.Fatalf("create target2: %v", err)
 	}
 
-	// Now try to update target2's APIKeyID from keyB to keyA
-	// This should be rejected because (url, keyA) already exists (target1)
+	// Try to update target2's URL to urlA (conflict — urlA already taken)
 	updateForm := url.Values{
-		"url":        {targetURL},
-		"provider":   {"openai"},
-		"api_key_id": {keyA.ID}, // Changing from keyB to keyA — should conflict
+		"url":        {urlA}, // Changing to urlA — should conflict
+		"provider":   {"anthropic"},
+		"api_key_id": {keyA.ID},
 	}
 	req := httptest.NewRequest(http.MethodPost, "/dashboard/llm/targets/"+target2.ID+"/update", strings.NewReader(updateForm.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -872,16 +793,15 @@ func TestHandleLLMUpdateTarget_ChangeAPIKeyID_CheckCombo(t *testing.T) {
 
 	loc := rr.Header().Get("Location")
 	if !strings.Contains(loc, "error=") {
-		t.Errorf("update to change APIKeyID from keyB to keyA should be rejected (combo conflict); "+
-			"redirect to %q (expected error in redirect)", loc)
+		t.Errorf("update to conflicting URL should be rejected; redirect to %q (expected error)", loc)
 	}
 
-	// Verify target2 still has keyB
+	// Verify target2 URL is unchanged
 	updated, err := llmTargetRepo.GetByID(target2.ID)
 	if err != nil {
 		t.Fatalf("GetByID: %v", err)
 	}
-	if updated.APIKeyID == nil || *updated.APIKeyID != keyB.ID {
-		t.Errorf("target2 APIKeyID should remain %q, got %v", keyB.ID, updated.APIKeyID)
+	if updated.URL != urlB {
+		t.Errorf("target2 URL should remain %q, got %q", urlB, updated.URL)
 	}
 }

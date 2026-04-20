@@ -129,8 +129,8 @@ type LLMBinding struct {
 // LLMTarget LLM 目标端点（支持配置文件和数据库双来源）
 type LLMTarget struct {
 	ID              string     `gorm:"primarykey"`
-	URL             string     `gorm:"not null;uniqueIndex:idx_llm_target_url_apikey"` // LLM 端点 URL（与 APIKeyID 组合唯一）
-	APIKeyID        *string    `gorm:"uniqueIndex:idx_llm_target_url_apikey;index"`    // 外键 → api_keys.id（与 URL 组合唯一）
+	URL             string     `gorm:"not null;uniqueIndex"` // LLM 端点 URL（全局唯一）
+	APIKeyID        *string    `gorm:"index"`                // 外键 → api_keys.id
 	Provider        string     `gorm:"default:'anthropic'"`  // "anthropic" | "openai" | "ollama"
 	Name            string     // 显示名称
 	Weight          int        `gorm:"default:1"`            // 负载均衡权重

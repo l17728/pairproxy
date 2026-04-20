@@ -40,10 +40,7 @@ func (r *LLMTargetRepo) Create(target *LLMTarget) error {
 	return nil
 }
 
-// GetByURL 根据 URL 查询 LLM target（返回第一条匹配记录）。
-// ⚠️ 已弃用：当 (url, api_key_id) 有复合唯一约束时，仅 URL 查询会产生歧义。
-// 改用 ListByURL() 获取所有匹配记录，调用方处理歧义（len > 1 时返回错误）。
-// 此方法仅供 backward compatibility 和测试保留。
+// GetByURL 根据 URL 查询 LLM target。URL 现为全局唯一，每个 URL 至多返回一条记录。
 func (r *LLMTargetRepo) GetByURL(url string) (*LLMTarget, error) {
 	var target LLMTarget
 	if err := r.db.Where("url = ?", url).First(&target).Error; err != nil {
@@ -58,8 +55,9 @@ func (r *LLMTargetRepo) GetByURL(url string) (*LLMTarget, error) {
 	return &target, nil
 }
 
-// ListByURL 根据 URL 查询所有匹配的 LLM target（支持同 URL 多 Key 场景）。
-// 返回所有记录，调用方负责判断是否有歧义（len > 1）。
+// ListByURL 根据 URL 查询所有匹配的 LLM target。
+// 由于 URL 现为全局唯一，此方法最多返回 1 条记录（0 或 1）。
+// 保留此方法以兼容旧调用方。
 func (r *LLMTargetRepo) ListByURL(url string) ([]*LLMTarget, error) {
 	var targets []*LLMTarget
 	if err := r.db.Where("url = ?", url).Order("created_at ASC").Find(&targets).Error; err != nil {
@@ -71,26 +69,10 @@ func (r *LLMTargetRepo) ListByURL(url string) ([]*LLMTarget, error) {
 	return targets, nil
 }
 
-// GetByURLAndAPIKeyID 根据 (url, api_key_id) 复合键查询 LLM target。
-// apiKeyID 为 nil 时匹配 api_key_id IS NULL 的记录。
-func (r *LLMTargetRepo) GetByURLAndAPIKeyID(url string, apiKeyID *string) (*LLMTarget, error) {
-	var target LLMTarget
-	q := r.db.Where("url = ?", url)
-	if apiKeyID == nil {
-		q = q.Where("api_key_id IS NULL")
-	} else {
-		q = q.Where("api_key_id = ?", *apiKeyID)
-	}
-	if err := q.First(&target).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, err
-		}
-		r.logger.Error("failed to get llm target by url and api_key_id",
-			zap.String("url", url),
-			zap.Error(err))
-		return nil, fmt.Errorf("get llm target by url and api_key_id: %w", err)
-	}
-	return &target, nil
+// GetByURLAndAPIKeyID 已弃用：URL 现为全局唯一，apiKeyID 参数被忽略。
+// Deprecated: use GetByURL instead.
+func (r *LLMTargetRepo) GetByURLAndAPIKeyID(url string, _ *string) (*LLMTarget, error) {
+	return r.GetByURL(url)
 }
 
 // GetByID 根据 ID 查询 LLM target
@@ -161,9 +143,7 @@ func (r *LLMTargetRepo) ListAll() ([]*LLMTarget, error) {
 	return targets, nil
 }
 
-// URLExists 检查 URL 是否已存在（忽视 api_key_id）。
-// ⚠️ 注意：同一 URL 可以有多个不同 api_key_id 的 target（Issue #6）。
-// 如果需要检查 (url, api_key_id) 的唯一性，应使用 ComboExists。
+// URLExists 检查 URL 是否已存在。URL 现为全局唯一约束，此方法检查 URL 是否被占用。
 func (r *LLMTargetRepo) URLExists(url string) (bool, error) {
 	var count int64
 	if err := r.db.Model(&LLMTarget{}).Where("url = ?", url).Count(&count).Error; err != nil {
@@ -175,32 +155,17 @@ func (r *LLMTargetRepo) URLExists(url string) (bool, error) {
 	return count > 0, nil
 }
 
-// ComboExists 检查 (url, api_key_id) 复合键是否已存在。
-// api_key_id 为 nil 时匹配无 API Key 的记录（IS NULL）。
-// 用于创建新 target 前的重复检查，正确支持同 URL 多 Key 场景。
-func (r *LLMTargetRepo) ComboExists(url string, apiKeyID *string) (bool, error) {
-	var count int64
-	query := r.db.Model(&LLMTarget{}).Where("url = ?", url)
-	if apiKeyID == nil {
-		query = query.Where("api_key_id IS NULL")
-	} else {
-		query = query.Where("api_key_id = ?", *apiKeyID)
-	}
-	if err := query.Count(&count).Error; err != nil {
-		r.logger.Error("failed to check (url, api_key_id) combo exists",
-			zap.String("url", url),
-			zap.Any("api_key_id", apiKeyID),
-			zap.Error(err))
-		return false, fmt.Errorf("check combo exists: %w", err)
-	}
-	return count > 0, nil
+// ComboExists 已弃用：URL 现为全局唯一，直接调用 URLExists 即可。
+// Deprecated: use URLExists instead.
+func (r *LLMTargetRepo) ComboExists(url string, _ *string) (bool, error) {
+	return r.URLExists(url)
 }
 
-// Seed 仅在 (URL, api_key_id) 组合不存在时插入 target。已存在则跳过，保留 WebUI 修改。
+// Seed 仅在 URL 不存在时插入 target。已存在则跳过，保留 WebUI 修改。
 // 用于配置文件启动同步：配置文件是种子，不是权威源。
 // 与 Upsert 不同的是，Seed 优先保留已存在的记录，不覆盖。
 func (r *LLMTargetRepo) Seed(target *LLMTarget) error {
-	exists, err := r.ComboExists(target.URL, target.APIKeyID)
+	exists, err := r.URLExists(target.URL)
 	if err != nil {
 		return fmt.Errorf("seed: check url exists: %w", err)
 	}
@@ -261,11 +226,10 @@ func (r *LLMTargetRepo) Delete(id string) error {
 }
 
 // Upsert 插入或更新 LLM target（用于配置文件同步）。
-// 按 (url, api_key_id) 复合键查重，相同组合 → 更新，不同组合 → 新增。
-// 这允许同一 URL 绑定多个不同的 API Key。
+// 按 URL 查重（URL 现为全局唯一），已存在则更新，不存在则新增。
 func (r *LLMTargetRepo) Upsert(target *LLMTarget) error {
-	// 按 (url, api_key_id) 查重
-	existing, err := r.GetByURLAndAPIKeyID(target.URL, target.APIKeyID)
+	// 按 URL 查重
+	existing, err := r.GetByURL(target.URL)
 	if err != nil && err != gorm.ErrRecordNotFound {
 		return err
 	}
@@ -328,42 +292,25 @@ func (r *LLMTargetRepo) Upsert(target *LLMTarget) error {
 
 // ConfigTargetKey 标识一条配置来源的 target，用于 cleanup 时精确匹配。
 type ConfigTargetKey struct {
-	URL      string
-	APIKeyID *string // nil 表示无 API Key
+	URL string
 }
 
 // DeleteConfigTargetsNotInList 删除不在列表中的配置文件来源的 targets。
-// 按 (url, api_key_id) 复合键匹配，精确删除已从配置文件移除的条目。
-// 支持同一 URL 有多个不同 API Key 的场景。
+// 按 URL 匹配（URL 现为全局唯一），精确删除已从配置文件移除的条目。
 func (r *LLMTargetRepo) DeleteConfigTargetsNotInList(keepKeys []ConfigTargetKey) (int, error) {
-	// 查出所有 source='config' 的 targets
 	var configTargets []*LLMTarget
 	if err := r.db.Where("source = ?", "config").Find(&configTargets).Error; err != nil {
 		return 0, fmt.Errorf("list config targets: %w", err)
 	}
 
-	// 构建保留集合
-	type key struct {
-		url      string
-		apiKeyID string // 空字符串表示 nil
-	}
-	keepSet := make(map[key]struct{}, len(keepKeys))
+	keepSet := make(map[string]struct{}, len(keepKeys))
 	for _, k := range keepKeys {
-		apiKeyStr := ""
-		if k.APIKeyID != nil {
-			apiKeyStr = *k.APIKeyID
-		}
-		keepSet[key{url: k.URL, apiKeyID: apiKeyStr}] = struct{}{}
+		keepSet[k.URL] = struct{}{}
 	}
 
-	// 删除不在保留集合中的
 	deleted := 0
 	for _, t := range configTargets {
-		apiKeyStr := ""
-		if t.APIKeyID != nil {
-			apiKeyStr = *t.APIKeyID
-		}
-		if _, keep := keepSet[key{url: t.URL, apiKeyID: apiKeyStr}]; keep {
+		if _, keep := keepSet[t.URL]; keep {
 			continue
 		}
 		if err := r.db.Delete(&LLMTarget{}, "id = ?", t.ID).Error; err != nil {

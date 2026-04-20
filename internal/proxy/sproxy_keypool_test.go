@@ -30,21 +30,19 @@ import (
 // BUG-1: 启动路径 ID 一致性 —— 同 URL 多 key
 // ---------------------------------------------------------------------------
 
-// TestStartupPath_SameURL_MultipleKeys_CredentialsNotOverwritten 验证 BUG-1:
-// 当两个 DB target 指向同一个 URL 但使用不同 API key 时，
+// TestStartupPath_MultipleTargets_CredentialsIndependent 验证：
+// 当两个 DB target 指向不同 URL 但使用不同 API key 时，
 // loadAllTargets 应为每个 target 分别解析 APIKey，两个 key 独立存在不被覆盖。
-//
-// 修复前（main.go 启动路径）：credentials[t.URL] 被后者覆盖，只剩最后一个 key。
-// 修复后：credentials[t.ID(UUID)] 独立存储，两个 key 都保留。
-func TestStartupPath_SameURL_MultipleKeys_CredentialsNotOverwritten(t *testing.T) {
+// (URL 现为全局唯一，每个 target 有独立 URL)
+func TestStartupPath_MultipleTargets_CredentialsIndependent(t *testing.T) {
 	logger := zap.NewNop()
 	gormDB, err := db.Open(logger, ":memory:")
 	require.NoError(t, err)
 	require.NoError(t, db.Migrate(logger, gormDB))
 
-	const targetURL = "https://api.openai.com/v1"
+	const targetURL1 = "https://api.openai.com/v1"
+	const targetURL2 = "https://api.openai.com/v2"
 
-	// 写入两个指向同一 URL 但不同 key 的 target
 	keyID1 := "key-uuid-aaa"
 	keyID2 := "key-uuid-bbb"
 	require.NoError(t, gormDB.Create(&db.APIKey{
@@ -60,51 +58,49 @@ func TestStartupPath_SameURL_MultipleKeys_CredentialsNotOverwritten(t *testing.T
 
 	repo := db.NewLLMTargetRepo(gormDB, logger)
 	require.NoError(t, repo.Create(&db.LLMTarget{
-		ID: "target-uuid-111", URL: targetURL,
+		ID: "target-uuid-111", URL: targetURL1,
 		APIKeyID: &keyID1, Provider: "openai",
 		Name: "pool-1", Weight: 1, Source: "database", IsActive: true,
 	}))
 	require.NoError(t, repo.Create(&db.LLMTarget{
-		ID: "target-uuid-222", URL: targetURL,
+		ID: "target-uuid-222", URL: targetURL2,
 		APIKeyID: &keyID2, Provider: "openai",
 		Name: "pool-2", Weight: 1, Source: "database", IsActive: true,
 	}))
 
 	sp := &SProxy{db: gormDB, logger: logger}
 
-	// loadAllTargets 是 SyncLLMTargets 和启动路径共用的加载函数
-	// 它应该为每个 target 独立解析 APIKey
 	targets, err := sp.loadAllTargets(repo)
 	require.NoError(t, err)
 	require.Len(t, targets, 2, "应加载 2 个 target")
 
-	// 两个 target 的 APIKey 应不同（而非被覆盖成同一个）
+	// 两个 target 的 APIKey 应不同
 	apiKeys := map[string]bool{}
 	for _, tgt := range targets {
 		assert.NotEmpty(t, tgt.APIKey, "每个 target 都应有 APIKey")
 		assert.NotEmpty(t, tgt.ID, "每个 target 都应有 UUID（不应为空）")
-		assert.Equal(t, targetURL, tgt.URL, "URL 应正确")
 		apiKeys[tgt.APIKey] = true
 	}
-	assert.Len(t, apiKeys, 2,
-		"BUG-1: 两个 target 的 APIKey 应不同（修复前：credentials[URL] 后者覆盖前者）")
+	assert.Len(t, apiKeys, 2, "两个 target 的 APIKey 应不同")
 
 	// 验证 UUID 与 URL 不同
 	for _, tgt := range targets {
-		assert.NotEqual(t, tgt.ID, targetURL,
-			"target ID 应为 UUID，不应等于 URL（BUG-1 修复后启动路径也应如此）")
+		assert.NotEqual(t, tgt.ID, tgt.URL,
+			"target ID 应为 UUID，不应等于 URL")
 	}
 }
 
-// TestStartupPath_SameURL_MultipleKeys_BalancerCanPickBoth 验证 BUG-1 的另一面:
-// balancer 能轮换选择两个同 URL 不同 ID 的 target。
-func TestStartupPath_SameURL_MultipleKeys_BalancerCanPickBoth(t *testing.T) {
+// TestStartupPath_MultipleTargets_BalancerCanPickBoth 验证：
+// balancer 能轮换选择两个不同 URL 的 target。
+// (URL 现为全局唯一，每个 target 有独立 URL)
+func TestStartupPath_MultipleTargets_BalancerCanPickBoth(t *testing.T) {
 	logger := zap.NewNop()
 	gormDB, err := db.Open(logger, ":memory:")
 	require.NoError(t, err)
 	require.NoError(t, db.Migrate(logger, gormDB))
 
-	const targetURL = "https://api.openai.com/v1"
+	const targetURL1 = "https://api.openai.com/v1"
+	const targetURL2 = "https://api.openai.com/v2"
 
 	keyID1, keyID2 := "key-aaa", "key-bbb"
 	for _, kid := range []string{keyID1, keyID2} {
@@ -117,11 +113,11 @@ func TestStartupPath_SameURL_MultipleKeys_BalancerCanPickBoth(t *testing.T) {
 
 	repo := db.NewLLMTargetRepo(gormDB, logger)
 	require.NoError(t, repo.Create(&db.LLMTarget{
-		ID: "t1", URL: targetURL, APIKeyID: &keyID1,
+		ID: "t1", URL: targetURL1, APIKeyID: &keyID1,
 		Provider: "openai", Weight: 1, Source: "database", IsActive: true,
 	}))
 	require.NoError(t, repo.Create(&db.LLMTarget{
-		ID: "t2", URL: targetURL, APIKeyID: &keyID2,
+		ID: "t2", URL: targetURL2, APIKeyID: &keyID2,
 		Provider: "openai", Weight: 1, Source: "database", IsActive: true,
 	}))
 
@@ -139,8 +135,8 @@ func TestStartupPath_SameURL_MultipleKeys_BalancerCanPickBoth(t *testing.T) {
 			pickedIDs[tgt.ID] = true
 		}
 	}
-	assert.True(t, pickedIDs["t1"], "target t1 (key-aaa) 应能被 Pick 到")
-	assert.True(t, pickedIDs["t2"], "target t2 (key-bbb) 应能被 Pick 到")
+	assert.True(t, pickedIDs["t1"], "target t1 应能被 Pick 到")
+	assert.True(t, pickedIDs["t2"], "target t2 应能被 Pick 到")
 }
 
 // ---------------------------------------------------------------------------
@@ -479,13 +475,16 @@ func TestLoadAllTargets_AdminAPIKey_ReturnsCorrectAPIKey(t *testing.T) {
 // TestSyncLLMTargets_SameURL_TwoKeys_UseUUID 是 BUG-1 的 SyncLLMTargets 层验证:
 // SyncLLMTargets 已经使用 UUID 做 targetID（而非 URL），同 URL 多 key 可正常工作。
 // 这个测试验证"正确路径"，对比启动路径的 BUG-1。
-func TestSyncLLMTargets_SameURL_TwoKeys_UseUUID(t *testing.T) {
+// TestSyncLLMTargets_TwoTargets_UseUUID 验证 SyncLLMTargets 使用 UUID 而非 URL 作为 balancer ID。
+// (URL 现为全局唯一，每个 target 有独立 URL)
+func TestSyncLLMTargets_TwoTargets_UseUUID(t *testing.T) {
 	logger := zap.NewNop()
 	gormDB, err := db.Open(logger, ":memory:")
 	require.NoError(t, err)
 	require.NoError(t, db.Migrate(logger, gormDB))
 
-	const targetURL = "https://api.volcengine.com/v1"
+	const targetURL1 = "https://api.volcengine.com/v1"
+	const targetURL2 = "https://api.volcengine.com/v2"
 
 	keyID1, keyID2 := "vol-key-1", "vol-key-2"
 	for i, kid := range []string{keyID1, keyID2} {
@@ -498,11 +497,11 @@ func TestSyncLLMTargets_SameURL_TwoKeys_UseUUID(t *testing.T) {
 
 	repo := db.NewLLMTargetRepo(gormDB, logger)
 	require.NoError(t, repo.Create(&db.LLMTarget{
-		ID: "vol-t1", URL: targetURL, APIKeyID: &keyID1,
+		ID: "vol-t1", URL: targetURL1, APIKeyID: &keyID1,
 		Provider: "openai", Weight: 1, Source: "database", IsActive: true,
 	}))
 	require.NoError(t, repo.Create(&db.LLMTarget{
-		ID: "vol-t2", URL: targetURL, APIKeyID: &keyID2,
+		ID: "vol-t2", URL: targetURL2, APIKeyID: &keyID2,
 		Provider: "openai", Weight: 1, Source: "database", IsActive: true,
 	}))
 
@@ -513,9 +512,9 @@ func TestSyncLLMTargets_SameURL_TwoKeys_UseUUID(t *testing.T) {
 	sp.SyncLLMTargets()
 
 	targets := sp.llmBalancer.Targets()
-	assert.Len(t, targets, 2, "SyncLLMTargets 应为同 URL 两个 key 创建两个独立 balancer 条目")
+	assert.Len(t, targets, 2, "SyncLLMTargets 应创建两个独立 balancer 条目")
 	if len(targets) == 2 {
 		assert.NotEqual(t, targets[0].ID, targets[1].ID)
-		assert.NotEqual(t, targets[0].ID, targetURL, "balancer ID 应为 UUID，不应是 URL")
+		assert.NotEqual(t, targets[0].ID, targetURL1, "balancer ID 应为 UUID，不应是 URL")
 	}
 }

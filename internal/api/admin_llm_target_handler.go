@@ -109,19 +109,15 @@ func (h *AdminLLMTargetHandler) handleCreateTarget(w http.ResponseWriter, r *htt
 		return
 	}
 
-	// 检查 (URL, APIKeyID) 复合键是否已存在，支持同 URL + 不同 API Key 共存（Issue #6）
-	var apiKeyIDPtr *string
-	if req.APIKeyID != "" {
-		apiKeyIDPtr = &req.APIKeyID
-	}
-	exists, err := h.llmTargetRepo.ComboExists(req.URL, apiKeyIDPtr)
+	// 检查 URL 是否已存在（URL 现为全局唯一）
+	exists, err := h.llmTargetRepo.URLExists(req.URL)
 	if err != nil {
-		h.logger.Error("failed to check url+apikey exists", zap.String("url", req.URL), zap.Error(err))
+		h.logger.Error("failed to check url exists", zap.String("url", req.URL), zap.Error(err))
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 	if exists {
-		http.Error(w, "target with this URL and API key already exists", http.StatusConflict)
+		http.Error(w, "target with this URL already exists", http.StatusConflict)
 		return
 	}
 
