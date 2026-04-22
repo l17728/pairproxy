@@ -39,12 +39,12 @@ import (
 	"github.com/l17728/pairproxy/internal/version"
 )
 
-// ErrNoLLMBinding は LLM ターゲットが割り当てられていない場合に返される。
-// 管理者が明示的な割り当てを設定するまでリクエストは拒否される。
+// ErrNoLLMBinding 在未分配 LLM 目标时返回。
+// 在管理员显式配置分配关系之前，请求将被拒绝。
 var ErrNoLLMBinding = errors.New("no LLM target assigned for this user/group")
 
-// ErrBoundTargetUnavailable は割り当て済みの LLM ターゲットが利用不可の場合に返される。
-// ターゲットが unhealthy か既にリトライ済みの場合に発生する。
+// ErrBoundTargetUnavailable 在已绑定的 LLM 目标不可用时返回。
+// 目标处于 unhealthy 状态或已完成重试时触发。
 var ErrBoundTargetUnavailable = errors.New("assigned LLM target is currently unavailable")
 
 // LLMTarget 代表一个 LLM 后端（含 API Key 和 provider 类型）。
@@ -367,13 +367,13 @@ func (sp *SProxy) syncConfigTargetsToDatabase(repo *db.LLMTargetRepo) error {
 			continue
 		}
 
-		keepKeys = append(keepKeys, db.ConfigTargetKey{URL: ct.URL, APIKeyID: apiKeyID})
+		keepKeys = append(keepKeys, db.ConfigTargetKey{URL: ct.URL})
 		logger.Debug("config target synced",
 			zap.String("url", ct.URL))
 	}
 
 	// 3. 清理：删除数据库中 source='config' 但不在配置文件中的记录
-	// 使用 (url, api_key_id) 复合键精确匹配，支持同 URL 多 Key 场景
+	// 按 URL 匹配（URL 现为全局唯一）
 	deleted, err := repo.DeleteConfigTargetsNotInList(keepKeys)
 	if err != nil {
 		logger.Error("failed to clean up config targets", zap.Error(err))
@@ -415,13 +415,20 @@ func (sp *SProxy) loadAllTargets(repo *db.LLMTargetRepo) ([]config.LLMTarget, er
 		}
 
 		// 解密 API Key
-		apiKey, err := sp.resolveAPIKey(dt.APIKeyID)
-		if err != nil {
-			sp.logger.Warn("failed to resolve api key for target",
-				zap.String("url", dt.URL),
+		apiKey, keyErr := sp.resolveAPIKey(dt.APIKeyID)
+		apiKeyError := false
+		if keyErr != nil {
+			// ERROR 级别：API Key 解析失败是配置错误，不会自动恢复，必须人工介入。
+			// 包含 target_id 以便管理员直接用 UUID 定位 target。
+			sp.logger.Error("api key resolution failed for llm target; target will remain in balancer but forced unhealthy until fixed",
+				zap.String("target_id", dt.ID),
+				zap.String("target_url", dt.URL),
 				zap.String("api_key_id", ptrToString(dt.APIKeyID)),
-				zap.Error(err))
-			continue
+				zap.Error(keyErr))
+			apiKeyError = true
+			// 不 continue：继续将 target 加入列表，SyncLLMTargets 会将其强制标为不健康。
+			// 这样 dashboard 能显示正确的不健康状态，绑定该 target 的请求也会得到
+			// "unhealthy" 错误而非 "not found in balancer" 错误。
 		}
 
 		// 反序列化 ModelMappingJSON
@@ -447,12 +454,13 @@ func (sp *SProxy) loadAllTargets(repo *db.LLMTargetRepo) ([]config.LLMTarget, er
 			URL:             dt.URL,
 			APIKey:          apiKey,
 			Provider:        dt.Provider,
-			Name:            dt.Name,
+			Name:             dt.Name,
 			Weight:          dt.Weight,
 			HealthCheckPath: dt.HealthCheckPath,
 			ModelMapping:    modelMapping,
 			SupportedModels: supportedModels,
 			AutoModel:       dt.AutoModel,
+			APIKeyError:     apiKeyError,
 		})
 	}
 
@@ -479,7 +487,10 @@ func (sp *SProxy) loadAllTargets(repo *db.LLMTargetRepo) ([]config.LLMTarget, er
 }
 
 // resolveAPIKey 根据 API Key ID 查询 API Key 值。
-// BUG-4 修复：优先使用 keyDecryptFn（AES-256-GCM）解密；未配置时回退到 obfuscateKey（config-sync 路径兼容）。
+// 根据 key_scheme 字段选择解密方式：
+//   - "aes"：使用 keyDecryptFn（AES-256-GCM）解密，由 Admin API 或 CLI apikey add 写入；
+//   - "obfuscated"：使用 obfuscateKey 还原，由 config-sync 路径写入；
+//   - ""（空，迁移前历史记录）：先尝试 AES，失败则回退 obfuscateKey，兼容旧数据。
 func (sp *SProxy) resolveAPIKey(apiKeyID *string) (string, error) {
 	if apiKeyID == nil || *apiKeyID == "" {
 		return "", nil // API Key 可选
@@ -490,20 +501,33 @@ func (sp *SProxy) resolveAPIKey(apiKeyID *string) (string, error) {
 		return "", fmt.Errorf("query api key: %w", err)
 	}
 
-	// 优先使用 AES 解密（Admin API 创建的 key）
-	if sp.keyDecryptFn != nil {
-		plain, err := sp.keyDecryptFn(apiKey.EncryptedValue)
-		if err == nil {
-			return plain, nil
+	switch apiKey.KeyScheme {
+	case "aes":
+		// 明确标记为 AES（Admin API / CLI 新建），硬错误，不静默降级
+		if sp.keyDecryptFn == nil {
+			return "", fmt.Errorf("key %s uses AES scheme but keyDecryptFn is not configured", *apiKeyID)
 		}
-		// AES 解密失败（可能是 config-sync 路径的 obfuscated 值），回退到 obfuscateKey
-		sp.logger.Debug("resolveAPIKey: AES decrypt failed, falling back to obfuscateKey",
-			zap.String("key_id", *apiKeyID),
-			zap.Error(err),
-		)
-	}
+		plain, err := sp.keyDecryptFn(apiKey.EncryptedValue)
+		if err != nil {
+			return "", fmt.Errorf("AES decrypt api key %s: %w", *apiKeyID, err)
+		}
+		return plain, nil
 
-	return obfuscateKey(apiKey.EncryptedValue), nil
+	case "obfuscated":
+		// 明确标记为混淆（config-sync），直接还原
+		return obfuscateKey(apiKey.EncryptedValue), nil
+
+	default:
+		// key_scheme 为空：迁移前的历史记录，来源未知。
+		// 先尝试 AES（Admin API 路径），失败则回退 obfuscateKey（config-sync 路径）。
+		if sp.keyDecryptFn != nil {
+			if plain, err := sp.keyDecryptFn(apiKey.EncryptedValue); err == nil {
+				return plain, nil
+			}
+			// AES 解密失败（正常：该 key 可能是 obfuscated 格式），静默回退
+		}
+		return obfuscateKey(apiKey.EncryptedValue), nil
+	}
 }
 
 // swapFirstLast 交换字符串的首尾字符（对称操作）。
@@ -562,6 +586,10 @@ func (sp *SProxy) SyncLLMTargets() {
 		return
 	}
 
+	// 记录同步开始时间，用于 MarkSyncedBefore：仅将 updated_at <= syncTime 的 target
+	// 标记为已同步，避免同步期间发生的新写操作被误标记为已同步。
+	syncTime := time.Now()
+
 	loadedTargets, err := sp.LoadAllTargets()
 	if err != nil {
 		sp.logger.Error("SyncLLMTargets: failed to load targets from db", zap.Error(err))
@@ -596,7 +624,16 @@ func (sp *SProxy) SyncLLMTargets() {
 			// config-sourced targets without DB ID: fall back to URL as key
 			targetID = t.URL
 		}
-		if h, exists := existingHealth[targetID]; exists {
+		if t.APIKeyError {
+			// API Key 解析失败：强制标为不健康，阻止流量路由到无法认证的节点。
+			// 即使该 target 之前是健康的，也必须重置，因为缺少凭证无法正常转发。
+			healthy = false
+			draining = false
+			sp.logger.Warn("SyncLLMTargets: forcing target unhealthy due to API key error",
+				zap.String("target_id", targetID),
+				zap.String("target_url", t.URL),
+			)
+		} else if h, exists := existingHealth[targetID]; exists {
 			// 存量 target：保留当前健康/排水状态
 			healthy = h
 			draining = existingDrain[targetID]
@@ -625,6 +662,7 @@ func (sp *SProxy) SyncLLMTargets() {
 			zap.String("url", t.URL),
 			zap.String("name", t.Name),
 			zap.Bool("is_new", isNew),
+			zap.Bool("api_key_error", t.APIKeyError),
 		)
 		if t.HealthCheckPath != "" {
 			healthPaths[targetID] = t.HealthCheckPath
@@ -678,6 +716,12 @@ func (sp *SProxy) SyncLLMTargets() {
 		if t.AutoModel != "" {
 			countWithAutoModel++
 		}
+	}
+
+	// 将 updated_at <= syncTime 的 target 标记为已同步
+	syncRepo := db.NewLLMTargetRepo(sp.db, sp.logger)
+	if err := syncRepo.MarkSyncedBefore(syncTime); err != nil {
+		sp.logger.Warn("SyncLLMTargets: failed to mark targets synced", zap.Error(err))
 	}
 
 	sp.logger.Info("SyncLLMTargets: balancer and health checker updated",
@@ -1027,18 +1071,32 @@ func (sp *SProxy) pickLLMTarget(path, userID, groupID, requestedModel string, tr
 		}
 
 		// 有绑定 → 必须使用该 target，不允许 fall through
-		if !triedSet[boundID] {
+		//
+		// RetryTransport 的 tried 列表使用 URL 格式；boundID 可能是 UUID 或 URL（取决于绑定创建方式）。
+		// 因此同时检查 triedSet[boundID]（UUID 绑定）和目标的 Addr（URL 绑定）。
+		alreadyTried := triedSet[boundID]
+		if !alreadyTried {
 			healthy := true
+			targetFound := false
+			targetAddr := ""
 			if sp.llmBalancer != nil {
 				healthy = false
 				for _, t := range sp.llmBalancer.Targets() {
-					if t.ID == boundID {
+					// 同时匹配 ID（UUID）和 Addr（URL），兼容 YAML 导入或旧版创建的 URL 格式绑定
+					if t.ID == boundID || t.Addr == boundID {
+						targetFound = true
+						targetAddr = t.Addr
+						if triedSet[t.Addr] {
+							// RetryTransport 使用 URL 加入 tried，此 target 已被重试过
+							alreadyTried = true
+							break
+						}
 						healthy = t.Healthy
 						break
 					}
 				}
 			}
-			if healthy {
+			if !alreadyTried && healthy {
 				info := sp.llmTargetInfoForID(boundID)
 				sp.logger.Debug("using bound LLM target",
 					zap.String("user_id", userID),
@@ -1048,10 +1106,30 @@ func (sp *SProxy) pickLLMTarget(path, userID, groupID, requestedModel string, tr
 				)
 				return info, nil
 			}
+			// 绑定 target 不健康或已试过 → 报错，不 fall through
+			if alreadyTried {
+				sp.logger.Warn("assigned LLM target already tried, request rejected",
+					zap.String("bound_id", boundID),
+					zap.String("target_addr", targetAddr),
+					zap.String("user_id", userID),
+				)
+			} else if !targetFound {
+				sp.logger.Warn("assigned LLM target not found in balancer (disabled or removed), request rejected",
+					zap.String("bound_id", boundID),
+					zap.String("user_id", userID),
+				)
+			} else {
+				sp.logger.Warn("assigned LLM target is unhealthy, request rejected",
+					zap.String("bound_id", boundID),
+					zap.String("target_addr", targetAddr),
+					zap.String("user_id", userID),
+				)
+			}
+			return nil, ErrBoundTargetUnavailable
 		}
 
-		// 绑定 target 不健康或已试过 → 报错，不 fall through
-		sp.logger.Warn("assigned LLM target is unhealthy or already tried, request rejected",
+		// alreadyTried=true（由 triedSet[boundID] 直接命中，未进入上方分支）
+		sp.logger.Warn("assigned LLM target already tried, request rejected",
 			zap.String("bound_id", boundID),
 			zap.String("user_id", userID),
 		)
@@ -1283,7 +1361,7 @@ func preferredProvidersByPath(path string) map[string]bool {
 
 // buildRetryTransport 构建 RetryTransport（当 llmBalancer 已配置时）。
 // effectivePath 是传递给 PickNext 的路径（OtoA 时为 "/v1/messages"，其他为 r.URL.Path）。
-// これは次要防御機制：确保 retry 时 pickLLMTarget 从 /v1/messages 对应的 preferredProvidersByPath
+// 这是次要防御机制：确保 retry 时 pickLLMTarget 从 /v1/messages 对应的 preferredProvidersByPath
 // 中选 Anthropic targets。主要机制是 Director 将出向请求路径改写为 convertedPath（Step 5.10）。
 func (sp *SProxy) buildRetryTransport(userID, groupID, effectivePath, requestedModel string) http.RoundTripper {
 	if sp.llmBalancer == nil {
@@ -1537,6 +1615,10 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 	// OtoA 场景：此值为 OpenAI 客户端发送的模型名（如 "gpt-4o"），
 	//   不是 Anthropic 模型名，响应时用于日志记录和 UsageRecord.Model 字段。
 
+	// recordedActualModel 追踪经过 auto/model-mapping 等变换后实际发往上游的模型名。
+	// 空字符串表示与 requestedModel 相同（无变换）。
+	var recordedActualModel string
+
 	// Auto 模式处理（F3）：选定 target 后，用 target 的 auto_model 重写请求体中的 model 字段
 	if requestedModel == "auto" && sp.llmBalancer != nil && len(bodyBytes) > 0 {
 		actualModel := sp.autoModelFromURL(firstInfo.URL)
@@ -1546,6 +1628,7 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 				bodyBytes = rewritten
 				r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 				r.ContentLength = int64(len(bodyBytes))
+				recordedActualModel = actualModel
 				sp.logger.Info("auto mode: rewrote model in request body",
 					zap.String("request_id", reqID),
 					zap.String("target_url", firstInfo.URL),
@@ -1607,6 +1690,12 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 				// 更新 body
 				r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 				r.ContentLength = int64(len(bodyBytes))
+				// 记录实际模型（AtoO 转换内部应用了 model mapping）
+				if len(modelMapping) > 0 {
+					if mapped := mapModelName(requestedModel, modelMapping); mapped != requestedModel {
+						recordedActualModel = mapped
+					}
+				}
 
 				sp.logger.Info("request converted successfully",
 					zap.String("request_id", reqID),
@@ -1650,6 +1739,12 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 				convertedPath = newPath
 				r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 				r.ContentLength = int64(len(bodyBytes))
+				// 记录实际模型（OtoA 转换内部应用了 model mapping）
+				if len(modelMapping) > 0 {
+					if mapped := mapModelName(requestedModel, modelMapping); mapped != requestedModel {
+						recordedActualModel = mapped
+					}
+				}
 				sp.logger.Info("OtoA request converted successfully",
 					zap.String("request_id", reqID),
 					zap.String("new_path", newPath),
@@ -1674,6 +1769,28 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// conversionNone 时仍需应用 model mapping（直传场景：客户端与 target 同协议）
+	if convDir == conversionNone && len(bodyBytes) > 0 && requestedModel != "" {
+		modelMapping := sp.modelMappingForURL(firstInfo.URL)
+		if len(modelMapping) > 0 {
+			mappedModel := mapModelName(requestedModel, modelMapping)
+			if mappedModel != requestedModel {
+				rewritten := rewriteModelInBody(bodyBytes, requestedModel, mappedModel)
+				if len(rewritten) > 0 {
+					bodyBytes = rewritten
+					r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+					r.ContentLength = int64(len(bodyBytes))
+					recordedActualModel = mappedModel
+					sp.logger.Debug("model name mapped (passthrough)",
+						zap.String("request_id", reqID),
+						zap.String("original_model", requestedModel),
+						zap.String("mapped_model", mappedModel),
+					)
+				}
+			}
+		}
+	}
+
 	// 补充 span attributes（target 确定后）
 	span.SetAttributes(
 		attribute.String("provider", targetProvider),
@@ -1694,6 +1811,7 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 		RequestID:   reqID,
 		UserID:      claims.UserID,
 		Model:       model,
+		ActualModel: recordedActualModel,
 		UpstreamURL: firstInfo.URL,
 		SourceNode:  sp.sourceNode,
 		CreatedAt:   time.Now().UTC(),
@@ -1802,9 +1920,17 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 			req.Host = targetURL.Host
 
 			// 协议转换：修改请求路径
+			// convertedPath 是不含版本前缀的路径后缀（如 /chat/completions）。
+			// 若 target URL 带有自定义 base path（如 /v2、/openai/v1），则拼接在前面；
+			// 若无 base path（标准 OpenAI 端点），则补全为 /v1/chat/completions。
 			if convDir != conversionNone && convertedPath != "" {
 				originalPath := req.URL.Path
-				req.URL.Path = convertedPath
+				basePath := strings.TrimRight(targetURL.Path, "/")
+				if basePath == "" {
+					req.URL.Path = "/v1" + convertedPath
+				} else {
+					req.URL.Path = basePath + convertedPath
+				}
 				sp.logger.Debug("request path converted for protocol conversion",
 					zap.String("request_id", reqID),
 					zap.String("original_path", originalPath),
@@ -2043,6 +2169,14 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	proxy.ServeHTTP(tw, r)
+
+	// 请求完成后立即失效该用户的配额缓存。
+	// 此时用量记录已写入 UsageWriter channel（异步，5s 内刷入 DB）。
+	// 提前失效缓存可确保下一个请求重新查询 DB，避免缓存过期前的超额使用。
+	// DB flush 完成后 onFlush 回调也会再次失效，消除 flush 延迟窗口。
+	if sp.quotaChecker != nil {
+		sp.quotaChecker.InvalidateCache(claims.UserID)
+	}
 
 	// 训练语料采集：流式响应完成后提交记录
 	if corpusCollector != nil {

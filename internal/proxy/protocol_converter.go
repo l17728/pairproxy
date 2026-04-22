@@ -12,12 +12,12 @@ import (
 	"go.uber.org/zap"
 )
 
-// ErrPrefillNotSupported は末尾 assistant メッセージ（prefill）が検出された場合に返されるエラー。
-// OpenAI/Ollama エンドポイントは prefill をサポートしないため、HTTP 400 を返す。
+// ErrPrefillNotSupported 是检测到末尾 assistant 消息（prefill）时返回的错误。
+// OpenAI/Ollama 端点不支持 prefill，因此返回 HTTP 400。
 var ErrPrefillNotSupported = errors.New("OpenAI/Ollama endpoints do not support assistant prefill")
 
-// ErrThinkingNotSupported は将来の拡張のために保留。現在は使用されていない。
-// thinking パラメータは OpenAI/Ollama 向け変換時に静默剥离される。
+// ErrThinkingNotSupported 为将来扩展预留，当前未使用。
+// thinking 参数在转换至 OpenAI/Ollama 时会被静默剥离。
 var ErrThinkingNotSupported = errors.New("Extended thinking (thinking parameter) is not supported for OpenAI/Ollama targets")
 
 // ---------------------------------------------------------------------------
@@ -75,7 +75,7 @@ func mapModelName(model string, mapping map[string]string) string {
 // modelMapping 可选，非 nil 时将 Anthropic 模型名转换为目标提供商的本地模型名。
 // 返回转换后的 body 和新的请求路径。
 func convertAnthropicToOpenAIRequest(body []byte, logger *zap.Logger, reqID string, modelMapping map[string]string) ([]byte, string, error) {
-	const newPath = "/v1/chat/completions"
+	const newPath = "/chat/completions"
 	if len(body) == 0 {
 		return body, newPath, nil
 	}
@@ -1148,8 +1148,8 @@ func convertOpenAIErrorResponse(body []byte, logger *zap.Logger, reqID string) [
 	return converted
 }
 
-// writeAnthropicError は Anthropic 形式のエラー JSON を HTTP レスポンスに書き込む。
-// 協議転換レイヤーが自分でエラーを返す（上流に転送しない）場合に使用する。
+// writeAnthropicError 将 Anthropic 格式的错误 JSON 写入 HTTP 响应。
+// 用于协议转换层自行返回错误（不转发到上游）的场景。
 func writeAnthropicError(w http.ResponseWriter, statusCode int, errorType, message string) {
 	resp := map[string]interface{}{
 		"type": "error",
@@ -1164,9 +1164,9 @@ func writeAnthropicError(w http.ResponseWriter, statusCode int, errorType, messa
 	w.Write(body) //nolint:errcheck
 }
 
-// ─── リクエスト変換：OpenAI → Anthropic ───────────────────────────────────────
+// ─── 请求转换：OpenAI → Anthropic ───────────────────────────────────────
 
-// convertOpenAIToAnthropicRequest はOpenAI Chat Completions リクエストを Anthropic Messages API 形式に変換する。
+// convertOpenAIToAnthropicRequest 将 OpenAI Chat Completions 请求转换为 Anthropic Messages API 格式。
 // Returns (converted body, "/v1/messages", nil) on success.
 // Returns (nil, "/v1/messages", error) on JSON parse failure — caller must return HTTP 400.
 func convertOpenAIToAnthropicRequest(body []byte, logger *zap.Logger, reqID string, modelMapping map[string]string) ([]byte, string, error) {
@@ -1318,7 +1318,7 @@ func convertOpenAIToAnthropicRequest(body []byte, logger *zap.Logger, reqID stri
 	return converted, newPath, nil
 }
 
-// convertOpenAIToolChoice はOpenAI tool_choice 値を Anthropic 形式に変換する。
+// convertOpenAIToolChoice 将 OpenAI tool_choice 值转换为 Anthropic 格式。
 func convertOpenAIToolChoice(tc interface{}) map[string]interface{} {
 	switch v := tc.(type) {
 	case string:
@@ -1341,7 +1341,7 @@ func convertOpenAIToolChoice(tc interface{}) map[string]interface{} {
 	return map[string]interface{}{"type": "auto"}
 }
 
-// convertOpenAIUserMessage は user ロールのメッセージを変換する。
+// convertOpenAIUserMessage 转换 user 角色的消息。
 func convertOpenAIUserMessage(msg map[string]interface{}) map[string]interface{} {
 	content := msg["content"]
 	switch c := content.(type) {
@@ -1374,7 +1374,7 @@ func convertOpenAIUserMessage(msg map[string]interface{}) map[string]interface{}
 	}
 }
 
-// convertOpenAIImageURL は OpenAI image_url 項目を Anthropic image ブロックに変換する。
+// convertOpenAIImageURL 将 OpenAI image_url 条目转换为 Anthropic image 块。
 func convertOpenAIImageURL(iu map[string]interface{}) map[string]interface{} {
 	rawURL, _ := iu["url"].(string)
 	if strings.HasPrefix(rawURL, "data:") {
@@ -1402,7 +1402,7 @@ func convertOpenAIImageURL(iu map[string]interface{}) map[string]interface{} {
 	}
 }
 
-// convertOpenAIAssistantMessage は assistant ロールのメッセージを変換する。
+// convertOpenAIAssistantMessage 转换 assistant 角色的消息。
 func convertOpenAIAssistantMessage(msg map[string]interface{}) map[string]interface{} {
 	var blocks []interface{}
 
@@ -1443,8 +1443,8 @@ func convertOpenAIAssistantMessage(msg map[string]interface{}) map[string]interf
 	return map[string]interface{}{"role": "assistant", "content": blocks}
 }
 
-// convertAnthropicToOpenAIResponseReverse はAnthropicのMessages APIレスポンスをOpenAIのChat Completions形式に変換する。
-// requestedModel は元のOpenAIリクエストのmodel名。空でなければレスポンスのmodel フィールドに使用する。
+// convertAnthropicToOpenAIResponseReverse 将 Anthropic Messages API 响应转换为 OpenAI Chat Completions 格式。
+// requestedModel 为原始 OpenAI 请求的 model 名，非空时用于填充响应的 model 字段。
 func convertAnthropicToOpenAIResponseReverse(body []byte, logger *zap.Logger, reqID string, requestedModel string) ([]byte, error) {
 	if len(body) == 0 {
 		return nil, fmt.Errorf("empty response body")
@@ -1567,7 +1567,7 @@ func convertAnthropicToOpenAIResponseReverse(body []byte, logger *zap.Logger, re
 	return converted, nil
 }
 
-// convertMessageIDReverse は msg_xxx を chatcmpl-xxx に変換する。
+// convertMessageIDReverse 将 msg_xxx 转换为 chatcmpl-xxx。
 func convertMessageIDReverse(id string) string {
 	if after, found := strings.CutPrefix(id, "msg_"); found {
 		return "chatcmpl-" + after
@@ -1575,7 +1575,7 @@ func convertMessageIDReverse(id string) string {
 	return "chatcmpl-" + id
 }
 
-// convertStopReasonToFinishReason は Anthropic stop_reason を OpenAI finish_reason に変換する。
+// convertStopReasonToFinishReason 将 Anthropic stop_reason 转换为 OpenAI finish_reason。
 func convertStopReasonToFinishReason(stopReason string) string {
 	switch stopReason {
 	case "end_turn", "stop_sequence":
@@ -1589,8 +1589,8 @@ func convertStopReasonToFinishReason(stopReason string) string {
 	}
 }
 
-// convertAnthropicErrorResponseToOpenAI は Anthropic 形式のエラーレスポンスを OpenAI 形式に変換する。
-// Anthropic 形式でない場合は原本を返す。
+// convertAnthropicErrorResponseToOpenAI 将 Anthropic 格式的错误响应转换为 OpenAI 格式。
+// 若非 Anthropic 格式则原样返回。
 func convertAnthropicErrorResponseToOpenAI(body []byte, logger *zap.Logger, reqID string) []byte {
 	var anthropicErr struct {
 		Type  string `json:"type"`
@@ -1631,9 +1631,9 @@ func convertAnthropicErrorResponseToOpenAI(body []byte, logger *zap.Logger, reqI
 
 // ─── OtoA Streaming Converter ─────────────────────────────────────────────────
 
-// AnthropicToOpenAIStreamConverter はAnthropicのSSEストリームをOpenAI SSEチャンクに変換する。
-// http.ResponseWriter と http.Flusher を実装する。
-// TeeResponseWriterがこのconverterをラップし、rawなAnthropicバイトをトークンパーサーに渡す。
+// AnthropicToOpenAIStreamConverter 将 Anthropic SSE 流转换为 OpenAI SSE 块。
+// 实现 http.ResponseWriter 和 http.Flusher 接口。
+// TeeResponseWriter 包装此 converter，将原始 Anthropic 字节传递给 token 解析器。
 type AnthropicToOpenAIStreamConverter struct {
 	w       http.ResponseWriter
 	logger  *zap.Logger
@@ -1651,13 +1651,13 @@ type AnthropicToOpenAIStreamConverter struct {
 	toolCallIndex map[int]int
 	nextToolIdx   int
 
-	// nonStreaming は最初の Write で SSE データでないと判定された場合に true。
-	// true の場合、後続の Write もパススルーする。
+	// nonStreaming 为 true 时表示首次 Write 判断为非 SSE 数据。
+	// 为 true 时后续 Write 直接透传。
 	firstWrite   bool
 	nonStreaming  bool
 }
 
-// NewAnthropicToOpenAIStreamConverter はAnthropicToOpenAIStreamConverterを作成する。
+// NewAnthropicToOpenAIStreamConverter 创建 AnthropicToOpenAIStreamConverter。
 func NewAnthropicToOpenAIStreamConverter(w http.ResponseWriter, logger *zap.Logger, reqID string, model string) *AnthropicToOpenAIStreamConverter {
 	return &AnthropicToOpenAIStreamConverter{
 		w:             w,
@@ -1669,29 +1669,29 @@ func NewAnthropicToOpenAIStreamConverter(w http.ResponseWriter, logger *zap.Logg
 	}
 }
 
-// Header 実装 http.ResponseWriter。
+// Header 实现 http.ResponseWriter。
 func (c *AnthropicToOpenAIStreamConverter) Header() http.Header {
 	return c.w.Header()
 }
 
-// WriteHeader 実装 http.ResponseWriter。
+// WriteHeader 实现 http.ResponseWriter。
 func (c *AnthropicToOpenAIStreamConverter) WriteHeader(statusCode int) {
 	c.w.WriteHeader(statusCode)
 }
 
-// Flush 実装 http.Flusher — デリゲートして内部ライターにフラッシュする。
+// Flush 实现 http.Flusher — 委托给内部 writer 执行刷新。
 func (c *AnthropicToOpenAIStreamConverter) Flush() {
 	if f, ok := c.w.(http.Flusher); ok {
 		f.Flush()
 	}
 }
 
-// Write はAnthropicのSSEチャンクを受け取り、OpenAI SSEチャンクに変換して出力する。
-// 既知の制限: `Write()` 呼び出し間をまたぐ SSE イベントのバッファリングは行わない。
-// これは既存の `OpenAIToAnthropicStreamConverter` (AtoO 方向) と同じ設計方針であり、
-// 上流 HTTP/2 または HTTP/1.1 フレーミングが各 SSE イベントを完整なチャンクとして
-// 渡すことが実測上確認されている（各 "data: ...\n\n" が1回の Write で届く）。
-// この仮定が崩れる環境では、バッファリング実装への切り替えが必要になる場合がある。
+// Write 接收 Anthropic SSE 块，转换为 OpenAI SSE 块后输出。
+// 已知限制：不对跨 Write() 调用的 SSE 事件进行缓冲。
+// 这与现有 OpenAIToAnthropicStreamConverter（AtoO 方向）的设计方针相同，
+// 上游 HTTP/2 或 HTTP/1.1 帧确保每个 SSE 事件以完整 chunk 形式
+// 传入（实测确认每个 "data: ...\n\n" 以单次 Write 到达）。
+// 若该假设不成立，则可能需要切换至带缓冲的实现。
 func (c *AnthropicToOpenAIStreamConverter) Write(chunk []byte) (int, error) {
 	// Non-streaming passthrough: if the first Write contains no SSE markers (event:/data:),
 	// treat it as non-streaming JSON (already converted in ModifyResponse) and pass through.
@@ -1850,7 +1850,7 @@ func (c *AnthropicToOpenAIStreamConverter) handleEvent(eventType, data string) {
 	}
 }
 
-// emitChunk はOpenAI SSEチャンクを書き込む。usageはオプション（nilなら省略）。
+// emitChunk 写入 OpenAI SSE 块。usage 为可选项（nil 则省略）。
 func (c *AnthropicToOpenAIStreamConverter) emitChunk(choice map[string]interface{}, usage map[string]interface{}) {
 	envelope := map[string]interface{}{
 		"id":      c.messageID,
@@ -1880,7 +1880,7 @@ func (c *AnthropicToOpenAIStreamConverter) emitChunk(choice map[string]interface
 	c.Flush()
 }
 
-// emitDone はOpenAI SSE終了シグナルを送信する。
+// emitDone 发送 OpenAI SSE 结束信号。
 func (c *AnthropicToOpenAIStreamConverter) emitDone() {
 	if _, err := c.w.Write([]byte("data: [DONE]\n\n")); err != nil {
 		c.logger.Debug("write error for [DONE]",

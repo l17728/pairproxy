@@ -366,7 +366,8 @@ func TestDeleteLLMTarget_NotFound(t *testing.T) {
 	}
 }
 
-// TestDeleteLLMTarget_ConfigSourced 验证 config-sourced target 不可删除，返回 403。
+// TestDeleteLLMTarget_ConfigSourced 验证通过 CLI（admin API）可以删除 config-sourced target（返回 200）。
+// WebUI 层禁止删除 config-sourced target，但 CLI 不受限制。
 func TestDeleteLLMTarget_ConfigSourced(t *testing.T) {
 	handler, gormDB, cleanup := setupLLMTargetHandler(t)
 	defer cleanup()
@@ -397,8 +398,8 @@ func TestDeleteLLMTarget_ConfigSourced(t *testing.T) {
 	rr := httptest.NewRecorder()
 	handler.handleDeleteTarget(rr, req)
 
-	if rr.Code != http.StatusForbidden {
-		t.Errorf("status = %d, want 403 for config-sourced target", rr.Code)
+	if rr.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 (CLI may delete config-sourced targets)", rr.Code)
 	}
 }
 
@@ -1049,7 +1050,7 @@ func TestAssignAPIKey_InvalidJSON(t *testing.T) {
 	tok := adminToken(t, jwtMgr)
 
 	// 先创建一个 key
-	key, err := apiKeyRepo.Create("assign-test-key", "enc:val", "anthropic")
+	key, err := apiKeyRepo.Create("assign-test-key", "enc:val", "anthropic", "obfuscated")
 	if err != nil {
 		t.Fatalf("create key: %v", err)
 	}
@@ -1068,7 +1069,7 @@ func TestAssignAPIKey_MissingFields(t *testing.T) {
 	_, jwtMgr, mux, apiKeyRepo := setupAdminWithAPIKeyRepo(t)
 	tok := adminToken(t, jwtMgr)
 
-	key, err := apiKeyRepo.Create("assign-miss-key", "enc:val", "anthropic")
+	key, err := apiKeyRepo.Create("assign-miss-key", "enc:val", "anthropic", "obfuscated")
 	if err != nil {
 		t.Fatalf("create key: %v", err)
 	}
@@ -1088,7 +1089,7 @@ func TestAssignAPIKey_ByGroupID(t *testing.T) {
 	_, jwtMgr, mux, apiKeyRepo := setupAdminWithAPIKeyRepo(t)
 	tok := adminToken(t, jwtMgr)
 
-	key, err := apiKeyRepo.Create("assign-group-key", "enc:val", "anthropic")
+	key, err := apiKeyRepo.Create("assign-group-key", "enc:val", "anthropic", "obfuscated")
 	if err != nil {
 		t.Fatalf("create key: %v", err)
 	}

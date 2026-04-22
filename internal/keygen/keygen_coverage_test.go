@@ -128,9 +128,9 @@ func TestCoverage_GenerateKey_SpecialCharsUsername(t *testing.T) {
 
 func TestCoverage_ValidateAndGetUser_InvalidPrefix(t *testing.T) {
 	users := []keygen.UserEntry{
-		{ID: "u1", Username: "alice", IsActive: true},
+		{ID: "u1", Username: "alice", PasswordHash: string(testSecret), IsActive: true},
 	}
-	got, err := keygen.ValidateAndGetUser("sk-openai-abc123", users, testSecret)
+	got, err := keygen.ValidateAndGetUser("sk-openai-abc123", users)
 	if err != nil {
 		t.Errorf("expected nil error for invalid format, got %v", err)
 	}
@@ -145,10 +145,10 @@ func TestCoverage_ValidateAndGetUser_InvalidPrefix(t *testing.T) {
 
 func TestCoverage_ValidateAndGetUser_WrongLength(t *testing.T) {
 	users := []keygen.UserEntry{
-		{ID: "u1", Username: "alice", IsActive: true},
+		{ID: "u1", Username: "alice", PasswordHash: string(testSecret), IsActive: true},
 	}
 	shortKey := keygen.KeyPrefix + "short"
-	got, err := keygen.ValidateAndGetUser(shortKey, users, testSecret)
+	got, err := keygen.ValidateAndGetUser(shortKey, users)
 	if err != nil {
 		t.Errorf("expected nil error for wrong length, got %v", err)
 	}
@@ -166,7 +166,7 @@ func TestCoverage_ValidateAndGetUser_EmptyUsers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
-	got, err := keygen.ValidateAndGetUser(key, nil, testSecret)
+	got, err := keygen.ValidateAndGetUser(key, nil)
 	if err != nil {
 		t.Errorf("expected nil error for empty users, got %v", err)
 	}
@@ -185,9 +185,9 @@ func TestCoverage_ValidateAndGetUser_InactiveUserSkipped(t *testing.T) {
 		t.Fatalf("GenerateKey: %v", err)
 	}
 	users := []keygen.UserEntry{
-		{ID: "u1", Username: "alice", IsActive: false}, // 不活跃
+		{ID: "u1", Username: "alice", PasswordHash: string(testSecret), IsActive: false}, // 不活跃
 	}
-	got, validErr := keygen.ValidateAndGetUser(key, users, testSecret)
+	got, validErr := keygen.ValidateAndGetUser(key, users)
 	if validErr != nil {
 		t.Errorf("expected nil error, got %v", validErr)
 	}
@@ -197,24 +197,25 @@ func TestCoverage_ValidateAndGetUser_InactiveUserSkipped(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// ValidateAndGetUser — 错误 secret 不匹配
+// ValidateAndGetUser — 旧密码派生的 key 不匹配持有新密码 hash 的用户
 // ---------------------------------------------------------------------------
 
-func TestCoverage_ValidateAndGetUser_WrongSecret(t *testing.T) {
+func TestCoverage_ValidateAndGetUser_WrongPassword(t *testing.T) {
+	// key 由旧密码 hash 派生，用户现已持有新密码 hash → 不匹配
 	key, err := keygen.GenerateKey("alice", testSecret)
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
-	wrongSecret := []byte("wrong-secret-key-must-be-at-least-32-bytes-long!!")
+	newPasswordHash := "new-password-hash-must-be-at-least-32-bytes-long!!"
 	users := []keygen.UserEntry{
-		{ID: "u1", Username: "alice", IsActive: true},
+		{ID: "u1", Username: "alice", PasswordHash: newPasswordHash, IsActive: true},
 	}
-	got, err := keygen.ValidateAndGetUser(key, users, wrongSecret)
+	got, err := keygen.ValidateAndGetUser(key, users)
 	if err != nil {
 		t.Errorf("expected nil error, got %v", err)
 	}
 	if got != nil {
-		t.Errorf("expected nil user with wrong secret, got %v", got)
+		t.Errorf("expected nil user with new password hash, got %v", got)
 	}
 }
 
@@ -225,9 +226,10 @@ func TestCoverage_ValidateAndGetUser_WrongSecret(t *testing.T) {
 func TestCoverage_ValidateAndGetUser_NoCollision(t *testing.T) {
 	// 旧算法碰撞场景：abcd 和 dcba 有相同字符集
 	// HMAC 算法下两者 key 不同，各自只匹配自己
+	ph := string(testSecret)
 	users := []keygen.UserEntry{
-		{ID: "u1", Username: "abcd", IsActive: true},
-		{ID: "u2", Username: "dcba", IsActive: true},
+		{ID: "u1", Username: "abcd", PasswordHash: ph, IsActive: true},
+		{ID: "u2", Username: "dcba", PasswordHash: ph, IsActive: true},
 	}
 
 	key1, err := keygen.GenerateKey("abcd", testSecret)
@@ -242,7 +244,7 @@ func TestCoverage_ValidateAndGetUser_NoCollision(t *testing.T) {
 		t.Fatal("HMAC keys for different usernames must differ")
 	}
 
-	got1, err := keygen.ValidateAndGetUser(key1, users, testSecret)
+	got1, err := keygen.ValidateAndGetUser(key1, users)
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -250,7 +252,7 @@ func TestCoverage_ValidateAndGetUser_NoCollision(t *testing.T) {
 		t.Errorf("key1 should match abcd, got %v", got1)
 	}
 
-	got2, err := keygen.ValidateAndGetUser(key2, users, testSecret)
+	got2, err := keygen.ValidateAndGetUser(key2, users)
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}

@@ -1,6 +1,6 @@
 # PairProxy Security Guide
 
-> **版本**：v2.18.0 | 最后更新：2026-03-22
+> **版本**：v3.0.0 | 最后更新：2026-04-19
 
 This document describes the security model of PairProxy, the threats it addresses, the mitigations in place, and operational hardening recommendations.
 
@@ -18,7 +18,9 @@ PairProxy sits between internal developer tooling (Claude Code) and commercial L
 | Unauthenticated cluster API | Worker injection, usage data manipulation |
 | Config misconfiguration at startup | Silent security degradation |
 | Resource exhaustion (quota bypass) | Runaway API spend |
-| keygen_secret leakage | All Direct Proxy API Keys forgeable |
+| keygen_secret leakage | ~~All Direct Proxy API Keys forgeable~~ — 已弃用（v2.24.7+），Key 改为按用户 PasswordHash 派生 |
+| User password hash leakage | Direct Proxy API Key for that user forgeable (bcrypt hash is non-reversible to plaintext) |
+| Legacy key not invalidated after password change | v2.24.8 前：改密后旧 legacy Key 仍可用；v2.24.8+ 自动吊销 |
 | Classifier data exfiltration | User message content leaked to external service |
 | Corpus data at rest | Training data exposed via filesystem access |
 
@@ -74,35 +76,45 @@ they expire naturally (≤ 24h by default). For immediate revocation, set
 
 `sk-pp-` 前缀 API Key 是另一种接入方式，用户通过 API Key 直接访问 sproxy 而无需 cproxy 和 JWT Token。
 
-### HMAC-SHA256 Keygen (v2.15.0+)
+### HMAC-SHA256 Per-User Keygen (v2.24.7+)
 
-v2.15.0 起，API Key 使用 HMAC-SHA256 算法生成，替换了早期的指纹嵌入算法：
+v2.24.7 起，API Key 由**用户自己的 bcrypt PasswordHash** 作为 HMAC 密钥派生，替换了原来的共享 `keygen_secret`：
 
-- **确定性生成**：相同用户名 + keygen_secret → 相同 API Key，服务器无需存储 Key
-- **抗碰撞**：消除了早期算法中 `alice123` 和 `321ecila` 生成相同 Key 的碰撞漏洞
+```
+API Key = HMAC-SHA256(username, user.PasswordHash) → Base62 编码（48 字符）
+```
+
+- **确定性生成**：相同用户名 + 相同 PasswordHash → 相同 API Key，服务器无需存储 Key
+- **互不影响**：每个用户拥有独立的派生密钥，一个用户改密码不影响其他用户的 Key
+- **改密即轮换**：用户修改密码后，`legacy_key_revoked` 标记自动设置，旧 legacy Key 即时失效，新 Key 即时可用（v2.24.8+）
 - **256 位安全强度**：HMAC-SHA256 输出截断后取 Base62 编码（48 字符）
+- **LDAP 用户限制**：LDAP 账号无本地 PasswordHash，无法持有 sk-pp- Key
 
-### keygen_secret 配置要求
-
-`auth.keygen_secret` 是必填配置字段（v2.15.0+），违反以下要求时启动配置验证失败：
-- 长度 ≥ 32 字符
-- 建议使用 `openssl rand -hex 32` 生成
+> **注**：`auth.keygen_secret` 配置字段已弃用（v2.24.7+），不再读取或验证，可安全从配置文件中删除。
 
 ### 安全注意事项
 
 | 风险 | 缓解措施 |
 |------|---------|
-| keygen_secret 泄漏导致所有 API Key 可伪造 | 使用环境变量注入，定期轮换 |
-| API Key 无过期时间 | 轮换 keygen_secret 可立即使所有 Key 失效 |
+| 用户密码泄漏导致 API Key 可伪造 | bcrypt 哈希不可逆推，攻击者无法从 PasswordHash 还原密码 |
+| API Key 无过期时间 | 用户自助改密码可立即轮换 Key；管理员重置密码亦可强制失效 |
 | sk-pp- Key 明文传输 | 要求 HTTPS 接入，同 JWT Token |
+| 旧 Key 缓存未及时清除 | 管理员重置密码 / 用户自助改密码后，KeyCache 立即清除旧条目 |
 
-### keygen_secret 轮换流程
+### Key 轮换流程
 
-1. 生成新 secret：`openssl rand -hex 32`
-2. 通知所有 Direct Proxy 用户获取新 API Key
-3. 更新所有节点的 `auth.keygen_secret`
-4. 重启所有 sproxy 节点
-5. 通知用户从 Dashboard/CLI 重新获取 sk-pp- Key
+**用户自助轮换**（推荐）：
+1. 访问 `https://sproxy.company.com/keygen/`
+2. 使用用户名 + 密码登录
+3. 点击"修改密码"，输入旧密码和新密码
+4. 页面立即显示新 Key，复制后更新客户端配置
+
+**管理员强制轮换**：
+1. 管理员通过 Dashboard 或 CLI 重置用户密码：
+   ```bash
+   sproxy admin user reset-password <username>
+   ```
+2. 用户以新密码登录 Keygen WebUI 获取新 Key
 
 ---
 

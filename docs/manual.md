@@ -1,6 +1,6 @@
 ﻿# PairProxy 用户手册
 
-**版本 v2.24.5**
+**版本 v3.0.0**
 
 ---
 
@@ -3403,10 +3403,24 @@ llm:
 
 ### 17.2 存储位置
 
-对话记录存储在数据库文件同级目录的 `track/` 子目录下：
+对话记录的根目录由配置项 `track.dir` 决定：
+
+| 模式 | 默认值 | 说明 |
+|------|--------|------|
+| SQLite | `<database.path 所在目录>/track` | 与数据库文件同级，无需配置 |
+| Peer/PostgreSQL | `./track`（相对于进程 CWD） | **建议显式配置绝对路径**，见下方示例 |
+
+**Peer 模式必须在 `sproxy.yaml` 中显式指定绝对路径**，否则 track 目录位置取决于进程工作目录，容易因工作目录只读而启动报错：
+
+```yaml
+track:
+  dir: "/data/pairproxy/track"   # 使用有写权限的绝对路径
+```
+
+目录结构：
 
 ```
-<db_dir>/track/
+<track.dir>/
   users/
     alice          ← 标记文件（空文件，存在即表示 alice 已启用跟踪）
   conversations/

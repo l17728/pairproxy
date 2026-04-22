@@ -13,64 +13,8 @@ import (
 // 复合约束测试（举一反三，基于 Issue #6 模式）
 // ============================================================================
 
-// TestComboExists_SameURL_DifferentKey 验证 ComboExists 正确区分同 URL 不同 APIKey
-func TestComboExists_SameURL_DifferentKey(t *testing.T) {
-	logger := zap.NewNop()
-	gormDB, err := Open(logger, ":memory:")
-	require.NoError(t, err)
-	require.NoError(t, Migrate(logger, gormDB))
-	repo := NewLLMTargetRepo(gormDB, logger)
-
-	url := "https://api.openai.com/v1"
-	key1 := "key-aaaa"
-	key2 := "key-bbbb"
-
-	// 创建 (url, key1) target
-	require.NoError(t, repo.Create(&LLMTarget{ID: uuid.NewString(), URL: url, APIKeyID: &key1, Provider: "openai"}))
-
-	// (url, key1) 应该存在
-	exists, err := repo.ComboExists(url, &key1)
-	require.NoError(t, err)
-	assert.True(t, exists, "(url, key1) should exist")
-
-	// (url, key2) 不应该存在
-	exists, err = repo.ComboExists(url, &key2)
-	require.NoError(t, err)
-	assert.False(t, exists, "(url, key2) should NOT exist")
-
-	// (url, nil) 不应该存在（无 key）
-	exists, err = repo.ComboExists(url, nil)
-	require.NoError(t, err)
-	assert.False(t, exists, "(url, nil) should NOT exist")
-}
-
-// TestComboExists_NilAPIKey 验证 nil apiKeyID 的 IS NULL 查询
-func TestComboExists_NilAPIKey(t *testing.T) {
-	logger := zap.NewNop()
-	gormDB, err := Open(logger, ":memory:")
-	require.NoError(t, err)
-	require.NoError(t, Migrate(logger, gormDB))
-	repo := NewLLMTargetRepo(gormDB, logger)
-
-	url := "https://selfhost.example.com"
-
-	// 创建无 APIKey 的 target
-	require.NoError(t, repo.Create(&LLMTarget{ID: uuid.NewString(), URL: url, APIKeyID: nil, Provider: "ollama"}))
-
-	// (url, nil) 应该存在
-	exists, err := repo.ComboExists(url, nil)
-	require.NoError(t, err)
-	assert.True(t, exists, "(url, nil) should exist")
-
-	// (url, someKey) 不应该存在
-	key := "some-key"
-	exists, err = repo.ComboExists(url, &key)
-	require.NoError(t, err)
-	assert.False(t, exists, "(url, non-nil key) should NOT exist when only nil-key target exists")
-}
-
-// TestComboExists_SameURLSameKey_BlocksDuplicate 验证重复复合键被阻止
-func TestComboExists_SameURLSameKey_BlocksDuplicate(t *testing.T) {
+// TestURLUniqueness_BlocksDuplicateURL 验证 URL 全局唯一约束：同 URL 第二次创建应失败。
+func TestURLUniqueness_BlocksDuplicateURL(t *testing.T) {
 	logger := zap.NewNop()
 	gormDB, err := Open(logger, ":memory:")
 	require.NoError(t, err)
@@ -78,13 +22,64 @@ func TestComboExists_SameURLSameKey_BlocksDuplicate(t *testing.T) {
 	repo := NewLLMTargetRepo(gormDB, logger)
 
 	url := "https://api.anthropic.com/v1"
-	key := "sk-ant-key123"
 
-	require.NoError(t, repo.Create(&LLMTarget{ID: uuid.NewString(), URL: url, APIKeyID: &key, Provider: "anthropic"}))
+	require.NoError(t, repo.Create(&LLMTarget{ID: uuid.NewString(), URL: url, Provider: "anthropic"}))
 
-	// 尝试再次创建相同复合键 → 数据库约束拒绝
-	err = repo.Create(&LLMTarget{ID: uuid.NewString(), URL: url, APIKeyID: &key, Provider: "anthropic"})
-	assert.Error(t, err, "duplicate (url, api_key_id) should fail at DB level")
+	// 尝试再次创建相同 URL → 数据库约束拒绝
+	err = repo.Create(&LLMTarget{ID: uuid.NewString(), URL: url, Provider: "anthropic"})
+	assert.Error(t, err, "duplicate URL should fail at DB level")
+}
+
+// TestURLExists_ExistingURL_ReturnsTrue 验证 URLExists 在 URL 存在时返回 true。
+func TestURLExists_ExistingURL_ReturnsTrue(t *testing.T) {
+	logger := zap.NewNop()
+	gormDB, err := Open(logger, ":memory:")
+	require.NoError(t, err)
+	require.NoError(t, Migrate(logger, gormDB))
+	repo := NewLLMTargetRepo(gormDB, logger)
+
+	url := "https://api.openai.com/v1"
+	require.NoError(t, repo.Create(&LLMTarget{ID: uuid.NewString(), URL: url, Provider: "openai"}))
+
+	exists, err := repo.URLExists(url)
+	require.NoError(t, err)
+	assert.True(t, exists, "URL should exist")
+
+	exists, err = repo.URLExists("https://nonexistent.example.com")
+	require.NoError(t, err)
+	assert.False(t, exists, "nonexistent URL should not exist")
+}
+
+// TestComboExists_Deprecated_DelegatesToURLExists 验证 ComboExists 已弃用但仍委托给 URLExists。
+func TestComboExists_Deprecated_DelegatesToURLExists(t *testing.T) {
+	logger := zap.NewNop()
+	gormDB, err := Open(logger, ":memory:")
+	require.NoError(t, err)
+	require.NoError(t, Migrate(logger, gormDB))
+	repo := NewLLMTargetRepo(gormDB, logger)
+
+	url := "https://selfhost.example.com"
+	key := "some-key"
+
+	// URL 不存在时，ComboExists 返回 false（不论 key 如何）
+	exists, err := repo.ComboExists(url, &key)
+	require.NoError(t, err)
+	assert.False(t, exists, "URL does not exist yet")
+
+	exists, err = repo.ComboExists(url, nil)
+	require.NoError(t, err)
+	assert.False(t, exists, "URL does not exist yet (nil key)")
+
+	// 创建后，ComboExists 返回 true（不论 key 如何）
+	require.NoError(t, repo.Create(&LLMTarget{ID: uuid.NewString(), URL: url, Provider: "ollama"}))
+
+	exists, err = repo.ComboExists(url, &key)
+	require.NoError(t, err)
+	assert.True(t, exists, "URL now exists, ComboExists should return true regardless of key")
+
+	exists, err = repo.ComboExists(url, nil)
+	require.NoError(t, err)
+	assert.True(t, exists, "URL now exists, ComboExists with nil key should return true")
 }
 
 // TestGroupTargetSetMember_DuplicatePrevented 验证 (target_set_id, target_id) 复合约束

@@ -1,6 +1,6 @@
 # PairProxy 升级指南
 
-> 当前版本：**v2.24.5** | 更新日期：2026-04-11
+> 当前版本：**v3.0.2** | 更新日期：2026-04-20
 
 本文档描述各版本间的升级步骤、数据库 Schema 变更、回滚方法及不兼容变更。
 
@@ -51,6 +51,147 @@
 ---
 
 ## 版本变更记录
+
+### v3.0.2 — LLM 目标稳定性 + 直连认证错误格式修复
+
+**数据库 Schema 变更**
+
+无。直接替换二进制重启即可。
+
+**问题修复**
+
+| # | 修复内容 |
+|---|---------|
+| 1 | **LLM 目标消失问题**：API Key 解析失败时目标从负载均衡器中消失（原因：`resolveAPIKey` 报错后直接 `continue` 跳过目标，下次 `SyncLLMTargets` 原子替换后目标彻底丢失）。现改为保留目标但强制标记为 unhealthy，ERROR 日志明确指出需要修复哪个 API Key |
+| 2 | **绑定目标拒绝日志区分**：之前"未找到目标"和"目标不健康"使用同一条日志，难以区分。现分三种情况独立记录：`not found in balancer`、`is unhealthy`、`already tried` |
+| 3 | **直连认证错误格式**：`sk-pp-` Key 无效时，客户端（Claude Code）收到通用 `{"error":"..."}` 格式，无法识别为终态认证错误而持续重试。现改为按协议返回对应格式：`/v1/messages` 和 `/anthropic/*` 返回 Anthropic 格式 `{"type":"error","error":{"type":"authentication_error",...}}`；`/v1/chat/completions` 返回 OpenAI 格式 |
+| 4 | **`/v1/` 路由缺失 `x-api-key` 检测**：使用 Anthropic 风格 `x-api-key: sk-pp-...` 请求 `/v1/chat/completions` 时，路由器未识别为直连请求，返回 `missing_auth` 而非正确的认证错误 |
+| 5 | **Dashboard 用户统计缓存**：群组变更、用户创建、激活状态变更后统计缓存未失效 |
+
+**升级步骤**
+
+```bash
+# 无 Schema 变更，直接替换二进制重启
+systemctl restart sproxy
+```
+
+---
+
+### v3.0.1 — API Key 存储格式修复 + 健康检查假阳性修复 + LLM 目标同步状态
+
+**数据库 Schema 变更**
+
+- `api_keys` 表新增 `key_scheme` 列（`TEXT DEFAULT 'obfuscated'`）：标识 API Key 的存储格式，`"aes"` 表示 AES-256-GCM 加密，`"obfuscated"` 表示 config-sync 混淆存储。
+- `llm_targets` 表新增 `is_synced` 列（`BOOLEAN DEFAULT true`）：标识目标是否已加载到内存。
+
+GORM AutoMigrate 会在启动时自动添加这两列，无需手动执行 SQL。
+
+**不兼容变更**
+
+无。
+
+**升级后注意事项（api_keys.key_scheme）**
+
+`v3.0.1` 之前通过 Admin API 或 `sproxy admin apikey add` 创建的 API Key，升级后 `key_scheme` 列值为空（`NULL`/`""`），系统会自动走兼容路径（先试 AES，失败回退混淆）。
+
+如需消除兼容路径的日志（极少数情况），可手动标记：
+
+```sql
+-- 将 Admin API 创建的 key 标记为 aes（Auto- 前缀是 config-sync 自动生成的）
+UPDATE api_keys SET key_scheme = 'aes' WHERE name NOT LIKE 'Auto-%';
+```
+
+**升级步骤**
+
+```bash
+# 1. 备份数据库
+cp pairproxy.db pairproxy.db.bak
+# 2. 替换二进制，重启即可（AutoMigrate 自动加列）
+systemctl restart sproxy
+```
+
+---
+
+### v3.0.0 — AtoO 路径修复 + CLI 管理增强 + Dashboard 修复
+
+**数据库 Schema 变更**
+
+无新增 Schema 变更（与 v2.24.8 兼容，直接替换二进制即可）。
+
+**不兼容变更**
+
+- AtoO 协议转换路径行为变更：target URL 中的 base path（如 `/v2`）现在会被正确拼接到请求路径中。若已有 target URL 以 base path 结尾（如 `https://api.openai.com/v1`），请确认实际需要的路径为 `/v1/chat/completions`——此时无需修改，系统会正确处理；若 target URL 为根域名（如 `https://api.openai.com`），行为与之前完全一致。
+
+**升级步骤**
+
+```bash
+# 1. 备份数据库
+cp pairproxy.db pairproxy.db.bak
+
+# 2. 替换二进制
+cp sproxy-v3.0.0 /usr/local/bin/sproxy
+cp cproxy-v3.0.0 /usr/local/bin/cproxy
+
+# 3. 重启（无 Schema 迁移，直接重启即可）
+systemctl restart sproxy
+```
+
+**v2.24.8 → v3.0.0 验证清单**
+
+- [ ] `GET /health` 返回 `{"status":"ok"}`
+- [ ] Anthropic → OpenAI 协议转换正常（检查带 base path 的 target）
+- [ ] CLI `sproxy admin llm target update` 可修改 config-sourced target
+- [ ] Dashboard 绑定关系列表正常显示
+
+---
+
+### v2.24.8 — 配额直连修复 + 旧 Key 吊销 + Model Mapping 透传 + 用户管理分页
+
+**数据库 Schema 变更**
+
+| 表 | 变更 |
+|----|------|
+| `users` | 新增 `legacy_key_revoked` 列（`BOOLEAN NOT NULL DEFAULT false`） |
+
+`db.AutoMigrate` 在启动时自动添加此列，无需手动操作。
+
+**升级影响评估**
+
+| 影响项 | 说明 |
+|--------|------|
+| sk-pp- Key 可用性 | 无影响。仅当用户主动修改密码后，旧 legacy key 才被标记为无效 |
+| 配额生效 | **行为变更**：原先直连路径不检查配额，升级后将严格按配置限制。如有超额用户，升级后请求会被拒绝 |
+| Model Mapping | 透传模式现在也会应用 model_mapping，若配置了映射规则，实际发送的模型名称将被替换 |
+| Dashboard API | 响应格式变更（见下表），若有外部脚本调用 `/dashboard/api/user-stats`，需适配新格式 |
+
+**Dashboard API 响应格式变更**
+
+```diff
+- [{"id":"...","username":"alice",...}, ...]
++ {
++   "total": 42,
++   "page": 1,
++   "page_size": 20,
++   "total_pages": 3,
++   "users": [{"id":"...","username":"alice",...}, ...]
++ }
+```
+
+**升级步骤**
+
+1. 备份数据库（推荐）
+2. 替换二进制，重启服务（AutoMigrate 自动添加 `legacy_key_revoked` 列）
+3. 验证：`curl http://localhost:9000/health` 返回 `{"status":"ok",...}`
+4. 如已配置配额限制，告知用户从即日起配额开始生效
+
+**回滚说明**
+
+降级到 v2.24.7 时：
+- `legacy_key_revoked` 列保留在数据库中，旧版本会忽略该列
+- 配额不再对直连路径生效
+- Model mapping 在透传模式下不再应用
+
+---
 
 ### v2.24.4 — SQLite 时区 Bug 修复 + reportgen 错误日志 + 测试覆盖率提升
 
@@ -366,20 +507,52 @@ sproxy admin corpus list
 
 ---
 
-### v2.15.0 — HMAC-SHA256 Keygen
+### v2.24.7 — Per-User API Key Derivation + 自助改密码
 
-**无数据库 Schema 变更**，但 API Key 生成算法改变，**已有 sk-pp- Key 将失效**，需通知用户重新获取。
+**无数据库 Schema 变更**，但 API Key 生成算法改变，**所有已有 sk-pp- Key 全部失效**，需通知用户重新获取。
 
-**新增必填配置字段**
+**算法变更**
+
+| 版本 | Key 派生公式 |
+|------|-------------|
+| v2.15.0 – v2.24.6 | `HMAC-SHA256(username, keygenSecret)` |
+| v2.24.7+ | `HMAC-SHA256(username, user.PasswordHash)` |
+
+**配置变更**
+
+`auth.keygen_secret` 字段已弃用，不再读取或验证。可从配置文件删除，也可保留（会被忽略）：
 
 ```yaml
 auth:
-  keygen_secret: "${KEYGEN_SECRET}"   # ≥32字符，必填（v2.15.0+）
+  # keygen_secret 已弃用（v2.24.7+），可删除或保留（不影响启动）
+  # keygen_secret: "${KEYGEN_SECRET}"
 ```
 
-> ⚠️ 升级前必须在配置文件中添加 `auth.keygen_secret`，否则配置验证失败，服务无法启动。
-
 **升级步骤**
+
+1. 替换二进制，重启服务（无需任何配置改动）
+2. **通知所有 Direct Proxy 用户**（sk-pp- Key 用户）重新获取 Key：
+   - 用户访问 `https://sproxy.company.com/keygen/`，登录后即可看到新 Key
+   - 或管理员生成：`sproxy admin keygen --user <username>`
+
+**新增功能**
+
+- 用户可通过 Keygen WebUI 自助修改密码，改密后立即获得新 Key，无需管理员介入
+- 管理员重置用户密码后，旧 Key 立即失效（KeyCache 主动清除）
+
+**回滚说明**
+
+降级到 v2.24.6 或 v2.15.0 时，需在 `sproxy.yaml` 中重新添加 `auth.keygen_secret`，否则旧版本配置验证失败。
+
+---
+
+### v2.15.0 — HMAC-SHA256 Keygen
+
+> ⚠️ 已被 v2.24.7 覆盖：从 v2.14.x 升级时，直接跳至 v2.24.7 升级步骤，无需分两步。
+
+**历史说明**：v2.15.0 引入 HMAC-SHA256 算法（替换旧指纹算法）并要求 `auth.keygen_secret` 必填。v2.24.7 进一步将派生密钥改为 per-user PasswordHash，`keygen_secret` 因此变为弃用字段。
+
+**升级步骤（仅当目标版本为 v2.15.0–v2.24.6 时参考）**
 
 1. 生成 keygen secret：
    ```bash

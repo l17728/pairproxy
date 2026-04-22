@@ -4,8 +4,8 @@
 
 reportgen 是 PairProxy 的可视化分析报告生成工具，能够从 SQLite 或 PostgreSQL 数据库中提取使用数据，生成交互式 HTML 报告。报告包含 16+ 个可视化卡片，覆盖用户、运维和管理三个视角的分析需求。
 
-**最新版本**: v2.24.4
-**发布日期**: 2026-04-09
+**最新版本**: v3.0.0
+**发布日期**: 2026-04-19
 **数据库支持**: SQLite（默认）| PostgreSQL
 
 ---
@@ -18,16 +18,16 @@ reportgen 是 PairProxy 的可视化分析报告生成工具，能够从 SQLite 
 
 | 平台 | 文件 |
 |------|------|
-| Linux x86_64 | `reportgen-v2.24.3-linux-amd64.tar.gz` |
-| Linux ARM64 | `reportgen-v2.24.3-linux-arm64.tar.gz` |
-| macOS x86_64 | `reportgen-v2.24.3-darwin-amd64.tar.gz` |
-| macOS ARM64 (Apple Silicon) | `reportgen-v2.24.3-darwin-arm64.tar.gz` |
-| Windows x86_64 | `reportgen-v2.24.3-windows-amd64.zip` |
-| Windows ARM64 | `reportgen-v2.24.3-windows-arm64.zip` |
+| Linux x86_64 | `reportgen-v3.0.0-linux-amd64.tar.gz` |
+| Linux ARM64 | `reportgen-v3.0.0-linux-arm64.tar.gz` |
+| macOS x86_64 | `reportgen-v3.0.0-darwin-amd64.tar.gz` |
+| macOS ARM64 (Apple Silicon) | `reportgen-v3.0.0-darwin-arm64.tar.gz` |
+| Windows x86_64 | `reportgen-v3.0.0-windows-amd64.zip` |
+| Windows ARM64 | `reportgen-v3.0.0-windows-arm64.zip` |
 
 ```bash
 # Linux/macOS 示例
-tar -xzf reportgen-v2.24.3-linux-amd64.tar.gz
+tar -xzf reportgen-v3.0.0-linux-amd64.tar.gz
 ./reportgen -db /path/to/pairproxy.db          # 不加日期，默认分析过去30天
 ./reportgen -db /path/to/pairproxy.db -from 2026-04-01 -to 2026-04-05  # 指定范围
 ```
@@ -692,6 +692,9 @@ A: 当前报告是全局视角。扩展功能可参考"开发和扩展"章节。
 ---
 
 ## 变更日志
+
+### v3.0.0 (2026-04-19)
+- 🔧 同步 pairproxy 主版本升级至 v3.0.0
 
 ### v2.24.4 (2026-04-09)
 - 🐛 修复 Anthropic 路由 bug：有 model 字段时错误走 OpenAI 协议（`/v1/chat/completions`），现已统一按 provider 判断

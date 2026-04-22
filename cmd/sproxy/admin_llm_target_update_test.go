@@ -61,9 +61,8 @@ func TestLLMTargetUpdate(t *testing.T) {
 		assert.Equal(t, "/health", updated.HealthCheckPath)
 	})
 
-	t.Run("cannot update config-sourced target", func(t *testing.T) {
-		// 创建一个配置文件来源的 target
-		// Note: GORM ignores false for bool with default:true, so we need two steps
+	t.Run("can update config-sourced target via CLI", func(t *testing.T) {
+		// CLI（admin API）可以修改 config-sourced target；WebUI 才拦截。
 		target := &db.LLMTarget{
 			ID:        uuid.NewString(),
 			URL:       "http://test-config-update.local:11434",
@@ -86,11 +85,10 @@ func TestLLMTargetUpdate(t *testing.T) {
 		require.NoError(t, err)
 		require.False(t, target.IsEditable, "target should be non-editable")
 
-		// 尝试更新应该失败
-		target.Name = "Should Fail"
+		// Repo 层不拦截，应成功
+		target.Name = "Updated via CLI"
 		err = repo.Update(target)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "not editable")
+		assert.NoError(t, err)
 	})
 
 	t.Run("update non-existent target", func(t *testing.T) {

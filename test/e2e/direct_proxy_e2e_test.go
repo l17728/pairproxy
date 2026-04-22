@@ -22,7 +22,7 @@ import (
 	"github.com/l17728/pairproxy/internal/proxy"
 )
 
-const testKeygenSecret = "test-keygen-secret-must-be-at-least-32-bytes!!"
+// 直连模式 e2e 测试：API Key 由用户自己的 PasswordHash 派生，无共享密钥。
 
 // setupDirectProxyTest 创建一个完整的直连测试环境。
 func setupDirectProxyTest(t *testing.T) (spURL string, aliceKey string, cleanup func()) {
@@ -89,7 +89,7 @@ func setupDirectProxyTest(t *testing.T) (spURL string, aliceKey string, cleanup 
 	apiKeyCache, cacheErr := keygen.NewKeyCache(100, 0) // TTL=0 永不过期
 	require.NoError(t, cacheErr)
 	dbLister := proxy.NewDBUserLister(userRepo)
-	directH := proxy.NewDirectProxyHandler(logger, sp, dbLister, apiKeyCache, testKeygenSecret)
+	directH := proxy.NewDirectProxyHandler(logger, sp, dbLister, apiKeyCache, nil, nil)
 
 	// 6. 构建测试 HTTP 服务
 	mux := http.NewServeMux()
@@ -105,8 +105,8 @@ func setupDirectProxyTest(t *testing.T) (spURL string, aliceKey string, cleanup 
 
 	spServer := httptest.NewServer(mux)
 
-	// 7. 生成 alice 的 API Key
-	aliceKey, keyErr := keygen.GenerateKey("alice", []byte(testKeygenSecret))
+	// 7. 生成 alice 的 API Key（由 PasswordHash 派生）
+	aliceKey, keyErr := keygen.GenerateKey("alice", []byte(hash))
 	require.NoError(t, keyErr)
 
 	return spServer.URL, aliceKey, func() {
@@ -247,13 +247,14 @@ func TestDirectProxy_AnthropicPathRewrite(t *testing.T) {
 	defer func() { cancel(); writer.Wait() }()
 
 	cache, _ := keygen.NewKeyCache(10, 0)
-	dh := proxy.NewDirectProxyHandler(logger, sp, proxy.NewDBUserLister(userRepo), cache, testKeygenSecret)
+	dh := proxy.NewDirectProxyHandler(logger, sp, proxy.NewDBUserLister(userRepo), cache, nil, nil)
 	mux := http.NewServeMux()
 	mux.Handle("/anthropic/", dh.HandlerAnthropic())
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	daveKey, _ := keygen.GenerateKey("dave", []byte(testKeygenSecret))
+	// dave 的 key 由自己的 PasswordHash 派生
+	daveKey, _ := keygen.GenerateKey("dave", []byte(u.PasswordHash))
 	body, _ := json.Marshal(map[string]interface{}{
 		"model": "claude-test", "max_tokens": 10,
 		"messages": []map[string]string{{"role": "user", "content": "test"}},

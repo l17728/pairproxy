@@ -284,6 +284,93 @@ func TestWithRecoveryDelay_AutoRecover(t *testing.T) {
 	}
 }
 
+// TestWithRecoveryDelay_ActiveCheck_StaysUnhealthyIfCheckFails 验证有主动健康检查配置时，
+// recoveryDelay 后触发 CheckTarget 而非直接 MarkHealthy；
+// 若检查失败（API Key 无效等），节点保持不健康状态，不出现假阳性。
+func TestWithRecoveryDelay_ActiveCheck_StaysUnhealthyIfCheckFails(t *testing.T) {
+	// 服务端始终返回 401（模拟 API Key 无效）
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	b := NewWeightedRandom([]Target{
+		{ID: "sp-1", Addr: srv.URL, Weight: 1, Healthy: true},
+	})
+	logger := zap.NewNop() // 异步 goroutine 中使用，必须用 NewNop 避免 zaptest 生命周期问题
+	recoveryDelay := 80 * time.Millisecond
+
+	hc := NewHealthChecker(b, logger,
+		WithFailThreshold(1),
+		WithRecoveryDelay(recoveryDelay),
+		WithTimeout(50*time.Millisecond),
+	)
+	// 注入认证凭证：触发"检查驱动恢复"路径
+	hc.UpdateCredentials(map[string]TargetCredential{
+		"sp-1": {APIKey: "sk-invalid-key", Provider: "openai"},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	hc.Start(ctx)
+	defer func() { cancel(); hc.Wait() }()
+
+	// 被动熔断：失败达阈值
+	hc.RecordFailure("sp-1")
+	if _, err := b.Pick(); err != ErrNoHealthyTarget {
+		t.Fatalf("expected unhealthy after failure, got: %v", err)
+	}
+
+	// 等待 recoveryDelay + 检查时间（checkTimeout=50ms）
+	time.Sleep(recoveryDelay + 200*time.Millisecond)
+
+	// 检查应失败（401，有凭证时不视为健康），节点应仍为不健康
+	if _, err := b.Pick(); err != ErrNoHealthyTarget {
+		t.Errorf("target should remain unhealthy when check returns 401 with credential, got: %v", err)
+	}
+}
+
+// TestWithRecoveryDelay_ActiveCheck_RecoversWhenCheckPasses 验证有主动健康检查配置时，
+// recoveryDelay 后若 CheckTarget 通过，节点恢复健康。
+func TestWithRecoveryDelay_ActiveCheck_RecoversWhenCheckPasses(t *testing.T) {
+	// 服务端始终返回 200
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	b := NewWeightedRandom([]Target{
+		{ID: "sp-1", Addr: srv.URL, Weight: 1, Healthy: true},
+	})
+	logger := zap.NewNop()
+	recoveryDelay := 80 * time.Millisecond
+
+	hc := NewHealthChecker(b, logger,
+		WithFailThreshold(1),
+		WithRecoveryDelay(recoveryDelay),
+		WithTimeout(200*time.Millisecond),
+	)
+	hc.UpdateCredentials(map[string]TargetCredential{
+		"sp-1": {APIKey: "sk-valid-key", Provider: "openai"},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	hc.Start(ctx)
+	defer func() { cancel(); hc.Wait() }()
+
+	hc.RecordFailure("sp-1")
+	if _, err := b.Pick(); err != ErrNoHealthyTarget {
+		t.Fatalf("expected unhealthy after failure")
+	}
+
+	// 等待 recoveryDelay + 检查时间
+	time.Sleep(recoveryDelay + 400*time.Millisecond)
+
+	// 检查通过（200），节点应恢复健康
+	if _, err := b.Pick(); err != nil {
+		t.Errorf("target should recover after successful check, got: %v", err)
+	}
+}
+
 // TestWithRecoveryDelay_RecoverySkippedIfAlreadyRecovered 验证若节点已被 RecordSuccess 恢复，
 // 自动恢复 goroutine 不会重复操作（失败计数已被重置，goroutine 会 skip）。
 func TestWithRecoveryDelay_RecoverySkippedIfAlreadyRecovered(t *testing.T) {

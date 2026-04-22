@@ -327,7 +327,7 @@ func TestAPIKeyRepo_FindForUser_BothEmpty_Cov(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	repo := NewAPIKeyRepo(db, logger)
 
-	_, err := repo.Create("unassigned-cov", "enc", "anthropic")
+	_, err := repo.Create("unassigned-cov", "enc", "anthropic", "obfuscated")
 	require.NoError(t, err)
 
 	found, err := repo.FindForUser("", "")
@@ -356,7 +356,7 @@ func TestAPIKeyRepo_Assign_WithGroupOnly(t *testing.T) {
 	g := &Group{Name: "assign-group-only-cov"}
 	require.NoError(t, groupRepo.Create(g))
 
-	key, err := repo.Create("group-only-key-cov", "enc", "anthropic")
+	key, err := repo.Create("group-only-key-cov", "enc", "anthropic", "obfuscated")
 	require.NoError(t, err)
 
 	gid := g.ID
@@ -1259,7 +1259,7 @@ func TestAPIKeyRepo_ErrorPaths_OnClosedDB(t *testing.T) {
 	gormDB := openTestDB(t)
 	repo := NewAPIKeyRepo(gormDB, logger)
 
-	key, err := repo.Create("err-key", "enc", "anthropic")
+	key, err := repo.Create("err-key", "enc", "anthropic", "obfuscated")
 	require.NoError(t, err)
 
 	sqlDB, dbErr := gormDB.DB()
@@ -1267,7 +1267,7 @@ func TestAPIKeyRepo_ErrorPaths_OnClosedDB(t *testing.T) {
 	require.NoError(t, sqlDB.Close())
 
 	t.Run("Create error", func(t *testing.T) {
-		_, err := repo.Create("new-key", "enc", "anthropic")
+		_, err := repo.Create("new-key", "enc", "anthropic", "obfuscated")
 		assert.Error(t, err)
 	})
 
@@ -1498,7 +1498,7 @@ func TestAPIKeyRepo_Assign_DeleteThenCreateError(t *testing.T) {
 	gormDB := openTestDB(t)
 	repo := NewAPIKeyRepo(gormDB, logger)
 
-	key, err := repo.Create("assign-err-key", "enc", "anthropic")
+	key, err := repo.Create("assign-err-key", "enc", "anthropic", "obfuscated")
 	require.NoError(t, err)
 
 	sqlDB, dbErr := gormDB.DB()
@@ -1562,8 +1562,8 @@ func TestLLMBindingRepo_Set_GroupID(t *testing.T) {
 // LLMTargetRepo.Delete — 不可编辑 target 路径
 // ============================================================================
 
-// TestLLMTargetRepo_Delete_NotEditable_Cov 验证删除不可编辑（config-sourced）target 时返回错误。
-// 覆盖 llmtarget_repo.go:126-128 分支。
+// TestLLMTargetRepo_Delete_NotEditable_Cov 验证删除 config-sourced target 时 repo 层不做限制（可以成功删除）。
+// IsEditable 限制仅在 WebUI 层（dashboard handler）执行，CLI 可强制删除。
 func TestLLMTargetRepo_Delete_NotEditable_Cov(t *testing.T) {
 	gormDB := openTestDB(t)
 	logger := zaptest.NewLogger(t)
@@ -1581,9 +1581,9 @@ func TestLLMTargetRepo_Delete_NotEditable_Cov(t *testing.T) {
 	// 手动修复 IsEditable=false（GORM boolean gotcha）
 	require.NoError(t, gormDB.Model(&LLMTarget{}).Where("id = ?", target.ID).Updates(map[string]interface{}{"is_editable": false}).Error)
 
+	// Repo 层不拦截，CLI 可以删除 config-sourced target
 	err := repo.Delete(target.ID)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not editable")
+	assert.NoError(t, err)
 }
 
 // ============================================================================
@@ -1628,7 +1628,7 @@ func TestAPIKeyRepo_FindForUser_KeyRevoked(t *testing.T) {
 	repo := NewAPIKeyRepo(gormDB, logger)
 
 	// 创建 key，然后将其设为 inactive
-	key, err := repo.Create("revoked-key", "enc-val", "anthropic")
+	key, err := repo.Create("revoked-key", "enc-val", "anthropic", "obfuscated")
 	require.NoError(t, err)
 	require.NoError(t, gormDB.Model(&APIKey{}).Where("id = ?", key.ID).Update("is_active", false).Error)
 
@@ -1795,7 +1795,7 @@ func TestAPIKeyRepo_FindForUser_GroupAssignmentFound(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	repo := NewAPIKeyRepo(gormDB, logger)
 
-	key, err := repo.Create("grp-assign-key", "enc", "anthropic")
+	key, err := repo.Create("grp-assign-key", "enc", "anthropic", "obfuscated")
 	require.NoError(t, err)
 
 	gid := uuid.NewString()

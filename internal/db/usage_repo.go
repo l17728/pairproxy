@@ -29,6 +29,7 @@ type UsageRecord struct {
 	RequestID    string
 	UserID       string
 	Model        string
+	ActualModel  string // 实际转发的模型名（model mapping / auto 模式后）；空表示与 Model 相同
 	InputTokens  int
 	OutputTokens int
 	IsStreaming  bool
@@ -52,6 +53,7 @@ type UsageWriter struct {
 	interval   time.Duration
 	done       chan struct{} // closed when runLoop exits
 	costFn     CostFunc     // 可选：用于计算 cost_usd（nil 则不计算）
+	onFlush    func(userIDs []string) // 可选：批量写入 DB 成功后的回调（供配额缓存失效使用）
 
 	dropped atomic.Int64 // 因 channel 满而丢弃的记录数（累计）
 }
@@ -81,6 +83,13 @@ func NewUsageWriter(db *gorm.DB, logger *zap.Logger, bufferSize int, interval ti
 // SetCostFunc 设置费用计算函数（可选；nil 时不计算费用）
 func (w *UsageWriter) SetCostFunc(fn CostFunc) {
 	w.costFn = fn
+}
+
+// SetOnFlush 设置批量写入 DB 成功后的回调函数。
+// 回调参数为本次批量写入中涉及的所有 userID 列表，供配额缓存失效使用。
+// 必须在 Start() 之前调用。
+func (w *UsageWriter) SetOnFlush(fn func(userIDs []string)) {
+	w.onFlush = fn
 }
 
 // Start 启动后台写入 goroutine（ctx 取消时停止）
@@ -243,6 +252,7 @@ func (w *UsageWriter) writeBatch(batch []UsageRecord) {
 			RequestID:    r.RequestID,
 			UserID:       r.UserID,
 			Model:        r.Model,
+			ActualModel:  r.ActualModel,
 			InputTokens:  r.InputTokens,
 			OutputTokens: r.OutputTokens,
 			TotalTokens:  total,
@@ -269,6 +279,19 @@ func (w *UsageWriter) writeBatch(batch []UsageRecord) {
 		zap.Int("attempted", len(logs)),
 		zap.Int64("inserted", result.RowsAffected),
 	)
+
+	// 写入成功后通知配额缓存失效（使下次请求从 DB 获取最新用量）
+	if w.onFlush != nil && result.RowsAffected > 0 {
+		userIDs := make([]string, 0, len(batch))
+		seen := make(map[string]struct{}, len(batch))
+		for _, r := range batch {
+			if _, ok := seen[r.UserID]; !ok {
+				seen[r.UserID] = struct{}{}
+				userIDs = append(userIDs, r.UserID)
+			}
+		}
+		w.onFlush(userIDs)
+	}
 }
 
 // TotalTokens 计算总 token 数（辅助方法，放在 UsageRecord 上）
@@ -354,6 +377,30 @@ func (r *UsageRepo) Query(filter UsageFilter) ([]UsageLog, error) {
 		zap.Int("count", len(logs)),
 	)
 	return logs, nil
+}
+
+// CountLogs 统计满足 filter 条件的日志总数（不含 Limit/Offset）
+func (r *UsageRepo) CountLogs(filter UsageFilter) (int64, error) {
+	query := r.db.Model(&UsageLog{})
+
+	if filter.UserID != "" {
+		query = query.Where("user_id = ?", filter.UserID)
+	}
+	if filter.Model != "" {
+		query = query.Where("model = ?", filter.Model)
+	}
+	if filter.From != nil {
+		query = query.Where("created_at >= ?", toUTC(*filter.From))
+	}
+	if filter.To != nil {
+		query = query.Where("created_at <= ?", toUTC(*filter.To))
+	}
+
+	var count int64
+	if err := query.Count(&count).Error; err != nil {
+		return 0, fmt.Errorf("count usage logs: %w", err)
+	}
+	return count, nil
 }
 
 // SumTokens 聚合指定用户在时间范围内的 token 总量

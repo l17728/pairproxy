@@ -276,67 +276,70 @@ sk-pp-xK8aLm2cNp9qRsTtUvWxYz1A3B5C7D9E0F2H4J6
          （规则验证）                         （sproxy.yaml）
 ```
 
-### 4.3 Key 生成算法
+### 4.3 Key 生成算法（v2.15.0+，v2.24.7 更新）
+
+v2.15.0 起采用 HMAC-SHA256 确定性生成；v2.24.7 起将派生密钥从共享 `keygen_secret` 改为**用户自己的 `PasswordHash`**。
 
 ```go
 package keygen
 
 import (
-    "crypto/rand"
+    "crypto/hmac"
+    "crypto/sha256"
+    "encoding/base64"
     "fmt"
-    "math/big"
     "strings"
 )
 
 const (
-    KeyPrefix    = "sk-pp-"
-    KeyBodyLen   = 48  // Key 主体长度
-    Charset      = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    KeyPrefix  = "sk-pp-"
+    KeyBodyLen = 48
+    charset    = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 )
 
-// GenerateKey 根据用户名生成 API Key
-// 算法：将用户名字符打散到随机位置，其他位置填充随机字符
-func GenerateKey(username string) (string, error) {
-    // 1. 提取用户名中的字母和数字
-    chars := extractAlphanumeric(username)
-    if len(chars) == 0 {
-        return "", fmt.Errorf("username must contain at least one alphanumeric character")
+// GenerateKey 根据用户名和用户 PasswordHash 生成确定性 API Key。
+// secret 为该用户的 bcrypt PasswordHash（[]byte），长度 ≥ 32 字节。
+// 同一 username + 同一 PasswordHash → 同一 Key；改密码 → 新 PasswordHash → 新 Key。
+func GenerateKey(username string, secret []byte) (string, error) {
+    if len(secret) < 32 {
+        return "", fmt.Errorf("keygen: secret must be at least 32 bytes")
     }
-    
-    // 2. 生成随机填充字符
-    body := make([]byte, KeyBodyLen)
-    for i := 0; i < KeyBodyLen; i++ {
-        body[i] = randomChar()
-    }
-    
-    // 3. 随机选择位置放置用户名字符
-    positions := randomPositions(KeyBodyLen, len(chars))
-    for i, pos := range positions {
-        body[pos] = chars[i]
-    }
-    
-    // 4. 组合成完整 Key
-    return KeyPrefix + string(body), nil
+    mac := hmac.New(sha256.New, secret)
+    mac.WriteString(username)
+    raw := mac.Sum(nil) // 32 bytes
+
+    // Base64URL → 取前 KeyBodyLen 字符，替换非 Base62 字符
+    b64 := base64.RawURLEncoding.EncodeToString(raw) // 43 chars
+    body := toBase62(b64, KeyBodyLen)
+    return KeyPrefix + body, nil
 }
 
-// extractAlphanumeric 提取字符串中的字母和数字（转小写）
-func extractAlphanumeric(s string) []byte {
-    var result []byte
-    for _, c := range strings.ToLower(s) {
-        if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') {
-            result = append(result, byte(c))
+// toBase62 将 Base64URL 字符串映射到 Base62 字符集（a-z A-Z 0-9）
+func toBase62(s string, n int) string {
+    var sb strings.Builder
+    for _, c := range s {
+        if strings.ContainsRune(charset, c) {
+            sb.WriteRune(c)
+        }
+        if sb.Len() >= n {
+            break
         }
     }
-    return result
+    // 若长度不足（极少数情况），补充确定性字符
+    for sb.Len() < n {
+        sb.WriteByte(charset[sb.Len()%len(charset)])
+    }
+    return sb.String()[:n]
 }
+```
 
-// randomChar 生成随机字符
-func randomChar() byte {
-    n, _ := rand.Int(rand.Reader, big.NewInt(int64(len(Charset))))
-    return Charset[n.Int64()]
-}
+> **设计说明**：每个用户使用自己的 bcrypt PasswordHash 作为 HMAC 密钥，实现 per-user 隔离。bcrypt 哈希固定 60 字节，满足 ≥32 字节要求。LDAP 用户 `PasswordHash == ""`，被 `ValidateAndGetUser` 静默跳过，无法持有 sk-pp- Key。
 
-// randomPositions 生成 len(positions) 个不重复的随机位置
+**历史算法（v2.9.0–v2.14.x，已废弃）**：将用户名字符打散到随机位置 + 随机填充，存在碰撞漏洞，已被 HMAC-SHA256 替代。
+
+// 以下为历史代码占位，仅供回滚参考，实际代码已删除
+
+// randomPositions (legacy)
 func randomPositions(max, count int) []int {
     if count > max {
         count = max
@@ -358,107 +361,49 @@ func randomPositions(max, count int) []int {
 }
 ```
 
-### 4.4 Key 验证算法
+### 4.4 Key 验证算法（v2.24.7+）
 
 ```go
-package keygen
-
-import (
-    "strings"
-)
-
 // IsValidFormat 检查 Key 格式是否有效（前缀、长度、字符集）
 func IsValidFormat(key string) bool {
-    // 1. 检查前缀
     if !strings.HasPrefix(key, KeyPrefix) {
         return false
     }
-    
-    // 2. 检查长度
     body := key[len(KeyPrefix):]
     if len(body) != KeyBodyLen {
         return false
     }
-    
-    // 3. 检查字符集
     for _, c := range body {
-        if !strings.ContainsRune(Charset, c) {
+        if !strings.ContainsRune(charset, c) {
             return false
         }
     }
-    
     return true
 }
 
-// ValidateAndGetUser 验证 Key 并返回对应用户
-// 从数据库查询所有活跃用户，检查 Key 是否包含其用户名字符（含重复次数）
-func ValidateAndGetUser(key string, users []User) (*User, error) {
-    body := strings.ToLower(key[len(KeyPrefix):])
-    
-    var matchedUser *User
-    var maxLen int
-    var matchCount int  // 记录匹配数量，用于检测碰撞
-    
+// ValidateAndGetUser 验证 Key 并返回对应用户（v2.24.7+）
+// 遍历所有活跃用户，用各自 PasswordHash 作为 HMAC 密钥重新派生 Key，比对输入。
+// LDAP 用户（PasswordHash == ""）被静默跳过。
+func ValidateAndGetUser(key string, users []UserEntry) (*UserEntry, error) {
+    if !IsValidFormat(key) {
+        return nil, nil
+    }
     for i := range users {
-        user := &users[i]
-        if !user.IsActive {
+        u := &users[i]
+        if !u.IsActive || u.PasswordHash == "" {
             continue
         }
-        
-        // 提取用户名字符（含重复次数）
-        chars := extractAlphanumeric(user.Username)
-        if len(chars) == 0 {
+        expectedKey, err := GenerateKey(u.Username, []byte(u.PasswordHash))
+        if err != nil {
+            zap.L().Warn("keygen: skip user due to GenerateKey error",
+                zap.String("username", u.Username), zap.Error(err))
             continue
         }
-        
-        // 检查 Key 是否包含所有用户名字符（含重复次数）
-        if containsAllCharsWithCount(body, chars) {
-            // 选择用户名字符最多的（减少碰撞）
-            if len(chars) > maxLen {
-                maxLen = len(chars)
-                matchedUser = user
-                matchCount = 1
-            } else if len(chars) == maxLen {
-                matchCount++
-            }
+        if key == expectedKey {
+            return u, nil
         }
     }
-    
-    // 检测碰撞：多个用户匹配相同长度
-    if matchCount > 1 {
-        return nil, fmt.Errorf("collision detected: %d users match the same key pattern", matchCount)
-    }
-    
-    return matchedUser, nil
-}
-
-// containsAllCharsWithCount 检查字符串是否包含所有指定字符（考虑重复次数）
-// 例如：chars = ['a', 'a', 'b'] 表示需要 2 个 'a' 和 1 个 'b'
-func containsAllCharsWithCount(s string, chars []byte) bool {
-    // 统计需要的字符数量
-    needCount := make(map[byte]int)
-    for _, c := range chars {
-        needCount[c]++
-    }
-    
-    // 统计 Key 中已有的字符数量
-    haveCount := make(map[byte]int)
-    for _, c := range []byte(s) {
-        lower := c
-        if c >= 'A' && c <= 'Z' {
-            lower = c + 32  // 转小写
-        }
-        haveCount[lower]++
-    }
-    
-    // 检查是否满足需求
-    for char, need := range needCount {
-        if haveCount[char] < need {
-            return false
-        }
-    }
-    
-    return true
+    return nil, nil
 }
 ```
 
@@ -467,18 +412,20 @@ func containsAllCharsWithCount(s string, chars []byte) bool {
 ```
 用户请求: Authorization: Bearer sk-pp-xK8aLm2cNp9qRsTtUvWxYz...
                                     ↓
-                           1. 检查前缀 sk-pp-
+                           1. 先查 KeyCache（LRU + TTL）
+                              命中 → 直接返回缓存用户，跳过 2-5
                                     ↓
-                           2. 检查长度 = 54 字符
+                           2. 检查前缀 sk-pp-
                                     ↓
-                           3. 检查字符集（a-z, A-Z, 0-9）
+                           3. 检查长度 = 54 字符，字符集合法
                                     ↓
-                           4. 从数据库加载所有活跃用户
+                           4. 从数据库加载所有活跃用户（含 PasswordHash）
                                     ↓
-                           5. 遍历用户，检查 Key 是否包含其用户名字符
-                              例如：用户 "alice" → 检查 Key 是否包含 a,l,i,c,e
+                           5. 遍历用户：GenerateKey(username, PasswordHash)
+                              比对派生 Key 与输入 Key
+                              LDAP 用户（PasswordHash==""）跳过
                                     ↓
-                           6. 找到匹配用户 → 注入 context
+                           6. 找到匹配用户 → 写入 KeyCache → 注入 context
                               未找到 → 返回 401
 ```
 
@@ -486,144 +433,47 @@ func containsAllCharsWithCount(s string, chars []byte) bool {
 
 | 问题 | 解决方案 |
 |------|---------|
-| **用户名碰撞** | 选择最长匹配的用户名；碰撞时返回错误并记录日志 |
-| **暴力破解** | Key 长度 48 字符，熵约 287 位，暴力破解不可行 |
-| **Key 泄露** | 用户可自行重新生成新 Key（旧 Key 自动失效） |
-| **用户名太短** | 用户名至少 **4 个字符**（系统约束），降低碰撞概率 |
-| **重复字符** | 验证时考虑字符重复次数（如 `aaab` 需要 3 个 `a`） |
+| **共享密钥泄漏** | 已消除：每用户独立 PasswordHash 派生，无共享 secret |
+| **Key 相互隔离** | 用户 A 改密码仅影响 A 的 Key，B 不受影响 |
+| **暴力破解** | Key 长度 48 字符（Base62），熵 ≈ 287 位，暴力破解不可行 |
+| **Key 轮换** | 用户自助改密码即可轮换，无需管理员介入 |
+| **旧 Key 即时失效** | 改密码后 `KeyCache.InvalidateByUserID()` 主动清除缓存 |
+| **LDAP 用户** | 无本地 PasswordHash，无法持有 sk-pp- Key（静默跳过）|
 
 ### 4.7 用户名约束
 
-**重要**：为降低碰撞概率和提高安全性，用户名必须满足：
+用户名必须满足：
 
 | 约束 | 规则 |
 |------|------|
 | 最小长度 | ≥ 4 字符 |
-| 字符要求 | 至少包含 2 个不同的字母或数字 |
+| 字符要求 | 至少包含 1 个字母或数字 |
 | 禁止用户名 | `admin`, `root`, `test`, `user` 等保留字 |
-
-```go
-// ValidateUsername 验证用户名是否满足约束
-func ValidateUsername(username string) error {
-    if len(username) < 4 {
-        return fmt.Errorf("username must be at least 4 characters")
-    }
-    
-    chars := extractAlphanumeric(username)
-    if len(chars) < 2 {
-        return fmt.Errorf("username must contain at least 2 alphanumeric characters")
-    }
-    
-    // 检查唯一字符数
-    uniqueChars := make(map[byte]bool)
-    for _, c := range chars {
-        uniqueChars[c] = true
-    }
-    if len(uniqueChars) < 2 {
-        return fmt.Errorf("username must contain at least 2 different alphanumeric characters")
-    }
-    
-    return nil
-}
-```
 
 ### 4.8 Key 缓存策略
 
-为避免每次请求都遍历所有用户，实现 Key → User 的缓存：
+为避免每次请求都遍历所有用户，实现 Key → User 的 LRU+TTL 缓存：
 
 ```go
-package keygen
-
-import (
-    "sync"
-    "time"
-    "github.com/hashicorp/golang-lru/v2"
-)
-
-// KeyCache 缓存已验证的 Key → User 映射
-type KeyCache struct {
-    cache   *lru.Cache[string, *CachedUser]
-    ttl     time.Duration
-    mu      sync.RWMutex
-}
-
-// CachedUser 缓存的用户信息
-type CachedUser struct {
-    UserID    string
-    Username  string
-    GroupID   *string
-    KeyHash   string  // 用于检测 Key 是否变更
-    CachedAt  time.Time
-}
-
-// NewKeyCache 创建 Key 缓存
-func NewKeyCache(size int, ttl time.Duration) (*KeyCache, error) {
-    cache, err := lru.New[string, *CachedUser](size)
-    if err != nil {
-        return nil, err
-    }
-    return &KeyCache{
-        cache: cache,
-        ttl:   ttl,
-    }, nil
-}
-
-// Get 从缓存获取用户（返回 nil 表示未命中或已过期）
-func (c *KeyCache) Get(key string) *CachedUser {
-    c.mu.RLock()
-    defer c.mu.RUnlock()
-    
-    cached, ok := c.cache.Get(key)
-    if !ok {
-        return nil
-    }
-    
-    // 检查 TTL
-    if time.Since(cached.CachedAt) > c.ttl {
-        c.cache.Remove(key)
-        return nil
-    }
-    
-    return cached
-}
-
-// Set 写入缓存
-func (c *KeyCache) Set(key string, user *CachedUser) {
-    c.mu.Lock()
-    defer c.mu.Unlock()
-    
-    user.CachedAt = time.Now()
-    c.cache.Add(key, user)
-}
-
-// InvalidateUser 使某用户的所有缓存失效（用户重新生成 Key 时调用）
-func (c *KeyCache) InvalidateUser(username string) {
-    c.mu.Lock()
-    defer c.mu.Unlock()
-    
-    // 遍历缓存，删除该用户的所有 Key
-    for _, key := range c.cache.Keys() {
-        if cached, ok := c.cache.Get(key); ok {
-            if cached.Username == username {
-                c.cache.Remove(key)
-            }
-        }
-    }
-}
+// KeyCache 核心方法（v2.24.7+）
+//
+// Get(key)                    — 查缓存（命中且未过期则返回 CachedUser）
+// Set(key, user)              — 写缓存（验证通过后调用）
+// InvalidateUser(username)    — 按用户名清除（用于已知旧 key 字符串时）
+// InvalidateByUserID(userID)  — 按 UserID 清除（改密码/重置密码后调用）
 ```
 
-**缓存使用策略**：
+**缓存失效触发点**：
 
-| 场景 | 操作 |
-|------|------|
-| 请求到达 | 先查缓存，命中则直接使用 |
-| 缓存未命中 | 遍历用户验证，成功后写入缓存 |
-| 用户重新生成 Key | 调用 `InvalidateUser()` 清除旧 Key |
-| 用户被禁用 | 缓存 TTL 后自动失效（或主动清除） |
+| 场景 | 调用方法 |
+|------|---------|
+| 用户自助改密码（`/keygen/api/change-password`） | `InvalidateByUserID(userID)` |
+| 管理员重置密码（`/api/admin/users/{id}/reset-password`） | `InvalidateByUserID(userID)` |
+| 用户被禁用 | 缓存 TTL 后自动失效 |
 
 **推荐配置**：
 - 缓存大小：1000-10000 条（根据用户数调整）
-- TTL：5-15 分钟
+- TTL：5-15 分钟（0 = 永不过期，仅限测试）
 
 ---
 
@@ -652,17 +502,9 @@ type User struct {
 
 由于 Key 通过规则验证，**无需存储 Key**。用户的 Key 可随时重新生成。
 
-### 5.3 可选：Key 缓存（性能优化）
+### 5.3 Key 缓存（已内置）
 
-如果用户量大（>10000），每次请求遍历所有用户可能影响性能。可添加缓存：
-
-```go
-// Key → UserID 的 LRU 缓存
-type KeyCache struct {
-    cache *lru.Cache  // 缓存最近验证成功的 Key
-    ttl   time.Duration
-}
-```
+`KeyCache`（`internal/keygen/cache.go`）已内置于直连模式请求链路，默认大小 10000 条、TTL 15 分钟。Key 验证命中缓存时直接返回，无需遍历用户列表。密码变更后通过 `InvalidateByUserID()` 主动清除，保证旧 Key 即时失效。
 
 ---
 
@@ -678,8 +520,8 @@ PairProxy 有**两个独立的 WebUI 系统**，面向不同用户群体：
 | **登录页面** | `/dashboard/login` | `/keygen/` |
 | **登录凭证** | 管理员密码（无用户名） | 用户名 + 密码 |
 | **目标用户** | 管理员 | 普通用户 |
-| **主要功能** | 用户管理、分组管理、LLM 配置、用量统计、批量导入等 | 生成/重新生成 API Key |
-| **权限范围** | 全局管理权限 | 仅操作自己的 Key |
+| **主要功能** | 用户管理、分组管理、LLM 配置、用量统计、批量导入等 | 查看 API Key、**自助改密码并更新 Key** |
+| **权限范围** | 全局管理权限 | 仅操作自己的 Key 和密码 |
 
 **重要**：两个系统**完全独立**，互不影响：
 
@@ -715,7 +557,17 @@ https://sproxy.company.com/keygen/
 │  ┌──────────────────────────────────────────────────────────┐   │
 │  │  sk-pp-xK8aLm2cNp9qRsTtUvWxYz1A3B5C7D9E0F2H4J6           │   │
 │  └──────────────────────────────────────────────────────────┘   │
-│                               [ 📋 复制 ]  [ 🔄 重新生成 ]       │
+│                               [ 📋 复制 ]                        │
+│                                                                  │
+│  ─────────────────────────────────────────────────────────────  │
+│                                                                  │
+│  修改密码（同步更新 API Key）：                                  │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │  当前密码: [**********  ]                                 │   │
+│  │  新密码:   [**********  ]  (≥8位)                         │   │
+│  │  确认密码: [**********  ]                                 │   │
+│  │                   [ 修改密码 ]                             │   │
+│  └──────────────────────────────────────────────────────────┘   │
 │                                                                  │
 │  ─────────────────────────────────────────────────────────────  │
 │                                                                  │
@@ -768,141 +620,51 @@ Content-Type: application/json
 }
 ```
 
-**字段说明**：
-
 | 字段 | 说明 |
 |------|------|
-| `key` | 用户的 API Key（用于配置客户端） |
-| `token` | Session Token（用于重新生成 Key 的认证） |
+| `key` | 用户的 API Key，由当前 PasswordHash 派生（v2.24.7+） |
+| `token` | Session Token（用于 change-password 等需认证操作） |
 | `expires_in` | Session 有效期（秒），默认 1 小时 |
 
-#### 重新生成 Key
+#### 自助修改密码并更新 Key（v2.24.7+）
+
+```http
+POST /keygen/api/change-password
+Authorization: Bearer <session_token>
+Content-Type: application/json
+
+{
+  "old_password": "current-password",
+  "new_password": "new-strong-password"
+}
+```
+
+**响应 200**:
+```json
+{
+  "key": "sk-pp-<新Key>",
+  "message": "密码已更新，新 API Key 已生成"
+}
+```
+
+改密成功后：① 数据库密码哈希更新 ② 旧 Key 缓存立即清除 ③ 新 Key 直接返回，无需重新登录。
+
+**错误响应**：
+
+| Status | 原因 |
+|--------|------|
+| 401 | session_token 无效/过期，或旧密码错误 |
+| 403 | LDAP 账户（不支持本地密码修改） |
+| 503 | Worker 节点（写操作须转发至 Primary） |
+
+#### 重新查看 Key（无需重新登录）
 
 ```http
 POST /keygen/api/regenerate
 Authorization: Bearer <session_token>
 ```
 
-**响应 200**:
-```json
-{
-  "username": "alice",
-  "key": "sk-pp-aB9cD2eF5gH8iJ1kL4mN7oP0qR3sT6uV9wX2yZ5",
-  "message": "新 Key 已生成，旧 Key 已失效"
-}
-```
-
-**响应 401**:
-```json
-{
-  "error": "session_expired",
-  "message": "会话已过期，请重新登录"
-}
-```
-
-### 6.5 前端实现
-
-```html
-<!-- /keygen/index.html -->
-<!DOCTYPE html>
-<html>
-<head>
-    <title>PairProxy Key Generator</title>
-    <style>
-        body { font-family: -apple-system, sans-serif; max-width: 600px; margin: 50px auto; }
-        .key-display { 
-            font-family: monospace; 
-            background: #f5f5f5; 
-            padding: 15px; 
-            border-radius: 5px;
-            word-break: break-all;
-        }
-        .btn { padding: 10px 20px; cursor: pointer; }
-    </style>
-</head>
-<body>
-    <div id="login-form">
-        <h1>PairProxy Key Generator</h1>
-        <input type="text" id="username" placeholder="用户名"><br><br>
-        <input type="password" id="password" placeholder="密码"><br><br>
-        <button class="btn" onclick="login()">登录</button>
-    </div>
-    
-    <div id="key-display" style="display:none">
-        <h2>欢迎, <span id="welcome-user"></span>!</h2>
-        <p>您的 API Key:</p>
-        <div class="key-display" id="api-key"></div>
-        <br>
-        <button class="btn" onclick="copyKey()">📋 复制</button>
-        <button class="btn" onclick="regenerate()">🔄 重新生成</button>
-        
-        <h3>使用方法</h3>
-        <h4>Claude Code:</h4>
-        <pre>export ANTHROPIC_BASE_URL={{baseUrl}}/anthropic
-export ANTHROPIC_API_KEY=<span id="key-placeholder"></span></pre>
-        
-        <h4>OpenCode:</h4>
-        <pre>export OPENAI_BASE_URL={{baseUrl}}/v1
-export OPENAI_API_KEY=<span id="key-placeholder2"></span></pre>
-    </div>
-    
-    <script>
-        let currentKey = '';
-        let sessionToken = '';
-        
-        async function login() {
-            const username = document.getElementById('username').value;
-            const password = document.getElementById('password').value;
-            
-            const resp = await fetch('/keygen/api/login', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({username, password})
-            });
-            
-            if (resp.ok) {
-                const data = await resp.json();
-                currentKey = data.key;
-                sessionToken = data.token;
-                showKey(data.username, data.key);
-            } else {
-                alert('登录失败');
-            }
-        }
-        
-        function showKey(username, key) {
-            document.getElementById('login-form').style.display = 'none';
-            document.getElementById('key-display').style.display = 'block';
-            document.getElementById('welcome-user').textContent = username;
-            document.getElementById('api-key').textContent = key;
-            document.getElementById('key-placeholder').textContent = key;
-            document.getElementById('key-placeholder2').textContent = key;
-        }
-        
-        function copyKey() {
-            navigator.clipboard.writeText(currentKey);
-            alert('已复制到剪贴板');
-        }
-        
-        async function regenerate() {
-            const resp = await fetch('/keygen/api/regenerate', {
-                method: 'POST',
-                headers: {'Authorization': 'Bearer ' + sessionToken}
-            });
-            
-            if (resp.ok) {
-                const data = await resp.json();
-                currentKey = data.key;
-                document.getElementById('api-key').textContent = data.key;
-                document.getElementById('key-placeholder').textContent = data.key;
-                document.getElementById('key-placeholder2').textContent = data.key;
-                alert('新 Key 已生成');
-            }
-        }
-    </script>
-</body>
-</html>
-```
+返回当前 PasswordHash 派生的 Key（与登录时相同，用于刷新显示）。
 
 ---
 

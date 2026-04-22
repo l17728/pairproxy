@@ -122,7 +122,7 @@
       return conversionNone
   }
 
-  // shouldConvertProtocol は sproxy.go との互換のため一時的に残す。Task 5 で削除する。
+  // shouldConvertProtocol 为与 sproxy.go 保持兼容而临时保留，将在 Task 5 中删除。
   func shouldConvertProtocol(path, provider string) bool {
       return detectConversionDirection(path, provider) == conversionAtoO
   }
@@ -508,7 +508,7 @@ Fields to **pass through**: `model` (apply modelMapping), `max_tokens`, `tempera
   - **tool** (role=tool): **consecutive** tool messages after an assistant → merge into ONE `{"role":"user","content":[{type:"tool_result",tool_use_id,content},...]}` message. The `content` field of the tool message may be string or array; if array, extract text items and join with `"\n"`.
 
   ```go
-  // convertOpenAIToAnthropicRequest はOpenAI Chat Completions リクエストを Anthropic Messages API 形式に変換する。
+  // convertOpenAIToAnthropicRequest 将 OpenAI Chat Completions 请求转换为 Anthropic Messages API 格式。
   // Returns (converted body, "/v1/messages", nil) on success.
   // Returns (nil, "/v1/messages", error) on JSON parse failure — caller must return HTTP 400.
   func convertOpenAIToAnthropicRequest(body []byte, logger *zap.Logger, reqID string, modelMapping map[string]string) ([]byte, string, error) {
@@ -660,7 +660,7 @@ Fields to **pass through**: `model` (apply modelMapping), `max_tokens`, `tempera
       return converted, newPath, nil
   }
 
-  // convertOpenAIToolChoice はOpenAI tool_choice 値を Anthropic 形式に変換する。
+  // convertOpenAIToolChoice 将 OpenAI tool_choice 值转换为 Anthropic 格式。
   func convertOpenAIToolChoice(tc interface{}) map[string]interface{} {
       switch v := tc.(type) {
       case string:
@@ -683,7 +683,7 @@ Fields to **pass through**: `model` (apply modelMapping), `max_tokens`, `tempera
       return map[string]interface{}{"type": "auto"}
   }
 
-  // convertOpenAIUserMessage は user ロールのメッセージを変換する。
+  // convertOpenAIUserMessage 转换 user 角色的消息。
   func convertOpenAIUserMessage(msg map[string]interface{}) map[string]interface{} {
       content := msg["content"]
       switch c := content.(type) {
@@ -716,7 +716,7 @@ Fields to **pass through**: `model` (apply modelMapping), `max_tokens`, `tempera
       }
   }
 
-  // convertOpenAIImageURL は OpenAI image_url 項目を Anthropic image ブロックに変換する。
+  // convertOpenAIImageURL 将 OpenAI image_url 条目转换为 Anthropic image 块。
   func convertOpenAIImageURL(iu map[string]interface{}) map[string]interface{} {
       rawURL, _ := iu["url"].(string)
       if strings.HasPrefix(rawURL, "data:") {
@@ -744,7 +744,7 @@ Fields to **pass through**: `model` (apply modelMapping), `max_tokens`, `tempera
       }
   }
 
-  // convertOpenAIAssistantMessage は assistant ロールのメッセージを変換する。
+  // convertOpenAIAssistantMessage 转换 assistant 角色的消息。
   func convertOpenAIAssistantMessage(msg map[string]interface{}) map[string]interface{} {
       var blocks []interface{}
 
@@ -992,8 +992,8 @@ func convertAnthropicToOpenAIResponseReverse(body []byte, logger *zap.Logger, re
   Add to `internal/proxy/protocol_converter.go` (after OtoA request conversion section):
 
   ```go
-  // convertAnthropicToOpenAIResponseReverse はAnthropicのMessages APIレスポンスをOpenAIのChat Completions形式に変換する。
-  // requestedModel は元のOpenAIリクエストのmodel名。空でなければレスポンスのmodel フィールドに使用する。
+  // convertAnthropicToOpenAIResponseReverse 将 Anthropic Messages API 响应转换为 OpenAI Chat Completions 格式。
+  // requestedModel 为原始 OpenAI 请求的 model 名，非空时用于填充响应的 model 字段。
   func convertAnthropicToOpenAIResponseReverse(body []byte, logger *zap.Logger, reqID string, requestedModel string) ([]byte, error) {
       if len(body) == 0 {
           return nil, fmt.Errorf("empty response body")
@@ -1116,7 +1116,7 @@ func convertAnthropicToOpenAIResponseReverse(body []byte, logger *zap.Logger, re
       return converted, nil
   }
 
-  // convertMessageIDReverse は msg_xxx を chatcmpl-xxx に変換する。
+  // convertMessageIDReverse 将 msg_xxx 转换为 chatcmpl-xxx。
   func convertMessageIDReverse(id string) string {
       if after, found := strings.CutPrefix(id, "msg_"); found {
           return "chatcmpl-" + after
@@ -1124,7 +1124,7 @@ func convertAnthropicToOpenAIResponseReverse(body []byte, logger *zap.Logger, re
       return "chatcmpl-" + id
   }
 
-  // convertStopReasonToFinishReason は Anthropic stop_reason を OpenAI finish_reason に変換する。
+  // convertStopReasonToFinishReason 将 Anthropic stop_reason 转换为 OpenAI finish_reason。
   func convertStopReasonToFinishReason(stopReason string) string {
       switch stopReason {
       case "end_turn", "stop_sequence":
@@ -1202,8 +1202,8 @@ If body is not Anthropic error format (no `error.message`), return unchanged.
 - [ ] **Step 3b.3: Implement the function**
 
   ```go
-  // convertAnthropicErrorResponseToOpenAI は Anthropic 形式のエラーレスポンスを OpenAI 形式に変換する。
-  // Anthropic 形式でない場合は原本を返す。
+  // convertAnthropicErrorResponseToOpenAI 将 Anthropic 格式的错误响应转换为 OpenAI 格式。
+  // 若非 Anthropic 格式则原样返回。
   func convertAnthropicErrorResponseToOpenAI(body []byte, logger *zap.Logger, reqID string) []byte {
       var anthropicErr struct {
           Type  string `json:"type"`
@@ -1478,9 +1478,9 @@ The struct implements `http.ResponseWriter` AND `http.Flusher`. It wraps the rea
   Add to `internal/proxy/protocol_converter.go` after the OtoA non-streaming section:
 
   ```go
-  // AnthropicToOpenAIStreamConverter はAnthropicのSSEストリームをOpenAI SSEチャンクに変換する。
-  // http.ResponseWriter と http.Flusher を実装する。
-  // TeeResponseWriterがこのconverterをラップし、rawなAnthropicバイトをトークンパーサーに渡す。
+  // AnthropicToOpenAIStreamConverter 将 Anthropic SSE 流转换为 OpenAI SSE 块。
+  // 实现 http.ResponseWriter 和 http.Flusher 接口。
+  // TeeResponseWriter 包装此 converter，将原始 Anthropic 字节传递给 token 解析器。
   type AnthropicToOpenAIStreamConverter struct {
       w       http.ResponseWriter
       logger  *zap.Logger
@@ -1499,7 +1499,7 @@ The struct implements `http.ResponseWriter` AND `http.Flusher`. It wraps the rea
       nextToolIdx   int
   }
 
-  // NewAnthropicToOpenAIStreamConverter はAnthropicToOpenAIStreamConverterを作成する。
+  // NewAnthropicToOpenAIStreamConverter 创建 AnthropicToOpenAIStreamConverter。
   func NewAnthropicToOpenAIStreamConverter(w http.ResponseWriter, logger *zap.Logger, reqID string, model string) *AnthropicToOpenAIStreamConverter {
       return &AnthropicToOpenAIStreamConverter{
           w:             w,
@@ -1511,29 +1511,31 @@ The struct implements `http.ResponseWriter` AND `http.Flusher`. It wraps the rea
       }
   }
 
-  // Header 実装 http.ResponseWriter。
+  // Header 实现 http.ResponseWriter。
   func (c *AnthropicToOpenAIStreamConverter) Header() http.Header {
       return c.w.Header()
   }
 
-  // WriteHeader 実装 http.ResponseWriter。
+  // WriteHeader 实现 http.ResponseWriter。
   func (c *AnthropicToOpenAIStreamConverter) WriteHeader(statusCode int) {
       c.w.WriteHeader(statusCode)
   }
 
-  // Flush 実装 http.Flusher — デリゲートして内部ライターにフラッシュする。
+  // Flush 实现 http.Flusher — 委托给内部 writer 执行刷新。
   func (c *AnthropicToOpenAIStreamConverter) Flush() {
       if f, ok := c.w.(http.Flusher); ok {
           f.Flush()
       }
   }
 
-  // Write はAnthropicのSSEチャンクを受け取り、OpenAI SSEチャンクに変換して出力する。
-  // 既知の制限: `Write()` 呼び出し間をまたぐ SSE イベントのバッファリングは行わない。
-  // これは既存の `OpenAIToAnthropicStreamConverter` (AtoO 方向) と同じ設計方針であり、
-  // 上流 HTTP/2 または HTTP/1.1 フレーミングが各 SSE イベントを完整なチャンクとして
-  // 渡すことが実測上確認されている（各 "data: ...\n\n" が1回の Write で届く）。
-  // この仮定が崩れる環境では、バッファリング実装への切り替えが必要になる場合がある。
+  // Write 接收 Anthropic SSE 块，转换为 OpenAI SSE 块后输出。
+  // 已知限制：不对跨 Write() 调用的 SSE 事件进行缓冲。
+  // 这与现有 OpenAIToAnthropicStreamConverter（AtoO 方向）的设计方针相同，
+  // 上游 HTTP/2 或 HTTP/1.1 帧确保每个 SSE 事件以完整 chunk 形式
+  // 传入（实测确认每个 "data: ...
+
+" 以单次 Write 到达）。
+  // 若该假设不成立，则可能需要切换至带缓冲的实现。
   func (c *AnthropicToOpenAIStreamConverter) Write(chunk []byte) (int, error) {
       lines := bytes.Split(chunk, []byte("\n"))
       var eventType string
@@ -1676,7 +1678,7 @@ The struct implements `http.ResponseWriter` AND `http.Flusher`. It wraps the rea
       }
   }
 
-  // emitChunk はOpenAI SSEチャンクを書き込む。usageはオプション（nilなら省略）。
+  // emitChunk 写入 OpenAI SSE 块。usage 为可选项（nil 则省略）。
   func (c *AnthropicToOpenAIStreamConverter) emitChunk(choice map[string]interface{}, usage map[string]interface{}) {
       envelope := map[string]interface{}{
           "id":      c.messageID,
@@ -1706,7 +1708,7 @@ The struct implements `http.ResponseWriter` AND `http.Flusher`. It wraps the rea
       c.Flush()
   }
 
-  // emitDone はOpenAI SSE終了シグナルを送信する。
+  // emitDone 发送 OpenAI SSE 结束信号。
   func (c *AnthropicToOpenAIStreamConverter) emitDone() {
       if _, err := c.w.Write([]byte("data: [DONE]\n\n")); err != nil {
           c.logger.Debug("write error for [DONE]",

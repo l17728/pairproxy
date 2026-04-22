@@ -1,8 +1,11 @@
 package dashboard
 
 import (
+	"encoding/json"
+	htmpl "html/template"
 	"net/http"
 	neturl "net/url"
+	"sort"
 	"strconv"
 
 	"github.com/google/uuid"
@@ -18,6 +21,7 @@ type llmPageData struct {
 	Targets        []proxy.LLMTargetStatus
 	AllTargets     []llmTargetWithMeta // 合并后的目标列表（含 Source/IsEditable）
 	Bindings       []db.LLMBinding
+	BindingsJSON   htmpl.JS          // pre-serialized JSON for client-side pagination (safe, no HTML escaping)
 	BoundCount     map[string]int    // target URL → 绑定数量
 	UserIDToName   map[string]string // user ID → username（用于绑定列表显示）
 	GroupIDToName  map[string]string // group ID → group name
@@ -32,6 +36,15 @@ type llmPageData struct {
 	GroupsForBind  []db.Group // 未绑定的分组（用于创建目标集时选择）
 }
 
+// bindingEntry is the JSON shape embedded in the page for client-side filtering.
+type bindingEntry struct {
+	ID        string `json:"id"`
+	Type      string `json:"type"`
+	Name      string `json:"name"`
+	TargetURL string `json:"targetURL"`
+	CreatedAt string `json:"createdAt"`
+}
+
 // llmTargetWithMeta 扩展的目标信息（用于 WebUI 显示）
 type llmTargetWithMeta struct {
 	ID              string
@@ -41,8 +54,12 @@ type llmTargetWithMeta struct {
 	Weight          int
 	HealthCheckPath string
 	APIKeyID        string
+	ModelMapping    string // ModelMappingJSON 原始值
+	SupportedModels string // SupportedModelsJSON 原始值
+	AutoModel       string
 	Source          string // "config" | "database"
 	IsEditable      bool
+	IsSynced        bool
 	Healthy         bool
 	Draining        bool
 }
@@ -104,8 +121,12 @@ func (h *Handler) handleLLMPage(w http.ResponseWriter, r *http.Request) {
 					Weight:          t.Weight,
 					HealthCheckPath: t.HealthCheckPath,
 					APIKeyID:        apiKeyID,
+					ModelMapping:    t.ModelMappingJSON,
+					SupportedModels: t.SupportedModelsJSON,
+					AutoModel:       t.AutoModel,
 					Source:          t.Source,
 					IsEditable:      t.IsEditable,
+					IsSynced:        t.IsSynced,
 					Healthy:         health.Healthy,
 					Draining:        health.Draining,
 				})
@@ -151,6 +172,9 @@ func (h *Handler) handleLLMPage(w http.ResponseWriter, r *http.Request) {
 				data.Users = append(data.Users, u)
 			}
 		}
+		sort.Slice(data.Users, func(i, j int) bool {
+			return data.Users[i].Username < data.Users[j].Username
+		})
 	}
 	if h.groupRepo != nil {
 		allGroups, _ := h.groupRepo.List()
@@ -159,6 +183,33 @@ func (h *Handler) handleLLMPage(w http.ResponseWriter, r *http.Request) {
 			if !boundGroupIDs[g.ID] {
 				data.Groups = append(data.Groups, g)
 			}
+		}
+	}
+
+	// 序列化绑定关系为 JSON（在 ID→名称映射填充完成后执行，避免模板 range 产生 trailing comma）
+	{
+		entries := make([]bindingEntry, 0, len(data.Bindings))
+		for _, b := range data.Bindings {
+			bType := "group"
+			name := ""
+			if b.UserID != nil {
+				bType = "user"
+				name = data.UserIDToName[*b.UserID]
+			} else if b.GroupID != nil {
+				name = data.GroupIDToName[*b.GroupID]
+			}
+			entries = append(entries, bindingEntry{
+				ID:        b.ID,
+				Type:      bType,
+				Name:      name,
+				TargetURL: b.TargetURL,
+				CreatedAt: b.CreatedAt.Format("2006-01-02 15:04"),
+			})
+		}
+		if bs, err := json.Marshal(entries); err == nil {
+			data.BindingsJSON = htmpl.JS(bs)
+		} else {
+			data.BindingsJSON = "[]"
 		}
 	}
 
@@ -214,31 +265,34 @@ func (h *Handler) handleLLMPage(w http.ResponseWriter, r *http.Request) {
 
 // handleLLMCreateBinding POST /dashboard/llm/bindings
 func (h *Handler) handleLLMCreateBinding(w http.ResponseWriter, r *http.Request) {
+	const bindTab = "/dashboard/llm?tab=bindings"
 	if h.llmBindingRepo == nil {
-		http.Redirect(w, r, "/dashboard/llm?error=LLM+binding+not+configured", http.StatusSeeOther)
+		http.Redirect(w, r, bindTab+"&error=LLM+binding+not+configured", http.StatusSeeOther)
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		http.Redirect(w, r, "/dashboard/llm?error=invalid+form", http.StatusSeeOther)
+		http.Redirect(w, r, bindTab+"&error=invalid+form", http.StatusSeeOther)
 		return
 	}
-	targetURL := r.FormValue("target_url")
+	targetRaw := r.FormValue("target_url") // 表单字段名保持不变；值现在是 UUID（旧版可能是 URL）
 	bindType := r.FormValue("bind_type")
-	if targetURL == "" {
-		http.Redirect(w, r, "/dashboard/llm?error=target_url+required", http.StatusSeeOther)
+	if targetRaw == "" {
+		http.Redirect(w, r, bindTab+"&error=target_url+required", http.StatusSeeOther)
 		return
 	}
 
-	// 解析 target URL → target ID
-	// 同一 URL 可能有多个 target（Issue #6），此时重定向错误页提示用户用 UUID。
-	targetID := targetURL
+	// 解析 target：优先按 ID（UUID）查找，回退按 URL 查找（兼容旧表单数据）
+	targetID := targetRaw
 	if h.llmTargetRepo != nil {
-		matches, err := h.llmTargetRepo.ListByURL(targetURL)
-		if err == nil && len(matches) == 1 {
-			targetID = matches[0].ID
-		} else if err == nil && len(matches) > 1 {
-			http.Redirect(w, r, "/dashboard/llm?error=target_url_ambiguous", http.StatusSeeOther)
-			return
+		if t, err := h.llmTargetRepo.GetByID(targetRaw); err == nil {
+			targetID = t.ID
+		} else {
+			// 回退：按 URL 查找（旧版表单提交 URL 的兼容路径；URL 现为全局唯一）
+			match, err := h.llmTargetRepo.GetByURL(targetRaw)
+			if err == nil && match != nil {
+				targetID = match.ID
+			}
+			// err != nil 或 nil match：targetID = targetRaw（config-sourced 兜底）
 		}
 	}
 
@@ -247,14 +301,14 @@ func (h *Handler) handleLLMCreateBinding(w http.ResponseWriter, r *http.Request)
 	case "group":
 		gid := r.FormValue("group_id")
 		if gid == "" {
-			http.Redirect(w, r, "/dashboard/llm?error=group_id+required", http.StatusSeeOther)
+			http.Redirect(w, r, bindTab+"&error=group_id+required", http.StatusSeeOther)
 			return
 		}
 		groupID = &gid
 	default:
 		uid := r.FormValue("user_id")
 		if uid == "" {
-			http.Redirect(w, r, "/dashboard/llm?error=user_id+required", http.StatusSeeOther)
+			http.Redirect(w, r, bindTab+"&error=user_id+required", http.StatusSeeOther)
 			return
 		}
 		userID = &uid
@@ -262,36 +316,37 @@ func (h *Handler) handleLLMCreateBinding(w http.ResponseWriter, r *http.Request)
 
 	if err := h.llmBindingRepo.Set(targetID, userID, groupID); err != nil {
 		h.logger.Error("create llm binding", zap.Error(err))
-		http.Redirect(w, r, "/dashboard/llm?error="+neturl.QueryEscape(err.Error()), http.StatusSeeOther)
+		http.Redirect(w, r, bindTab+"&error="+neturl.QueryEscape(err.Error()), http.StatusSeeOther)
 		return
 	}
 	h.logger.Info("llm binding created via dashboard",
 		zap.String("target_id", targetID),
-		zap.String("target_url", targetURL),
+		zap.String("target_raw", targetRaw),
 		zap.Any("user_id", userID),
 		zap.Any("group_id", groupID),
 	)
-	http.Redirect(w, r, "/dashboard/llm?flash=绑定已创建", http.StatusSeeOther)
+	http.Redirect(w, r, bindTab+"&flash=绑定已创建", http.StatusSeeOther)
 }
 
 // handleLLMDeleteBinding POST /dashboard/llm/bindings/{id}/delete
 func (h *Handler) handleLLMDeleteBinding(w http.ResponseWriter, r *http.Request) {
+	const bindTab = "/dashboard/llm?tab=bindings"
 	if h.llmBindingRepo == nil {
-		http.Redirect(w, r, "/dashboard/llm?error=LLM+binding+not+configured", http.StatusSeeOther)
+		http.Redirect(w, r, bindTab+"&error=LLM+binding+not+configured", http.StatusSeeOther)
 		return
 	}
 	id := r.PathValue("id")
 	if id == "" {
-		http.Redirect(w, r, "/dashboard/llm?error=id+required", http.StatusSeeOther)
+		http.Redirect(w, r, bindTab+"&error=id+required", http.StatusSeeOther)
 		return
 	}
 	if err := h.llmBindingRepo.Delete(id); err != nil {
 		h.logger.Error("delete llm binding", zap.String("id", id), zap.Error(err))
-		http.Redirect(w, r, "/dashboard/llm?error="+neturl.QueryEscape(err.Error()), http.StatusSeeOther)
+		http.Redirect(w, r, bindTab+"&error="+neturl.QueryEscape(err.Error()), http.StatusSeeOther)
 		return
 	}
 	h.logger.Info("llm binding deleted via dashboard", zap.String("id", id))
-	http.Redirect(w, r, "/dashboard/llm?flash=绑定已删除", http.StatusSeeOther)
+	http.Redirect(w, r, bindTab+"&flash=绑定已删除", http.StatusSeeOther)
 }
 
 // handleLLMDistribute POST /dashboard/llm/distribute
@@ -402,16 +457,11 @@ func (h *Handler) handleLLMCreateTarget(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// 检查 URL 冲突（考虑 api_key_id 组合）
-	var apiKeyIDPtr *string
-	if apiKeyID != "" {
-		apiKeyIDPtr = &apiKeyID
-	}
-	exists, err := h.llmTargetRepo.ComboExists(targetURL, apiKeyIDPtr)
+	// 检查 URL 冲突（URL 现为全局唯一）
+	exists, err := h.llmTargetRepo.URLExists(targetURL)
 	if err != nil {
-		h.logger.Error("failed to check combo exists",
+		h.logger.Error("failed to check url exists",
 			zap.String("url", targetURL),
-			zap.Any("api_key_id", apiKeyIDPtr),
 			zap.Error(err))
 		http.Redirect(w, r, "/dashboard/llm?error=internal+error", http.StatusSeeOther)
 		return
@@ -419,7 +469,6 @@ func (h *Handler) handleLLMCreateTarget(w http.ResponseWriter, r *http.Request) 
 	if exists {
 		h.logger.Warn("rejected duplicate llm target",
 			zap.String("url", targetURL),
-			zap.Any("api_key_id", apiKeyIDPtr),
 		)
 		http.Redirect(w, r, "/dashboard/llm?error=URL+already+exists", http.StatusSeeOther)
 		return
@@ -430,6 +479,11 @@ func (h *Handler) handleLLMCreateTarget(w http.ResponseWriter, r *http.Request) 
 		if w, err := strconv.Atoi(weightStr); err == nil && w > 0 {
 			weight = w
 		}
+	}
+
+	var apiKeyIDPtr *string
+	if apiKeyID != "" {
+		apiKeyIDPtr = &apiKeyID
 	}
 
 	target := &db.LLMTarget{
@@ -450,6 +504,9 @@ func (h *Handler) handleLLMCreateTarget(w http.ResponseWriter, r *http.Request) 
 		http.Redirect(w, r, "/dashboard/llm?error="+neturl.QueryEscape(err.Error()), http.StatusSeeOther)
 		return
 	}
+
+	// 标记为未同步
+	_ = h.llmTargetRepo.MarkUnsynced(target.ID)
 
 	// 同步 balancer/HC（使新 target 立即参与健康检查）
 	if h.llmSyncFn != nil {
@@ -507,23 +564,13 @@ func (h *Handler) handleLLMUpdateTarget(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// 检查URL或APIKeyID变更时的冲突（考虑完整的(url, api_key_id)组合）
-	if targetURL != existing.URL || apiKeyID != (func() string {
-		if existing.APIKeyID == nil {
-			return ""
-		}
-		return *existing.APIKeyID
-	}()) {
-		var apiKeyIDPtr *string
-		if apiKeyID != "" {
-			apiKeyIDPtr = &apiKeyID
-		}
-		exists, err := h.llmTargetRepo.ComboExists(targetURL, apiKeyIDPtr)
+	// 检查 URL 变更时的冲突（URL 现为全局唯一）
+	if targetURL != existing.URL {
+		exists, err := h.llmTargetRepo.URLExists(targetURL)
 		if err != nil {
-			h.logger.Error("failed to check combo exists during update",
+			h.logger.Error("failed to check url exists during update",
 				zap.String("id", id),
 				zap.String("new_url", targetURL),
-				zap.Any("api_key_id", apiKeyIDPtr),
 				zap.Error(err))
 			http.Redirect(w, r, "/dashboard/llm?error=internal+error", http.StatusSeeOther)
 			return
@@ -532,7 +579,6 @@ func (h *Handler) handleLLMUpdateTarget(w http.ResponseWriter, r *http.Request) 
 			h.logger.Warn("rejected duplicate llm target during update",
 				zap.String("id", id),
 				zap.String("new_url", targetURL),
-				zap.Any("api_key_id", apiKeyIDPtr),
 			)
 			http.Redirect(w, r, "/dashboard/llm?error=URL+already+exists", http.StatusSeeOther)
 			return
@@ -563,6 +609,9 @@ func (h *Handler) handleLLMUpdateTarget(w http.ResponseWriter, r *http.Request) 
 		http.Redirect(w, r, "/dashboard/llm?error="+neturl.QueryEscape(err.Error()), http.StatusSeeOther)
 		return
 	}
+
+	// 标记为未同步
+	_ = h.llmTargetRepo.MarkUnsynced(existing.ID)
 
 	// 同步 balancer/HC（使变更立即生效）
 	if h.llmSyncFn != nil {

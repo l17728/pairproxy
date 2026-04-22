@@ -24,6 +24,7 @@ import (
 )
 
 // doUserStatsReqURL 允许指定完整 URL（含 query string）发起请求。
+// 返回分页响应中的 users 列表（向后兼容测试断言）。
 func doUserStatsReqURL(t *testing.T, env *userStatsTestEnv, url string) []map[string]interface{} {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, url, nil)
@@ -33,11 +34,13 @@ func doUserStatsReqURL(t *testing.T, env *userStatsTestEnv, url string) []map[st
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (url=%s, body=%s)", rr.Code, url, rr.Body.String())
 	}
-	var resp []map[string]interface{}
-	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+	var page struct {
+		Users []map[string]interface{} `json:"users"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &page); err != nil {
 		t.Fatalf("decode: %v (body=%s)", err, rr.Body.String())
 	}
-	return resp
+	return page.Users
 }
 
 // freshURL 生成带唯一 timestamp 的刷新 URL，确保穿透缓存。

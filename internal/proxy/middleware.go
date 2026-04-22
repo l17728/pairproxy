@@ -122,10 +122,16 @@ func AuthMiddleware(logger *zap.Logger, jwtMgr *auth.Manager, next http.Handler)
 // ---------------------------------------------------------------------------
 
 // RecoveryMiddleware 捕获 panic，返回 500，避免进程崩溃。
+// 注意：http.ErrAbortHandler 必须重新 panic，让 net/http 正常清理连接（客户端断连场景）。
 func RecoveryMiddleware(logger *zap.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {
+				// http.ErrAbortHandler 是 net/http 主动发出的终止信号（客户端断连），
+				// 必须重新 panic 让 HTTP server 正确关闭连接，不能当作真正的错误处理。
+				if rec == http.ErrAbortHandler {
+					panic(rec)
+				}
 				reqID := RequestIDFromContext(r.Context())
 				logger.Error("panic recovered",
 					zap.String("request_id", reqID),

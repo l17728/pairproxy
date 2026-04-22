@@ -370,7 +370,8 @@ func TestUpdateLLMTarget(t *testing.T) {
 	}
 }
 
-// TestUpdateLLMTarget_ConfigSourced 测试更新配置文件来源的 target（应失败）
+// TestUpdateLLMTarget_ConfigSourced 测试通过 CLI（admin API）更新配置文件来源的 target 应成功。
+// WebUI 禁止修改 config-sourced target，但 CLI 不受限制，允许运维人员强制覆盖。
 func TestUpdateLLMTarget_ConfigSourced(t *testing.T) {
 	handler, gormDB, cleanup := setupLLMTargetHandler(t)
 	defer cleanup()
@@ -414,7 +415,7 @@ func TestUpdateLLMTarget_ConfigSourced(t *testing.T) {
 		t.Fatalf("failed to set is_editable=false: %v", err)
 	}
 
-	// 尝试更新
+	// CLI（admin API）应允许更新 config-sourced target
 	reqBody := map[string]interface{}{
 		"name": "New Name",
 	}
@@ -427,8 +428,8 @@ func TestUpdateLLMTarget_ConfigSourced(t *testing.T) {
 
 	handler.handleUpdateTarget(w, req)
 
-	if w.Code != http.StatusForbidden {
-		t.Errorf("expected status 403, got %d", w.Code)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200 (CLI may update config-sourced targets), got %d: %s", w.Code, w.Body.String())
 	}
 }
 

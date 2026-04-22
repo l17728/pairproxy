@@ -401,8 +401,12 @@ func TestE2E_SeedThenWebUIUpdate_PreservesChanges(t *testing.T) {
 	require.NoError(t, repo.Seed(target))
 
 	// Step 2: Simulate WebUI update — change supported_models
+	// config-sourced targets have IsEditable=false; explicitly unlock via direct DB update
+	// to simulate an admin making the target editable before WebUI modification.
 	existing, err := repo.GetByURL("https://api.anthropic.com")
 	require.NoError(t, err)
+	require.NoError(t, gormDB.Model(existing).Update("is_editable", true).Error)
+	existing.IsEditable = true
 	existing.SupportedModelsJSON = `["gpt-*"]`
 	require.NoError(t, repo.Update(existing))
 

@@ -262,30 +262,24 @@ func TestLLMTargetManagement_CLIRejectConfigSourced(t *testing.T) {
 		t.Fatalf("Upsert config target: %v", err)
 	}
 
-	// 尝试更新（应该失败）
+	// CLI 可以修改和删除 config-sourced target（WebUI 层才拦截）
 	target, err := repo.GetByURL(configTarget.URL)
 	if err != nil {
 		t.Fatalf("GetByURL: %v", err)
 	}
-	target.Name = "Modified Name"
+	target.Name = "Modified via CLI"
 	err = repo.Update(target)
-	if err == nil {
-		t.Error("Expected error when updating config-sourced target, got nil")
-	}
-	if err != nil && err.Error() != "target is not editable (config-sourced)" {
-		t.Errorf("Expected specific error message, got: %v", err)
+	if err != nil {
+		t.Errorf("Expected CLI to be able to update config-sourced target, got: %v", err)
 	}
 
-	// 尝试删除（应该失败）
+	// 删除也应该成功
 	err = repo.Delete(target.ID)
-	if err == nil {
-		t.Error("Expected error when deleting config-sourced target, got nil")
-	}
-	if err != nil && err.Error() != "target is not editable (config-sourced)" {
-		t.Errorf("Expected specific error message, got: %v", err)
+	if err != nil {
+		t.Errorf("Expected CLI to be able to delete config-sourced target, got: %v", err)
 	}
 
-	t.Log("CLI reject config-sourced modification: PASS")
+	t.Log("CLI allow config-sourced modification: PASS")
 }
 
 // ---------------------------------------------------------------------------
@@ -402,13 +396,13 @@ func TestLLMTargetManagement_ConfigChangeRestartSync(t *testing.T) {
 
 	// 模拟配置文件变更（移除一个，添加一个）
 	updatedURLs := []string{
-		"https://api.anthropic.com", // 保留
+		"https://api.anthropic.com",  // 保留
 		"http://ollama2.local:11434", // 新增
 	}
 
 	// 同步更新后的配置
 	keepKeys := make([]db.ConfigTargetKey, 0, len(updatedURLs))
-		for _, url := range updatedURLs {
+	for _, url := range updatedURLs {
 		target := &db.LLMTarget{
 			ID:         uuid.NewString(),
 			URL:        url,
@@ -425,7 +419,7 @@ func TestLLMTargetManagement_ConfigChangeRestartSync(t *testing.T) {
 		if err := repo.Upsert(target); err != nil {
 			t.Fatalf("Upsert updated target: %v", err)
 		}
-		keepKeys = append(keepKeys, db.ConfigTargetKey{URL: url, APIKeyID: &apiKey.ID})
+		keepKeys = append(keepKeys, db.ConfigTargetKey{URL: url})
 	}
 
 	// 删除不在新配置中的 config targets
@@ -688,15 +682,15 @@ func TestLLMTargetManagement_FullLifecycle(t *testing.T) {
 		t.Errorf("Expected 2 targets, got %d", len(targets))
 	}
 
-	// 4. 验证配置文件 target 不可编辑
+	// 4. 验证配置文件 target 可以被 CLI 修改（IsEditable 限制仅在 WebUI 层）
 	// 重新从数据库加载以获取最新状态
 	reloadedConfig, err := repo.GetByURL(configTarget.URL)
 	if err != nil {
 		t.Fatalf("GetByURL: %v", err)
 	}
-	reloadedConfig.Name = "Modified"
-	if err := repo.Update(reloadedConfig); err == nil {
-		t.Error("Expected error when updating config target")
+	reloadedConfig.Name = "Modified via CLI"
+	if err := repo.Update(reloadedConfig); err != nil {
+		t.Errorf("CLI should be able to update config-sourced target: %v", err)
 	}
 
 	// 5. 更新数据库 target

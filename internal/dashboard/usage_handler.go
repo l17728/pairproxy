@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+
+	"github.com/l17728/pairproxy/internal/db"
 )
 
 // dashboardQuotaResponse 配额状态响应（含 remain 字段，供 WebUI 直接使用）
@@ -168,6 +170,125 @@ func (h *Handler) handleDashboardUserHistory(w http.ResponseWriter, r *http.Requ
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(historyResp{History: rows}); err != nil {
 		h.logger.Error("dashboard: encode user history response", zap.Error(err))
+	}
+}
+
+// handleDashboardUserLogs GET /api/dashboard/user-logs?username=xxx&days=7&page=1&page_size=10
+// 返回指定用户最近 N 天的请求日志（分页）。
+func (h *Handler) handleDashboardUserLogs(w http.ResponseWriter, r *http.Request) {
+	username := r.URL.Query().Get("username")
+	if username == "" {
+		writeDashJSONError(w, http.StatusBadRequest, "username is required")
+		return
+	}
+
+	days := 7
+	if d, err := strconv.Atoi(r.URL.Query().Get("days")); err == nil && d > 0 && d <= 365 {
+		days = d
+	}
+
+	pageSize := 10
+	if ps, err := strconv.Atoi(r.URL.Query().Get("page_size")); err == nil {
+		switch ps {
+		case 10, 20, 50:
+			pageSize = ps
+		}
+	}
+
+	page := 1
+	if p, err := strconv.Atoi(r.URL.Query().Get("page")); err == nil && p > 0 {
+		page = p
+	}
+
+	users, err := h.userRepo.ListByUsername(username)
+	if err != nil || len(users) == 0 {
+		writeDashJSONError(w, http.StatusNotFound, "user not found")
+		return
+	}
+	if len(users) > 1 {
+		writeDashJSONError(w, http.StatusConflict, "username matches multiple users; use user_id instead")
+		return
+	}
+	user := &users[0]
+
+	now := time.Now()
+	from := now.AddDate(0, 0, -days)
+
+	filter := db.UsageFilter{
+		UserID: user.ID,
+		From:   &from,
+		To:     &now,
+	}
+
+	total, err := h.usageRepo.CountLogs(filter)
+	if err != nil {
+		h.logger.Error("dashboard: failed to count user logs", zap.Error(err))
+		writeDashJSONError(w, http.StatusInternalServerError, "failed to count logs")
+		return
+	}
+
+	totalPages := int((total + int64(pageSize) - 1) / int64(pageSize))
+	if totalPages == 0 {
+		totalPages = 1
+	}
+	if page > totalPages {
+		page = totalPages
+	}
+
+	filter.Limit = pageSize
+	filter.Offset = (page - 1) * pageSize
+
+	logs, err := h.usageRepo.Query(filter)
+	if err != nil {
+		h.logger.Error("dashboard: failed to query user logs", zap.Error(err))
+		writeDashJSONError(w, http.StatusInternalServerError, "failed to query logs")
+		return
+	}
+
+	type logEntry struct {
+		CreatedAt    string  `json:"created_at"`
+		Model        string  `json:"model"`
+		ActualModel  string  `json:"actual_model"`
+		InputTokens  int     `json:"input_tokens"`
+		OutputTokens int     `json:"output_tokens"`
+		CostUSD      float64 `json:"cost_usd"`
+		StatusCode   int     `json:"status_code"`
+		IsStreaming  bool    `json:"is_streaming"`
+		DurationMs   int64   `json:"duration_ms"`
+	}
+
+	entries := make([]logEntry, 0, len(logs))
+	for _, l := range logs {
+		entries = append(entries, logEntry{
+			CreatedAt:    l.CreatedAt.Local().Format("2006-01-02 15:04:05"),
+			Model:        l.Model,
+			ActualModel:  l.ActualModel,
+			InputTokens:  l.InputTokens,
+			OutputTokens: l.OutputTokens,
+			CostUSD:      l.CostUSD,
+			StatusCode:   l.StatusCode,
+			IsStreaming:  l.IsStreaming,
+			DurationMs:   l.DurationMs,
+		})
+	}
+
+	type resp struct {
+		Logs       []logEntry `json:"logs"`
+		Total      int64      `json:"total"`
+		Page       int        `json:"page"`
+		PageSize   int        `json:"page_size"`
+		TotalPages int        `json:"total_pages"`
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(resp{
+		Logs:       entries,
+		Total:      total,
+		Page:       page,
+		PageSize:   pageSize,
+		TotalPages: totalPages,
+	}); err != nil {
+		h.logger.Error("dashboard: encode user logs response", zap.Error(err))
 	}
 }
 

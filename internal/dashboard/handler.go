@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -130,6 +131,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/dashboard/active-users", h.requireSession(http.HandlerFunc(h.handleDashboardActiveUsers)))
 	mux.Handle("GET /api/dashboard/user-quota", h.requireSession(http.HandlerFunc(h.handleDashboardUserQuota)))
 	mux.Handle("GET /api/dashboard/user-history", h.requireSession(http.HandlerFunc(h.handleDashboardUserHistory)))
+	mux.Handle("GET /api/dashboard/user-logs", h.requireSession(http.HandlerFunc(h.handleDashboardUserLogs)))
 
 	// 需要 session + 可写节点（写操作）
 	mux.Handle("POST /dashboard/users", rw(http.HandlerFunc(h.handleCreateUser)))
@@ -481,6 +483,7 @@ func (h *Handler) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/dashboard/users?error=创建失败，用户名可能已存在", http.StatusFound)
 		return
 	}
+	h.invalidateUserStatsCache()
 	h.logger.Info("dashboard: user created", zap.String("username", username))
 	if detailBytes, jerr := json.Marshal(map[string]interface{}{"group_id": groupID, "is_active": true}); jerr == nil {
 		if aerr := h.auditRepo.Create("admin", "user.create", username, string(detailBytes)); aerr != nil {
@@ -501,6 +504,7 @@ func (h *Handler) handleToggleActive(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/dashboard/users?error=操作失败", http.StatusFound)
 		return
 	}
+	h.invalidateUserStatsCache()
 	if detailBytes, jerr := json.Marshal(map[string]bool{"active": active}); jerr == nil {
 		if aerr := h.auditRepo.Create("admin", "user.set_active", id, string(detailBytes)); aerr != nil {
 			h.logger.Warn("audit write failed", zap.Error(aerr))
@@ -555,6 +559,7 @@ func (h *Handler) handleSetUserGroup(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/dashboard/users?error=更新分组失败", http.StatusFound)
 		return
 	}
+	h.invalidateUserStatsCache()
 	h.logger.Info("dashboard: user group updated", zap.String("user_id", id), zap.Any("group_id", groupID))
 	if detailBytes, jerr := json.Marshal(map[string]interface{}{"group_id": groupID}); jerr == nil {
 		if aerr := h.auditRepo.Create("admin", "user.set_group", id, string(detailBytes)); aerr != nil {
@@ -902,6 +907,7 @@ func (h *Handler) handleMyUsagePage(w http.ResponseWriter, r *http.Request) {
 type userStatsResponse struct {
 	UserID       string `json:"user_id"`
 	Username     string `json:"username"`
+	GroupID      string `json:"group_id"`   // 空字符串表示无分组
 	GroupName    string `json:"group_name"`
 	TotalInput   int64  `json:"total_input"`
 	TotalOutput  int64  `json:"total_output"`
@@ -915,69 +921,61 @@ type userStatsResponse struct {
 	IsActive     bool   `json:"is_active"`
 }
 
+// userStatsPageResponse 带分页信息的用户统计响应体
+type userStatsPageResponse struct {
+	Total      int                `json:"total"`
+	Page       int                `json:"page"`
+	PageSize   int                `json:"page_size"`
+	TotalPages int                `json:"total_pages"`
+	Users      []userStatsResponse `json:"users"`
+}
+
 const userStatsCacheTTL = 5 * time.Minute
 
-// handleUserStats 返回所有用户的历史累计 Token 用量统计（JSON）。
-// 结果缓存 5 分钟，减少重复的全表聚合查询。
-// 携带 ?_=<任意值> 时强制穿透缓存（对应前端"刷新统计"按钮）。
-func (h *Handler) handleUserStats(w http.ResponseWriter, r *http.Request) {
-	forceRefresh := r.URL.Query().Has("_")
+// invalidateUserStatsCache 清除用户统计缓存，使下次请求强制重新查询 DB。
+func (h *Handler) invalidateUserStatsCache() {
+	h.userStatsCacheMu.Lock()
+	defer h.userStatsCacheMu.Unlock()
+	h.userStatsCacheVal = nil
+	h.userStatsCacheExp = time.Time{}
+}
 
-	// 尝试缓存命中（强制刷新时跳过）
+// getFullUserStats 从缓存或 DB 获取全量用户统计列表。
+// forceRefresh=true 时穿透缓存重新查询。
+func (h *Handler) getFullUserStats(forceRefresh bool) ([]userStatsResponse, error) {
 	if !forceRefresh {
 		h.userStatsCacheMu.Lock()
 		if h.userStatsCacheVal != nil && time.Now().Before(h.userStatsCacheExp) {
 			cached := h.userStatsCacheVal
 			h.userStatsCacheMu.Unlock()
 			h.logger.Debug("user stats cache hit")
-			w.Header().Set("Content-Type", "application/json")
-			if err := json.NewEncoder(w).Encode(cached); err != nil {
-				h.logger.Error("failed to encode user stats (cached)", zap.Error(err))
-			}
-			return
+			return cached, nil
 		}
 		h.userStatsCacheMu.Unlock()
 	}
 
-	// 查询 DB
 	usageStats, err := h.usageRepo.GetUserAllTimeStats()
 	if err != nil {
-		h.logger.Error("failed to get user all-time stats", zap.Error(err))
-		http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
-		return
+		return nil, fmt.Errorf("get usage stats: %w", err)
 	}
-
-	// 获取全量用户信息（含 Group 预加载）
 	users, err := h.userRepo.ListByGroup("")
 	if err != nil {
-		h.logger.Error("failed to list users", zap.Error(err))
-		http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
-		return
+		return nil, fmt.Errorf("list users: %w", err)
 	}
 
-	// 构建 user_id → User 映射
-	userMap := make(map[string]*db.User, len(users))
-	for i := range users {
-		userMap[users[i].ID] = &users[i]
-	}
-
-	// 构建 user_id → stat 映射（db 返回的是有用量记录的用户）
 	statMap := make(map[string]db.UserAllTimeStat, len(usageStats))
 	for _, s := range usageStats {
 		statMap[s.UserID] = s
 	}
 
-	// 合并：遍历所有用户，无用量记录的用零值填充
 	resp := make([]userStatsResponse, 0, len(users))
 	for _, u := range users {
-		stat := statMap[u.ID] // 零值安全
+		stat := statMap[u.ID]
 
 		var avgDaily, avgMonthly int64
 		if stat.DaysActive > 0 {
 			avgDaily = stat.TotalTokens / int64(stat.DaysActive)
 		}
-		// MonthsActive 由 SQL CAST(days/30 AS INTEGER) 计算，不足 30 天时为 0。
-		// 用 max(1, MonthsActive) 作除数，确保新用户也能显示有意义的月均值。
 		months := stat.MonthsActive
 		if months < 1 {
 			months = 1
@@ -994,14 +992,17 @@ func (h *Handler) handleUserStats(w http.ResponseWriter, r *http.Request) {
 			lastUsed = stat.LastUsedAt.Format("2006-01-02")
 		}
 
+		groupID := ""
 		groupName := ""
-		if u.GroupID != nil && u.Group.Name != "" {
+		if u.GroupID != nil {
+			groupID = *u.GroupID
 			groupName = u.Group.Name
 		}
 
 		resp = append(resp, userStatsResponse{
 			UserID:       u.ID,
 			Username:     u.Username,
+			GroupID:      groupID,
 			GroupName:    groupName,
 			TotalInput:   stat.TotalInput,
 			TotalOutput:  stat.TotalOutput,
@@ -1016,13 +1017,141 @@ func (h *Handler) handleUserStats(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// 写入缓存
 	h.userStatsCacheMu.Lock()
 	h.userStatsCacheVal = resp
 	h.userStatsCacheExp = time.Now().Add(userStatsCacheTTL)
 	h.userStatsCacheMu.Unlock()
 
 	h.logger.Debug("user stats cache refreshed", zap.Int("users", len(resp)))
+	return resp, nil
+}
+
+// handleUserStats 返回分页+过滤+排序后的用户统计列表（JSON）。
+//
+// 查询参数：
+//   - page       int    页码（默认 1）
+//   - page_size  int    每页条数（默认 20，最大 200）
+//   - username   string 用户名模糊过滤（不区分大小写，空表示不过滤）
+//   - group_id   string 分组 ID 精确过滤（空表示不过滤）
+//   - sort_by    string 排序字段（默认 total_tokens）
+//   - sort_order string asc|desc（默认 desc）
+//   - _          any    携带此参数时强制穿透缓存
+func (h *Handler) handleUserStats(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	forceRefresh := q.Has("_")
+
+	// 分页参数
+	page := 1
+	pageSize := 20
+	if v := q.Get("page"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil && p > 0 {
+			page = p
+		}
+	}
+	if v := q.Get("page_size"); v != "" {
+		if ps, err := strconv.Atoi(v); err == nil && ps > 0 && ps <= 200 {
+			pageSize = ps
+		}
+	}
+
+	// 过滤参数
+	usernameFilter := strings.ToLower(q.Get("username"))
+	groupIDFilter := q.Get("group_id")
+
+	// 排序参数
+	sortBy := q.Get("sort_by")
+	sortOrder := q.Get("sort_order")
+	validSortFields := map[string]bool{
+		"username": true, "group_name": true,
+		"total_input": true, "total_output": true, "total_tokens": true,
+		"avg_daily": true, "avg_monthly": true,
+		"first_used_at": true, "last_used_at": true,
+	}
+	if !validSortFields[sortBy] {
+		sortBy = "total_tokens"
+	}
+	if sortOrder != "asc" {
+		sortOrder = "desc"
+	}
+
+	// 获取全量缓存数据
+	all, err := h.getFullUserStats(forceRefresh)
+	if err != nil {
+		h.logger.Error("failed to get user stats", zap.Error(err))
+		http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
+		return
+	}
+
+	// 过滤：始终构建新切片，避免对缓存底层数组的 in-place 排序
+	filtered := make([]userStatsResponse, 0, len(all))
+	for _, s := range all {
+		if usernameFilter != "" && !strings.Contains(strings.ToLower(s.Username), usernameFilter) {
+			continue
+		}
+		if groupIDFilter != "" && s.GroupID != groupIDFilter {
+			continue
+		}
+		filtered = append(filtered, s)
+	}
+
+	// 排序（在过滤后的独立切片上，不影响缓存）
+	sort.SliceStable(filtered, func(i, j int) bool {
+		a, b := filtered[i], filtered[j]
+		var less bool
+		switch sortBy {
+		case "username":
+			less = strings.ToLower(a.Username) < strings.ToLower(b.Username)
+		case "group_name":
+			less = strings.ToLower(a.GroupName) < strings.ToLower(b.GroupName)
+		case "total_input":
+			less = a.TotalInput < b.TotalInput
+		case "total_output":
+			less = a.TotalOutput < b.TotalOutput
+		case "avg_daily":
+			less = a.AvgDaily < b.AvgDaily
+		case "avg_monthly":
+			less = a.AvgMonthly < b.AvgMonthly
+		case "first_used_at":
+			less = a.FirstUsedAt < b.FirstUsedAt
+		case "last_used_at":
+			less = a.LastUsedAt < b.LastUsedAt
+		default: // total_tokens
+			less = a.TotalTokens < b.TotalTokens
+		}
+		if sortOrder == "asc" {
+			return less
+		}
+		return !less
+	})
+
+	// 分页
+	total := len(filtered)
+	totalPages := (total + pageSize - 1) / pageSize
+	if totalPages == 0 {
+		totalPages = 1
+	}
+	if page > totalPages {
+		page = totalPages
+	}
+	start := (page - 1) * pageSize
+	end := start + pageSize
+	if end > total {
+		end = total
+	}
+	var pageUsers []userStatsResponse
+	if start < total {
+		pageUsers = filtered[start:end]
+	} else {
+		pageUsers = []userStatsResponse{}
+	}
+
+	resp := userStatsPageResponse{
+		Total:      total,
+		Page:       page,
+		PageSize:   pageSize,
+		TotalPages: totalPages,
+		Users:      pageUsers,
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(resp); err != nil {

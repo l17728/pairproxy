@@ -7,6 +7,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/l17728/pairproxy/internal/keygen"
+	"github.com/l17728/pairproxy/internal/quota"
 )
 
 // DirectServer 是 DirectProxyHandler 依赖的代理接口，由 *SProxy 实现。
@@ -40,12 +41,16 @@ type DirectProxyHandler struct {
 //   - server: *SProxy（实现 DirectServer 接口）
 //   - users: ActiveUserLister（*db.UserRepo 通过适配器实现）
 //   - cache: *keygen.KeyCache（可为 nil）
+//   - legacySecret: 旧版共享 keygen_secret 原始字节（可为 nil）；非 nil 时作为
+//     per-user 校验的兜底，保证从旧版迁移时已分发的 Key 仍可使用
+//   - quotaChecker: 配额检查器（可为 nil，nil 时跳过配额检查）
 func NewDirectProxyHandler(
 	logger *zap.Logger,
 	server DirectServer,
 	users ActiveUserLister,
 	cache *keygen.KeyCache,
-	keygenSecret string,
+	legacySecret []byte,
+	quotaChecker *quota.Checker,
 ) *DirectProxyHandler {
 	log := logger.Named("direct_proxy")
 
@@ -71,9 +76,20 @@ func NewDirectProxyHandler(
 		server.ServeDirect(w, r)
 	})
 
-	// 组装中间件链（从内到外）：core → KeyAuth → RequestID → Recovery
+	// 组装中间件链（从内到外）：core → [Quota] → KeyAuth → RequestID → Recovery
 	buildChain := func(core http.Handler) http.Handler {
-		withAuth := NewKeyAuthMiddleware(log, users, cache, keygenSecret, core)
+		inner := core
+		// QuotaMiddleware 插在 KeyAuth 之后（context 中已有 claims）、core 之前
+		if quotaChecker != nil {
+			quotaMW := quota.NewMiddleware(log, quotaChecker, func(r *http.Request) string {
+				if claims := ClaimsFromContext(r.Context()); claims != nil {
+					return claims.UserID
+				}
+				return ""
+			})
+			inner = quotaMW(core)
+		}
+		withAuth := NewKeyAuthMiddleware(log, users, cache, inner, legacySecret)
 		withReqID := RequestIDMiddleware(log, withAuth)
 		return RecoveryMiddleware(log, withReqID)
 	}

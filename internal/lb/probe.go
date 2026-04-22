@@ -121,8 +121,8 @@ var builtinProbeMethods = []*ProbeMethod{
 	},
 	// 2. OpenAI 兼容 /v1/models — OpenAI、火山、腾讯、小米等
 	{
-		Name:       "GET /v1/models",
-		Path:       "/v1/models",
+		Name:       "GET /models",
+		Path:       "/models",
 		HTTPMethod: http.MethodGet,
 		// 401/403 说明服务在线但认证缺失；需认证时 200；均视为"服务可达"
 		OKStatuses: map[int]bool{

@@ -1,4 +1,4 @@
-# Reportgen Bug 修复总结 (v2.24.4)
+# Reportgen Bug 修复总结 (v3.0.0)
 
 ## 修复日期: 2026-04-09
 

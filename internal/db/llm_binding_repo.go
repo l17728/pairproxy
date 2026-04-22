@@ -31,6 +31,13 @@ func (r *LLMBindingRepo) Set(targetID string, userID, groupID *string) error {
 		return fmt.Errorf("llm_binding: userID and groupID cannot both be nil")
 	}
 
+	// 查 target URL 冗余写入（便于直接读库）；找不到时回退用 targetID 本身（URL-as-ID 场景）
+	targetURL := targetID
+	var tgt LLMTarget
+	if err := r.db.Where("id = ?", targetID).First(&tgt).Error; err == nil {
+		targetURL = tgt.URL
+	}
+
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		// 删除已有的同维度绑定
 		if userID != nil {
@@ -47,6 +54,7 @@ func (r *LLMBindingRepo) Set(targetID string, userID, groupID *string) error {
 		b := &LLMBinding{
 			ID:        uuid.NewString(),
 			TargetID:  targetID,
+			TargetURL: targetURL,
 			UserID:    userID,
 			GroupID:   groupID,
 			CreatedAt: time.Now(),
@@ -173,14 +181,28 @@ func (r *LLMBindingRepo) EvenDistribute(userIDs []string, targetIDs []string) er
 		zap.Int("to_assign", len(toAssign)),
 	)
 
+	// 批量查 targetID → URL（冗余写入）
+	targetURLMap := make(map[string]string, len(targetIDs))
+	var tgts []LLMTarget
+	if err := r.db.Where("id IN ?", targetIDs).Find(&tgts).Error; err == nil {
+		for _, t := range tgts {
+			targetURLMap[t.ID] = t.URL
+		}
+	}
+
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		now := time.Now()
 		for i, uid := range toAssign {
 			targetID := targetIDs[i%len(targetIDs)]
+			targetURL := targetURLMap[targetID]
+			if targetURL == "" {
+				targetURL = targetID // URL-as-ID 兜底
+			}
 			uidCopy := uid
 			b := &LLMBinding{
 				ID:        uuid.NewString(),
 				TargetID:  targetID,
+				TargetURL: targetURL,
 				UserID:    &uidCopy,
 				CreatedAt: now,
 			}

@@ -256,6 +256,14 @@ func applySProxyDefaults(cfg *SProxyFullConfig) {
 	if cfg.Log.Level == "" {
 		cfg.Log.Level = "info"
 	}
+	// Track 对话跟踪默认值：优先从 database.path 推导，peer/postgres 模式下退化为 ./track
+	if cfg.Track.Dir == "" {
+		if cfg.Database.Path != "" {
+			cfg.Track.Dir = filepath.Join(filepath.Dir(cfg.Database.Path), "track")
+		} else {
+			cfg.Track.Dir = "./track"
+		}
+	}
 	// Corpus 语料采集默认值
 	if cfg.Corpus.Path == "" {
 		cfg.Corpus.Path = "./corpus/"

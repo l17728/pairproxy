@@ -111,18 +111,45 @@ func (c *Checker) Check(ctx context.Context, userID string) error {
 		return nil
 	}
 
-	// 仅当有 token 限额时才查 DB 用量
+	// 1. 优先检查 RPM（不依赖 DB，不受 DB 错误影响）
+	// RPM 必须先于 token 配额检查，否则当 DB 故障 fail-open 时 RPM 也会被跳过。
+	if group.RequestsPerMinute != nil && c.rateLimiter != nil {
+		rpm := *group.RequestsPerMinute
+		if rpm > 0 {
+			if allowed, count := c.rateLimiter.Allow(userID, rpm); !allowed {
+				resetAt := c.rateLimiter.ResetAt(userID)
+				c.logger.Warn("request rate limit exceeded",
+					zap.String("user_id", userID),
+					zap.Int("count", count),
+					zap.Int("limit", rpm),
+				)
+				c.notify(alert.EventRateLimited, "request rate limit exceeded", userID, map[string]string{
+					"count": fmt.Sprintf("%d", count),
+					"limit": fmt.Sprintf("%d", rpm),
+				})
+				span.SetAttributes(attribute.String("result", "exceeded"), attribute.String("kind", "rate_limit"))
+				return &ExceededError{
+					Kind:    "rate_limit",
+					Current: int64(count),
+					Limit:   int64(rpm),
+					ResetAt: resetAt,
+				}
+			}
+		}
+	}
+
+	// 2. 检查 token 配额（需要查 DB，DB 错误时 fail-open）
 	var daily, monthly int64
 	if group.DailyTokenLimit != nil || group.MonthlyTokenLimit != nil {
 		var err error
 		daily, monthly, err = c.getUsage(userID)
 		if err != nil {
-			c.logger.Warn("quota check: failed to get usage, bypassing",
+			c.logger.Warn("quota check: failed to get usage, bypassing token quota",
 				zap.String("user_id", userID),
 				zap.Error(err),
 			)
 			span.SetAttributes(attribute.String("result", "bypass_error"))
-			return nil // fail-open
+			return nil // fail-open：DB 故障不阻断请求，但 RPM 已在上面检查
 		}
 		c.logger.Debug("quota check",
 			zap.String("user_id", userID),
@@ -175,32 +202,6 @@ func (c *Checker) Check(ctx context.Context, userID string) error {
 			Current: monthly,
 			Limit:   *group.MonthlyTokenLimit,
 			ResetAt: resetAt,
-		}
-	}
-
-	// 检查每分钟请求频率（RPM）
-	if group.RequestsPerMinute != nil && c.rateLimiter != nil {
-		rpm := *group.RequestsPerMinute
-		if rpm > 0 {
-			if allowed, count := c.rateLimiter.Allow(userID, rpm); !allowed {
-				resetAt := c.rateLimiter.ResetAt(userID)
-				c.logger.Warn("request rate limit exceeded",
-					zap.String("user_id", userID),
-					zap.Int("count", count),
-					zap.Int("limit", rpm),
-				)
-				c.notify(alert.EventRateLimited, "request rate limit exceeded", userID, map[string]string{
-					"count": fmt.Sprintf("%d", count),
-					"limit": fmt.Sprintf("%d", rpm),
-				})
-				span.SetAttributes(attribute.String("result", "exceeded"), attribute.String("kind", "rate_limit"))
-				return &ExceededError{
-					Kind:    "rate_limit",
-					Current: int64(count),
-					Limit:   int64(rpm),
-					ResetAt: resetAt,
-				}
-			}
 		}
 	}
 
@@ -298,6 +299,8 @@ func (c *Checker) PurgeRateLimiter() {
 }
 
 // getUsage 返回用户今日和本月的 token 用量（缓存优先）。
+// 注意：所有时间边界必须使用 UTC，与数据库存储格式保持一致。
+// 使用本地时区会导致日期边界偏移（例如 UTC+8 服务器上每日统计窗口错误 8 小时）。
 func (c *Checker) getUsage(userID string) (daily, monthly int64, err error) {
 	if entry := c.cache.get(userID); entry != nil {
 		c.logger.Debug("quota cache hit",
@@ -308,9 +311,10 @@ func (c *Checker) getUsage(userID string) (daily, monthly int64, err error) {
 		return entry.dailyUsed, entry.monthlyUsed, nil
 	}
 	c.logger.Debug("quota cache miss, querying DB", zap.String("user_id", userID))
-	now := time.Now()
-	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+	// 必须使用 UTC：DB 中 created_at 存储为 UTC，本地时区会导致 dayStart/monthStart 与 DB 时区不一致
+	now := time.Now().UTC()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 
 	dailyIn, dailyOut, err := c.usageRepo.SumTokens(userID, dayStart, now)
 	if err != nil {

@@ -25,10 +25,12 @@ func (d *DBUserLister) ListActive() ([]keygen.UserEntry, error) {
 	entries := make([]keygen.UserEntry, 0, len(users))
 	for _, u := range users {
 		entries = append(entries, keygen.UserEntry{
-			ID:       u.ID,
-			Username: u.Username,
-			IsActive: u.IsActive,
-			GroupID:  u.GroupID,
+			ID:               u.ID,
+			Username:         u.Username,
+			PasswordHash:     u.PasswordHash,
+			IsActive:         u.IsActive,
+			GroupID:          u.GroupID,
+			LegacyKeyRevoked: u.LegacyKeyRevoked,
 		})
 	}
 	return entries, nil

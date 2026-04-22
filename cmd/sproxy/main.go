@@ -433,6 +433,11 @@ func runStart(cmd *cobra.Command, args []string) error {
 		sp.SetMaxRetries(cfg.LLM.MaxRetries)
 		sp.SetRetryOnStatus(cfg.LLM.RetryOnStatus)
 
+		// sp.targets 在 newSProxy 时来自 config（ID 均为 ""）。
+		// SyncLLMTargets 从 DB 重新加载，将 sp.targets 更新为带 UUID 的版本，
+		// 保证 llmTargetInfoForID 在首次请求时即可通过 UUID 命中正确的 target/APIKey。
+		sp.SyncLLMTargets()
+
 		logger.Info("LLM balancer configured",
 			zap.Int("targets", len(lbLLMTargets)),
 			zap.Int("max_retries", cfg.LLM.MaxRetries),
@@ -451,9 +456,18 @@ func runStart(cmd *cobra.Command, args []string) error {
 	usageRepo := db.NewUsageRepo(database, logger)
 	groupRepo := db.NewGroupRepo(database, logger)
 	auditRepo := db.NewAuditRepo(logger, database) // P2-3: 审计日志仓库
-	quotaCache := quota.NewQuotaCache(60 * time.Second)
+	// 缓存 TTL 设为 10s（与 UsageWriter flush 间隔 5s 同量级）：
+	// 配额缓存的主要作用是减少 DB 查询；TTL 过长（如 60s）会导致用户在配额耗尽后
+	// 仍可继续发送请求长达 TTL 秒，造成超额使用。
+	quotaCache := quota.NewQuotaCache(10 * time.Second)
 	quotaChecker := quota.NewChecker(logger, userRepo, usageRepo, quotaCache)
 	sp.SetQuotaChecker(quotaChecker)
+	// 用量批量写入 DB 后立即失效相关用户的配额缓存，确保下次请求读到最新用量
+	writer.SetOnFlush(func(userIDs []string) {
+		for _, uid := range userIDs {
+			quotaChecker.InvalidateCache(uid)
+		}
+	})
 	logger.Info("quota checker enabled")
 
 	// P1-4: 设置 DB 连接供 /health 端点 ping 检查
@@ -620,6 +634,49 @@ func runStart(cmd *cobra.Command, args []string) error {
 	llmTargetRepo := db.NewLLMTargetRepo(database, logger)
 	logger.Info("LLM target repo configured")
 
+	// Peer 模式：轮询 llm_targets.updated_at，感知 CLI 或其他节点写入的变更并同步到内存
+	// 轮询间隔与心跳间隔一致（默认 30s），延迟可接受（运维操作场景）
+	if isPeerMode {
+		pollInterval := cfg.Cluster.ReportInterval
+		if pollInterval <= 0 {
+			pollInterval = 30 * time.Second
+		}
+		go func() {
+			// 以当前最大 updated_at 为基准，避免启动时重复触发一次 sync
+			lastSeen, err := llmTargetRepo.MaxUpdatedAt()
+			if err != nil {
+				logger.Warn("peer mode target poll: failed to get initial max updated_at, will sync on first tick",
+					zap.Error(err))
+			}
+			ticker := time.NewTicker(pollInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					latest, err := llmTargetRepo.MaxUpdatedAt()
+					if err != nil {
+						logger.Warn("peer mode target poll: failed to query max updated_at",
+							zap.Error(err))
+						continue
+					}
+					if latest.After(lastSeen) {
+						logger.Info("peer mode target poll: detected llm_targets change, syncing",
+							zap.Time("prev", lastSeen),
+							zap.Time("latest", latest),
+						)
+						sp.SyncLLMTargets()
+						lastSeen = latest
+					}
+				}
+			}
+		}()
+		logger.Info("peer mode target poll started",
+			zap.Duration("interval", pollInterval),
+		)
+	}
+
 	// 排水控制函数
 	adminHandler.SetDrainFunctions(sp.Drain, sp.Undrain, sp.GetDrainStatus)
 	logger.Info("drain control functions configured")
@@ -640,7 +697,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 	// 用户对话内容跟踪：基于文件系统标记文件，通过 sproxy admin track 命令管理
 	{
-		trackDir := filepath.Join(filepath.Dir(cfg.Database.Path), "track")
+		trackDir := cfg.Track.Dir
 		if t, tErr := track.New(trackDir); tErr != nil {
 			logger.Warn("failed to init conversation tracker, tracking disabled",
 				zap.String("track_dir", trackDir),
@@ -708,7 +765,10 @@ func runStart(cmd *cobra.Command, args []string) error {
 		logger, jwtMgr, llmTargetRepo, auditRepo,
 		cfg.Admin.PasswordHash, adminTokenTTL,
 	)
-	llmTargetHandler.SetSyncFn(sp.SyncLLMTargets)
+	// peer 模式下各节点由轮询统一感知变更，不在本节点立即 sync（避免各节点生效时间不一致）
+	if !isPeerMode {
+		llmTargetHandler.SetSyncFn(sp.SyncLLMTargets)
+	}
 	llmTargetHandler.RegisterRoutes(mux, adminHandler.RequireAdmin, adminHandler.RequireWritableNode)
 	logger.Info("LLM target API registered at /api/admin/llm/targets")
 
@@ -907,7 +967,10 @@ func runStart(cmd *cobra.Command, args []string) error {
 		)
 		dashHandler.SetLLMDeps(llmBindingRepo, sp.LLMTargetStatuses)
 		dashHandler.SetLLMTargetRepo(llmTargetRepo)
-		dashHandler.SetLLMSyncFn(sp.SyncLLMTargets)
+		// peer 模式下各节点由轮询统一感知变更，不在本节点立即 sync（避免各节点生效时间不一致）
+		if !isPeerMode {
+			dashHandler.SetLLMSyncFn(sp.SyncLLMTargets)
+		}
 		dashHandler.SetAPIKeyRepo(apiKeyRepo)
 		dashHandler.SetTokenRepo(tokenRepo)
 		dashHandler.SetDrainFunctions(sp.Drain, sp.Undrain, sp.GetDrainStatus)
@@ -946,8 +1009,14 @@ func runStart(cmd *cobra.Command, args []string) error {
 	}
 
 	// 构建用户查询适配器和直连处理器（在此预构建 handler）
+	// legacySecret：旧版系统用 keygen_secret 原始值派生 Key，新版改为 per-user PasswordHash。
+	// 若配置中仍有 keygen_secret（>= 32 字节），将其作为兜底校验密钥，保证旧 Key 继续有效。
+	var legacyKeygenSecret []byte
+	if len(cfg.Auth.KeygenSecret) >= 32 {
+		legacyKeygenSecret = []byte(cfg.Auth.KeygenSecret)
+	}
 	dbUserLister := proxy.NewDBUserLister(userRepo)
-	directHandler := proxy.NewDirectProxyHandler(logger, sp, dbUserLister, apiKeyCache, cfg.Auth.KeygenSecret)
+	directHandler := proxy.NewDirectProxyHandler(logger, sp, dbUserLister, apiKeyCache, legacyKeygenSecret, quotaChecker)
 	openAIDirectHandler := directHandler.HandlerOpenAI()
 	anthropicDirectHandler := directHandler.HandlerAnthropic()
 
@@ -967,9 +1036,15 @@ func runStart(cmd *cobra.Command, args []string) error {
 			proxyHandler.ServeHTTP(w, r)
 			return
 		}
-		// 直连模式：sk-pp- API Key（OpenAI 格式）
 		authVal := r.Header.Get("Authorization")
+		// 直连模式：sk-pp- API Key（OpenAI 格式 Bearer 头）
 		if strings.HasPrefix(authVal, "Bearer sk-pp-") {
+			openAIDirectHandler.ServeHTTP(w, r)
+			return
+		}
+		// 直连模式：sk-pp- API Key（Anthropic 格式 x-api-key 头）
+		// KeyAuthMiddleware 的 extractDirectAPIKey 支持 x-api-key，此处路由同步处理。
+		if apiKeyHdr := r.Header.Get("x-api-key"); strings.HasPrefix(apiKeyHdr, "sk-pp-") {
 			openAIDirectHandler.ServeHTTP(w, r)
 			return
 		}
@@ -983,7 +1058,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 		w.WriteHeader(http.StatusUnauthorized)
 		_ = json.NewEncoder(w).Encode(map[string]string{
 			"error":   "missing_auth",
-			"message": "X-PairProxy-Auth (cproxy) or Authorization: Bearer sk-pp-... (direct) required",
+			"message": "provide X-PairProxy-Auth (cproxy), Authorization: Bearer sk-pp-... or x-api-key: sk-pp-... (direct)",
 		})
 		logger.Warn("v1 route: no valid auth header",
 			zap.String("path", r.URL.Path),
@@ -993,7 +1068,11 @@ func runStart(cmd *cobra.Command, args []string) error {
 	logger.Info("hybrid route registered", zap.String("path", "/v1/"), zap.String("modes", "cproxy+direct"))
 
 	// Key 生成 WebUI（用户自助服务）
-	keygenAPIHandler := api.NewKeygenHandler(logger, userRepo, jwtMgr, cfg.Auth.KeygenSecret)
+	adminHandler.SetKeyCache(apiKeyCache)     // 密码重置后立即踢出旧 API Key 缓存
+	keygenAPIHandler := api.NewKeygenHandler(logger, userRepo, jwtMgr)
+	keygenAPIHandler.SetKeyCache(apiKeyCache) // 改密后立即踢出旧 Key 缓存
+	keygenAPIHandler.SetUsageRepo(usageRepo)  // 用量中心数据接口
+	keygenAPIHandler.SetGroupRepo(groupRepo)  // 配额限制查询
 	keygenAPIHandler.SetWorkerMode(isWorker)
 	keygenAPIHandler.RegisterRoutes(mux)
 	logger.Info("keygen WebUI registered at /keygen/")
@@ -1236,36 +1315,19 @@ func auditCLI(gormDB *gorm.DB, logger *zap.Logger, action, target, detail string
 }
 
 // resolveTargetID 将 URL 或 UUID 字符串解析为 LLM target UUID。
-// 若输入已是 UUID，直接返回；否则按 URL 查找。
-// 当 URL 对应多条记录（同 URL 多 APIKey）时，返回错误并列出所有匹配的 UUID，
-// 要求调用方改用 UUID 明确指定目标。
+// 若输入已是 UUID，直接返回；否则按 URL 查找（URL 现为全局唯一）。
 func resolveTargetID(repo *db.LLMTargetRepo, urlOrID string) (string, error) {
 	// 先尝试按 ID 查
 	t, err := repo.GetByID(urlOrID)
 	if err == nil && t != nil {
 		return t.ID, nil
 	}
-	// 再按 URL 查（可能有多条）
-	matches, err := repo.ListByURL(urlOrID)
+	// 再按 URL 查（URL 现为全局唯一）
+	match, err := repo.GetByURL(urlOrID)
 	if err != nil {
-		return "", fmt.Errorf("target lookup failed: %w", err)
-	}
-	switch len(matches) {
-	case 0:
 		return "", fmt.Errorf("target not found: %s", urlOrID)
-	case 1:
-		return matches[0].ID, nil
-	default:
-		// 多条：URL 对应多个不同 APIKey，需要用 UUID 明确指定
-		ids := make([]string, len(matches))
-		for i, m := range matches {
-			ids[i] = m.ID
-		}
-		return "", fmt.Errorf(
-			"URL %q matches %d targets (multiple API keys configured for this URL).\n"+
-				"Please use a UUID to specify the target:\n  %s",
-			urlOrID, len(matches), strings.Join(ids, "\n  "))
 	}
+	return match.ID, nil
 }
 
 // resolveUser 按用户名查找用户；在混合认证场景下若同名用户存在于多个 provider 则返回错误，
@@ -2758,7 +2820,7 @@ var adminApikeyAddCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("encrypt key: %w", err)
 		}
-		key, err := repo.Create(name, encrypted, apikeyAddProvider)
+		key, err := repo.Create(name, encrypted, apikeyAddProvider, "aes")
 		if err != nil {
 			return fmt.Errorf("create api key: %w", err)
 		}
@@ -3148,18 +3210,16 @@ var adminLLMDistributeCmd = &cobra.Command{
 			return fmt.Errorf("no LLM targets configured in %s", cfgPath)
 		}
 
-		// 解析 URL → UUID（通过 DB）。同一 URL 可能有多个 APIKey，全部展开。
+		// 解析 URL → UUID（通过 DB）。URL 现为全局唯一，每个 URL 对应至多一条记录。
 		llmTargetRepo := db.NewLLMTargetRepo(database, logger)
 		var targetIDs []string
 		for _, url := range targetURLs {
-			matches, err := llmTargetRepo.ListByURL(url)
-			if err != nil || len(matches) == 0 {
+			match, err := llmTargetRepo.GetByURL(url)
+			if err != nil || match == nil {
 				logger.Warn("target not found in DB, skipping", zap.String("url", url))
 				continue
 			}
-			for _, m := range matches {
-				targetIDs = append(targetIDs, m.ID)
-			}
+			targetIDs = append(targetIDs, match.ID)
 		}
 		if len(targetIDs) == 0 {
 			return fmt.Errorf("no LLM targets found in database for configured URLs")

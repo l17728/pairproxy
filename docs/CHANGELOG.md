@@ -1,5 +1,172 @@
 # PairProxy Changelog
 
+## [v3.0.0] - 2026-04-19
+
+### 🚀 Major Version Release
+
+#### AtoO 协议转换路径修复（Breaking Improvement）
+
+**问题**：Anthropic → OpenAI 协议转换时，`convertedPath` 固定为 `/v1/chat/completions`，完全忽略 target URL 中的 base path（如 `/v2`、`/openai/v1`），导致此类端点返回 404。
+
+**修复**：
+- `internal/proxy/protocol_converter.go` — `convertAnthropicToOpenAIRequest` 返回路径后缀 `/chat/completions`（不含版本前缀）
+- `internal/proxy/sproxy.go` — Director 按 target base path 动态拼接最终路径：有 base path 时使用 `basePath + /chat/completions`，无 base path 时保持 `/v1/chat/completions` 兼容标准 OpenAI 端点
+
+**效果**：
+| target_url | 最终请求路径 |
+|---|---|
+| `https://api.openai.com` | `/v1/chat/completions` |
+| `https://api.example.com/v2` | `/v2/chat/completions` |
+| `https://api.example.com/openai/v1` | `/openai/v1/chat/completions` |
+
+#### CLI 可修改 config-sourced LLM Target
+
+**变更**：通过命令行（`sproxy admin llm target update/delete`）现在可以修改或删除来自配置文件的 LLM target（`source=config`），WebUI 界面仍保持拦截。
+
+**修改文件**：
+- `internal/db/llmtarget_repo.go` — `Update()` / `Delete()` 移除 `IsEditable` 拦截
+- `internal/api/admin_llm_target_handler.go` — API handler 移除 `IsEditable` 拦截
+- `cmd/sproxy/admin_llm_target.go` — CLI 命令移除 client 侧 `IsEditable` 检查
+
+#### Dashboard 绑定关系列表修复
+
+- 修复绑定关系列表不显示数据（`html/template` HTML 转义破坏 JSON.parse）
+- 修复搜索过滤时表格列宽抖动
+- 绑定关系列表支持分页、搜索、用户下拉框
+
+#### 代码国际化
+
+- 将 Go 源文件及设计文档中的日文注释全部替换为中文或英文
+
+---
+
+## [v2.24.8] - 2026-04-16
+
+### 🐛 Bug Fixes
+
+#### Direct Proxy 配额中间件未挂载（v2.24.8）
+
+**问题**：通过 `sk-pp-` API Key 直连的请求绕过了 `QuotaMiddleware`，用户配置的 daily/monthly token 上限和 RPM 限制均不生效。
+
+**根因**：`DirectProxyHandler.buildChain()` 构建中间件链时未包含 `QuotaMiddleware`，而普通 JWT 路径通过 `sp.Handler()` 中已有该中间件。
+
+**修复**：
+- `internal/proxy/direct_handler.go` — `NewDirectProxyHandler` 新增 `quotaChecker *quota.Checker` 参数；`buildChain` 在 KeyAuth 和 core handler 之间插入 `quota.NewMiddleware`
+- `cmd/sproxy/main.go` — 传入运行时的 `quotaChecker` 实例
+
+#### 改密后旧 API Key 仍有效（v2.24.8）
+
+**问题**：用户通过 Keygen WebUI 修改密码后，由旧版共享 `keygenSecret` 派生的旧 Key 仍然可以访问接口（安全漏洞）。
+
+**根因**：`ValidateWithLegacySecret` 作为兜底校验路径，即使用户已修改密码，旧的 legacy Key 依然通过 HMAC 校验。
+
+**修复**：
+- `internal/db/models.go` — `User` 新增 `LegacyKeyRevoked bool` 字段（`gorm:"default:false"`）
+- `internal/db/user_repo.go` — `UpdatePassword` 原子写入 `legacy_key_revoked=true`（使用 `Updates(map[string]any{...})`，防止 GORM 跳过 false 零值）
+- `internal/keygen/validator.go` — `ValidateWithLegacySecret` 跳过 `LegacyKeyRevoked=true` 的用户
+- `internal/proxy/db_adapter.go` — `ListActive()` 传递该字段
+
+#### `RecoveryMiddleware` 吞掉 `http.ErrAbortHandler`（v2.24.8）
+
+**问题**：客户端主动断连时，Go 运行时抛出 `http.ErrAbortHandler` panic，但 `RecoveryMiddleware` 的 `recover()` 捕获后当作普通错误处理，返回 500 并写日志，而非静默忽略。
+
+**修复**：`internal/proxy/middleware.go` — recover 后检测到 `rec == http.ErrAbortHandler` 时立即 re-panic，让 Go net/http 层按预期处理断连。
+
+#### Model Mapping 在透传模式下不生效（v2.24.8）
+
+**问题**：配置 `model_mapping`（如 `{"*": "MiniMax-2.5"}`）后，同协议透传（passthrough，无需协议转换）的请求不做模型重写，导致上游报"模型不存在"。
+
+**根因**：`mapModelName()` 仅在协议转换（`conversionAtoO` / `conversionOtoA`）分支内调用，`conversionNone` 路径没有 model rewrite 逻辑。
+
+**修复**：`internal/proxy/sproxy.go` — 在 `conversionNone` 分支末尾增加显式 model 重写块（读取 `modelMappingForURL`，调用 `mapModelName` + `rewriteModelInBody`）。
+
+#### Keygen WebUI 配置说明错误（v2.24.8）
+
+- 修正 `settings.json` 路径描述：Windows 用 `%USERPROFILE%\.claude\settings.json`，Linux/macOS 用 `~/.claude/settings.json`
+- 删除 `ANTHROPIC_BASE_URL` 配置项（用户不需要暴露服务地址）
+- 修正 Claude Code 配置片段格式为 `{"env":{"ANTHROPIC_API_KEY":"<key>"}}`
+
+### ✨ New Features
+
+#### Dashboard 用户管理页分页、过滤与排序（v2.24.8）
+
+**后端**（`internal/dashboard/handler.go`）：
+
+- `handleUserStats` 支持 `page`、`page_size`、`username`（子串过滤）、`group_id`、`sort_by`、`sort_order` 参数
+- 返回结构变更：`{total, page, page_size, total_pages, users}`（分页响应体）
+- 提取 `getFullUserStats(forceRefresh bool)` 缓存辅助函数；过滤/排序/分页在全量缓存上按请求参数实时计算
+- 修复缓存污染 Bug：`filtered` 始终通过 `make([]userStatsResponse, 0, len(all))` 构建新切片，避免 `sort.SliceStable` 修改缓存原始切片
+
+**前端**（`internal/dashboard/templates/users.html`）：
+
+- 完全 JS 驱动的表格渲染，含 XSS 安全的 `esc()` 辅助函数
+- 用户名搜索框（350ms 防抖）+ 用户组下拉过滤
+- 每页显示条数选择器（20 / 50 / 100 / 200）
+- 分页控件：首页/上页/下页/尾页 + 带省略号的页码按钮
+- 列标题点击排序（再次点击切换正反序）
+- 列表项操作（启用/禁用/删除）内联表单保留
+
+### 🔧 改动详情
+
+| 模块 | 变更 |
+|------|------|
+| `internal/proxy/direct_handler.go` | 新增 `quotaChecker *quota.Checker` 参数；`buildChain` 插入 `quota.NewMiddleware` |
+| `cmd/sproxy/main.go` | 传入 `quotaChecker` 到 `NewDirectProxyHandler` |
+| `internal/proxy/middleware.go` | `RecoveryMiddleware` re-panic `http.ErrAbortHandler` |
+| `internal/proxy/sproxy.go` | `conversionNone` 分支增加 model mapping 重写逻辑 |
+| `internal/db/models.go` | `User` 新增 `LegacyKeyRevoked bool` |
+| `internal/db/user_repo.go` | `UpdatePassword` 原子写入 `legacy_key_revoked=true` |
+| `internal/keygen/validator.go` | `ValidateWithLegacySecret` 跳过 `LegacyKeyRevoked=true` 用户 |
+| `internal/proxy/db_adapter.go` | `ListActive()` 传递 `LegacyKeyRevoked` 字段 |
+| `internal/api/keygen_handler.go` | 修正 settings.json 路径说明；删除 ANTHROPIC_BASE_URL；修正配置片段格式 |
+| `internal/dashboard/handler.go` | 分页 API；`getFullUserStats` 缓存辅助；缓存污染 Bug 修复 |
+| `internal/dashboard/templates/users.html` | 全 JS 渲染；过滤/排序/分页控件 |
+
+---
+
+## [v2.24.7] - 2026-04-14
+
+### ✨ New Features
+
+#### Direct Proxy API Key — Per-User Password Hash Derivation (v2.24.7)
+
+**Breaking change for Direct Proxy users (sk-pp- Key holders)**：API Key 生成策略已变更，**已有 sk-pp- Key 全部失效**，用户需重新获取。
+
+- **旧机制**：`HMAC-SHA256(username, keygenSecret)` — 所有用户的 Key 依赖同一个管理员 secret；轮换 secret 导致所有人 Key 同时失效
+- **新机制**：`HMAC-SHA256(username, user.PasswordHash)` — 每个用户的 Key 由自己的 bcrypt 密码哈希派生；改密码自动轮换 Key，互不影响
+- `auth.keygen_secret` 配置字段保留（兼容旧 YAML），不再读取或校验，可安全删除
+- LDAP 用户（无本地 PasswordHash）无法持有 sk-pp- Key
+
+#### 用户自助修改密码并更新 Key（Keygen WebUI）
+
+新增 `POST /keygen/api/change-password` 端点：
+
+- 用户通过 Keygen WebUI（`/keygen/`）自行修改密码
+- 修改成功后立即：① 更新数据库密码哈希 ② 清空旧 Key 缓存 ③ 返回新派生的 API Key
+- 客户端复制新 Key 后即可继续使用，无需管理员介入
+- LDAP 用户调用此端点返回 403（本地账号限定功能）
+- Worker 节点调用此端点返回 503（写操作仅限 Primary）
+
+#### Admin 重置密码后立即清空 Key 缓存
+
+管理员通过 `POST /api/admin/users/{id}/reset-password` 重置用户密码后，`AdminHandler` 现在会主动调用 `KeyCache.InvalidateByUserID(id)` 清除该用户的旧 Key，使旧 Key 即时失效，无需等待缓存 TTL。
+
+### 🔧 改动详情
+
+| 模块 | 变更 |
+|------|------|
+| `internal/keygen/validator.go` | `UserEntry` 新增 `PasswordHash` 字段；`ValidateAndGetUser` 签名去掉 `secret []byte`，改用 `u.PasswordHash` |
+| `internal/keygen/cache.go` | 新增 `InvalidateByUserID(userID string)` 方法 |
+| `internal/proxy/db_adapter.go` | `ListActive()` 填充 `UserEntry.PasswordHash` |
+| `internal/proxy/keyauth_middleware.go` | 去掉 `keygenSecret` 参数 |
+| `internal/proxy/direct_handler.go` | 去掉 `keygenSecret` 参数 |
+| `internal/api/keygen_handler.go` | 去掉 `keygenSecret`，新增 `SetKeyCache()`，新增 `handleChangePassword`，WebUI 更新 |
+| `internal/api/admin_handler.go` | 新增 `SetKeyCache()`，密码重置后调用 `InvalidateByUserID` |
+| `internal/config/config.go` | 移除 `keygen_secret` 校验要求（字段保留但已弃用） |
+| `cmd/sproxy/main.go` | 调整各 handler 初始化：移除 `keygenSecret`，调用 `SetKeyCache()` |
+
+---
+
 ## [v2.24.6] - 2026-04-10
 
 ### 🐛 Bug Fixes

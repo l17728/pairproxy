@@ -15,6 +15,7 @@ import (
 	"github.com/l17728/pairproxy/internal/api"
 	"github.com/l17728/pairproxy/internal/auth"
 	"github.com/l17728/pairproxy/internal/db"
+	"github.com/l17728/pairproxy/internal/keygen"
 )
 
 func setupKeygenTest(t *testing.T) (*api.KeygenHandler, *db.UserRepo) {
@@ -26,7 +27,7 @@ func setupKeygenTest(t *testing.T) (*api.KeygenHandler, *db.UserRepo) {
 	userRepo := db.NewUserRepo(gdb, logger)
 	jwtMgr, err := auth.NewManager(logger, "test-secret-key-for-testing-only")
 	require.NoError(t, err)
-	h := api.NewKeygenHandler(logger, userRepo, jwtMgr, "test-keygen-secret-must-be-at-least-32-bytes!!")
+	h := api.NewKeygenHandler(logger, userRepo, jwtMgr)
 	return h, userRepo
 }
 
@@ -196,6 +197,140 @@ func TestKeygenLogin_UserNotFound(t *testing.T) {
 	mux.ServeHTTP(rr, req)
 	assert.Equal(t, http.StatusUnauthorized, rr.Code)
 	assert.Contains(t, rr.Body.String(), "invalid_credentials")
+}
+
+// ---------------------------------------------------------------------------
+// change-password
+// ---------------------------------------------------------------------------
+
+func TestKeygenChangePassword_Success(t *testing.T) {
+	h, userRepo := setupKeygenTest(t)
+
+	// 创建缓存并注入（验证改密后缓存被踢出）
+	cache, err := keygen.NewKeyCache(10, 0)
+	require.NoError(t, err)
+	h.SetKeyCache(cache)
+
+	pass, err := auth.HashPassword(zap.NewNop(), "oldpass123")
+	require.NoError(t, err)
+	u := &db.User{Username: "eve", PasswordHash: pass, IsActive: true}
+	require.NoError(t, userRepo.Create(u))
+
+	// 登录获取 session token 和旧 key
+	loginBody, _ := json.Marshal(map[string]string{"username": "eve", "password": "oldpass123"})
+	loginReq := httptest.NewRequest("POST", "/keygen/api/login", bytes.NewReader(loginBody))
+	loginReq.Header.Set("Content-Type", "application/json")
+	loginRR := httptest.NewRecorder()
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+	mux.ServeHTTP(loginRR, loginReq)
+	require.Equal(t, 200, loginRR.Code)
+
+	var loginResp map[string]interface{}
+	require.NoError(t, json.Unmarshal(loginRR.Body.Bytes(), &loginResp))
+	token := loginResp["token"].(string)
+	oldKey := loginResp["key"].(string)
+
+	// 预热缓存（模拟已有缓存命中）
+	cache.Set(oldKey, &keygen.CachedUser{UserID: u.ID, Username: u.Username})
+
+	// 修改密码
+	cpBody, _ := json.Marshal(map[string]string{"old_password": "oldpass123", "new_password": "newpass456"})
+	cpReq := httptest.NewRequest("POST", "/keygen/api/change-password", bytes.NewReader(cpBody))
+	cpReq.Header.Set("Content-Type", "application/json")
+	cpReq.Header.Set("Authorization", "Bearer "+token)
+	cpRR := httptest.NewRecorder()
+	mux.ServeHTTP(cpRR, cpReq)
+
+	require.Equal(t, 200, cpRR.Code)
+	var cpResp map[string]interface{}
+	require.NoError(t, json.Unmarshal(cpRR.Body.Bytes(), &cpResp))
+	newKey := cpResp["key"].(string)
+
+	assert.Contains(t, newKey, "sk-pp-", "new key must have correct prefix")
+	assert.NotEqual(t, oldKey, newKey, "new key must differ from old key after password change")
+
+	// 旧 Key 缓存应被踢出
+	assert.Nil(t, cache.Get(oldKey), "old key cache must be invalidated after password change")
+}
+
+func TestKeygenChangePassword_WrongOldPassword(t *testing.T) {
+	h, userRepo := setupKeygenTest(t)
+
+	pass, err := auth.HashPassword(zap.NewNop(), "correct123")
+	require.NoError(t, err)
+	u := &db.User{Username: "frank", PasswordHash: pass, IsActive: true}
+	require.NoError(t, userRepo.Create(u))
+
+	loginBody, _ := json.Marshal(map[string]string{"username": "frank", "password": "correct123"})
+	loginReq := httptest.NewRequest("POST", "/keygen/api/login", bytes.NewReader(loginBody))
+	loginReq.Header.Set("Content-Type", "application/json")
+	loginRR := httptest.NewRecorder()
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+	mux.ServeHTTP(loginRR, loginReq)
+	require.Equal(t, 200, loginRR.Code)
+
+	var loginResp map[string]interface{}
+	require.NoError(t, json.Unmarshal(loginRR.Body.Bytes(), &loginResp))
+	token := loginResp["token"].(string)
+
+	cpBody, _ := json.Marshal(map[string]string{"old_password": "wrong_old", "new_password": "newpass456"})
+	cpReq := httptest.NewRequest("POST", "/keygen/api/change-password", bytes.NewReader(cpBody))
+	cpReq.Header.Set("Content-Type", "application/json")
+	cpReq.Header.Set("Authorization", "Bearer "+token)
+	cpRR := httptest.NewRecorder()
+	mux.ServeHTTP(cpRR, cpReq)
+
+	assert.Equal(t, http.StatusUnauthorized, cpRR.Code)
+	assert.Contains(t, cpRR.Body.String(), "wrong_password")
+}
+
+func TestKeygenChangePassword_SamePassword(t *testing.T) {
+	h, userRepo := setupKeygenTest(t)
+
+	pass, err := auth.HashPassword(zap.NewNop(), "samepass123")
+	require.NoError(t, err)
+	u := &db.User{Username: "grace", PasswordHash: pass, IsActive: true}
+	require.NoError(t, userRepo.Create(u))
+
+	loginBody, _ := json.Marshal(map[string]string{"username": "grace", "password": "samepass123"})
+	loginReq := httptest.NewRequest("POST", "/keygen/api/login", bytes.NewReader(loginBody))
+	loginReq.Header.Set("Content-Type", "application/json")
+	loginRR := httptest.NewRecorder()
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+	mux.ServeHTTP(loginRR, loginReq)
+	require.Equal(t, 200, loginRR.Code)
+
+	var loginResp map[string]interface{}
+	require.NoError(t, json.Unmarshal(loginRR.Body.Bytes(), &loginResp))
+	token := loginResp["token"].(string)
+
+	// old == new → 应被拒绝
+	cpBody, _ := json.Marshal(map[string]string{"old_password": "samepass123", "new_password": "samepass123"})
+	cpReq := httptest.NewRequest("POST", "/keygen/api/change-password", bytes.NewReader(cpBody))
+	cpReq.Header.Set("Content-Type", "application/json")
+	cpReq.Header.Set("Authorization", "Bearer "+token)
+	cpRR := httptest.NewRecorder()
+	mux.ServeHTTP(cpRR, cpReq)
+
+	assert.Equal(t, http.StatusBadRequest, cpRR.Code)
+	assert.Contains(t, cpRR.Body.String(), "same_password")
+}
+
+func TestKeygenChangePassword_Unauthorized(t *testing.T) {
+	h, _ := setupKeygenTest(t)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	cpBody, _ := json.Marshal(map[string]string{"old_password": "old", "new_password": "new"})
+	req := httptest.NewRequest("POST", "/keygen/api/change-password", bytes.NewReader(cpBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer invalid-token")
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusUnauthorized, rr.Code)
 }
 
 func TestKeygenRegenerate_MissingAuthHeader(t *testing.T) {

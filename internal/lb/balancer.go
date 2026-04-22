@@ -73,7 +73,7 @@ func (tl *targetList) setHealthy(id string, healthy bool) {
 	tl.mu.Lock()
 	defer tl.mu.Unlock()
 	for i := range tl.targets {
-		if tl.targets[i].ID == id {
+		if tl.targets[i].ID == id || tl.targets[i].Addr == id {
 			tl.targets[i].Healthy = healthy
 			return
 		}

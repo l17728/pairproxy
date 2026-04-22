@@ -28,8 +28,9 @@ type User struct {
 	IsActive     bool       `gorm:"default:true"`
 	AuthProvider string  `gorm:"default:'local';uniqueIndex:idx_user_authprovider_username;uniqueIndex:idx_user_authprovider_externalid"` // "local" | "ldap"；与 Username 和 ExternalID 各自组合唯一
 	ExternalID   *string `gorm:"index;uniqueIndex:idx_user_authprovider_externalid"`            // 外部系统唯一 ID（LDAP: uid）；与 AuthProvider 组合唯一；NULL 表示无外部 ID（本地用户）
-	CreatedAt    time.Time
-	LastLoginAt  *time.Time
+	LegacyKeyRevoked bool      `gorm:"default:false"` // true = 用户已主动改密，旧版 keygenSecret 派生的 Key 不再有效
+	CreatedAt        time.Time
+	LastLoginAt      *time.Time
 }
 
 // RefreshToken 刷新令牌（用于撤销）
@@ -47,6 +48,7 @@ type UsageLog struct {
 	RequestID    string    `gorm:"uniqueIndex;not null"` // 幂等防重
 	UserID       string    `gorm:"not null;index"`
 	Model        string
+	ActualModel  string    `gorm:"default:''"` // 实际转发的模型名（model mapping / auto 模式后）
 	InputTokens  int       `gorm:"default:0"`
 	OutputTokens int       `gorm:"default:0"`
 	TotalTokens  int       `gorm:"default:0"`
@@ -83,7 +85,8 @@ type Peer struct {
 type APIKey struct {
 	ID             string    `gorm:"primarykey"`
 	Name           string    `gorm:"uniqueIndex;not null"` // 标识名称（唯一）
-	EncryptedValue string    `gorm:"not null"`             // AES-256-GCM + base64
+	EncryptedValue string    `gorm:"not null"`             // 加密/混淆后的 Key 值；格式由 KeyScheme 决定
+	KeyScheme      string    `gorm:"default:'obfuscated'"` // "obfuscated"（config-sync 路径）| "aes"（Admin API 路径）
 	Provider       string    `gorm:"default:'anthropic'"`  // "anthropic" | "openai" | "ollama"
 	IsActive       bool      `gorm:"default:true"`
 	CreatedAt      time.Time
@@ -118,15 +121,16 @@ type LLMBinding struct {
 	// UNIQUE(user_id, target_id) 和 UNIQUE(group_id, target_id) 由复合索引强制：
 	// 因 NULL 的 UNIQUE 特殊性（NULL != NULL），同时依赖应用层 Set() 的 delete-then-insert 保证
 	// TargetURL 仅用于展示（通过 JOIN 填充，不存储于此列）
-	TargetURL string `gorm:"-"`
+	// TargetURL 冗余存储：便于直接查看数据库及展示时减少 JOIN；由 Set() 负责写入。
+	TargetURL string `gorm:"not null;index"`
 	CreatedAt time.Time
 }
 
 // LLMTarget LLM 目标端点（支持配置文件和数据库双来源）
 type LLMTarget struct {
 	ID              string     `gorm:"primarykey"`
-	URL             string     `gorm:"not null;uniqueIndex:idx_llm_target_url_apikey"` // LLM 端点 URL（与 APIKeyID 组合唯一）
-	APIKeyID        *string    `gorm:"uniqueIndex:idx_llm_target_url_apikey;index"`    // 外键 → api_keys.id（与 URL 组合唯一）
+	URL             string     `gorm:"not null;uniqueIndex"` // LLM 端点 URL（全局唯一）
+	APIKeyID        *string    `gorm:"index"`                // 外键 → api_keys.id
 	Provider        string     `gorm:"default:'anthropic'"`  // "anthropic" | "openai" | "ollama"
 	Name            string     // 显示名称
 	Weight          int        `gorm:"default:1"`            // 负载均衡权重
@@ -137,6 +141,7 @@ type LLMTarget struct {
 	Source          string     `gorm:"default:'database'"`   // "config" | "database"
 	IsEditable      bool       `gorm:"default:true"`         // false for config-sourced
 	IsActive        bool       `gorm:"default:true"`
+	IsSynced        bool       `gorm:"default:true"`         // false 表示已修改但尚未被 SyncLLMTargets 加载到内存
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 }

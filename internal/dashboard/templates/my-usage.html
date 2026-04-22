@@ -5,9 +5,14 @@
 <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-100 mb-6">
   <div class="flex items-center gap-4">
     <label class="text-sm font-medium text-gray-700">选择用户：</label>
-    <select id="userSelect" class="flex-1 max-w-md border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
-      <option value="">加载中...</option>
-    </select>
+    <div class="relative flex-1 max-w-md" id="userCombobox">
+      <input type="text" id="userSearchInput" autocomplete="off" placeholder="输入用户名搜索..."
+        class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 pr-8">
+      <span id="userSearchClear" class="hidden absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 cursor-pointer text-lg leading-none select-none">×</span>
+      <div id="userDropdown"
+        class="hidden absolute z-20 left-0 right-0 top-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+      </div>
+    </div>
     <span id="selectedUserInfo" class="text-xs text-gray-500"></span>
   </div>
 </div>
@@ -58,58 +63,174 @@
 
 <!-- 最近请求 -->
 <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-  <div class="px-6 py-4 border-b border-gray-100">
-    <h3 class="text-sm font-semibold text-gray-700">最近请求</h3>
+  <div class="px-6 py-4 border-b border-gray-100 flex items-center justify-between flex-wrap gap-2">
+    <h3 class="text-sm font-semibold text-gray-700">最近请求
+      <span id="logsRangeBadge" class="ml-2 text-xs font-normal text-gray-400 hidden">最近 <span id="logsRangeDays">7</span> 天</span>
+    </h3>
+    <div class="flex items-center gap-3">
+      <label class="text-xs text-gray-500">时间范围：</label>
+      <select id="logsDaysSelect" class="text-xs border border-gray-300 rounded px-2 py-1">
+        <option value="7" selected>最近 7 天</option>
+        <option value="14">最近 14 天</option>
+        <option value="30">最近 30 天</option>
+      </select>
+      <label class="text-xs text-gray-500">每页：</label>
+      <select id="logsPageSizeSelect" class="text-xs border border-gray-300 rounded px-2 py-1">
+        <option value="10" selected>10 条</option>
+        <option value="20">20 条</option>
+        <option value="50">50 条</option>
+      </select>
+    </div>
   </div>
   <div class="overflow-x-auto">
     <table class="min-w-full divide-y divide-gray-100 text-sm">
       <thead class="bg-gray-50 text-xs text-gray-500 uppercase">
         <tr>
           <th class="px-4 py-3 text-left">时间</th>
-          <th class="px-4 py-3 text-left">模型</th>
+          <th class="px-4 py-3 text-left">请求模型</th>
+          <th class="px-4 py-3 text-left">实际模型</th>
           <th class="px-4 py-3 text-right">输入</th>
           <th class="px-4 py-3 text-right">输出</th>
           <th class="px-4 py-3 text-right">费用($)</th>
+          <th class="px-4 py-3 text-left">类型</th>
           <th class="px-4 py-3 text-left">状态</th>
         </tr>
       </thead>
       <tbody class="divide-y divide-gray-50 text-gray-700" id="recentRequestsBody">
-        <tr><td colspan="6" class="px-4 py-6 text-center text-gray-400">加载中...</td></tr>
+        <tr><td colspan="8" class="px-4 py-6 text-center text-gray-400">请先选择用户</td></tr>
       </tbody>
     </table>
+  </div>
+  <!-- 分页控件 -->
+  <div id="logsPagination" class="hidden px-6 py-3 border-t border-gray-100 flex items-center justify-between text-xs text-gray-500">
+    <span id="logsPageInfo">第 1 / 1 页，共 0 条</span>
+    <div class="flex items-center gap-1">
+      <button id="logsPrevBtn" onclick="goLogsPage(currentLogsPage - 1)"
+        class="px-2 py-1 rounded border border-gray-200 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed">‹ 上一页</button>
+      <span id="logsPageButtons" class="flex gap-1"></span>
+      <button id="logsNextBtn" onclick="goLogsPage(currentLogsPage + 1)"
+        class="px-2 py-1 rounded border border-gray-200 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed">下一页 ›</button>
+    </div>
   </div>
 </div>
 
 <script>
 let usageChart;
 let currentUsername = ''; // 当前选中的用户名
+let allUsers = [];        // 全量用户列表缓存
 
 // 加载活跃用户列表（管理员）
 async function loadActiveUsers() {
+  const input = document.getElementById('userSearchInput');
+  input.placeholder = '加载中...';
+  input.disabled = true;
   try {
     const res = await fetch('/api/dashboard/active-users?days=30');
     if (!res.ok) {
       console.error('Failed to load active users:', res.status);
       return;
     }
-    const users = await res.json();
-
-    const select = document.getElementById('userSelect');
-    select.innerHTML = '<option value="">-- 选择用户 --</option>';
-    users.forEach(u => {
-      const opt = document.createElement('option');
-      opt.value = u.username;
-      opt.textContent = `${u.username}${u.group_name ? ' (' + u.group_name + ')' : ''}`;
-      select.appendChild(opt);
-    });
-
-    if (users.length === 0) {
-      select.innerHTML = '<option value="">暂无活跃用户</option>';
-    }
+    allUsers = await res.json();
   } catch (err) {
     console.error('Failed to load active users:', err);
+  } finally {
+    input.disabled = false;
+    input.placeholder = allUsers.length ? '输入用户名搜索...' : '暂无活跃用户';
   }
 }
+
+// 渲染下拉列表
+function renderDropdown(keyword) {
+  const dropdown = document.getElementById('userDropdown');
+  const kw = keyword.trim().toLowerCase();
+  const matched = kw
+    ? allUsers.filter(u => u.username.toLowerCase().includes(kw))
+    : allUsers;
+
+  if (matched.length === 0) {
+    dropdown.innerHTML = '<div class="px-3 py-2 text-sm text-gray-400">无匹配用户</div>';
+  } else {
+    dropdown.innerHTML = matched.map(u => {
+      const label = u.group_name ? `${u.username} <span class="text-gray-400 text-xs">(${u.group_name})</span>` : u.username;
+      const highlight = kw
+        ? u.username.replace(new RegExp(`(${kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi'),
+            '<mark class="bg-indigo-100 text-indigo-700 rounded px-0.5">$1</mark>')
+        : u.username;
+      const labelFull = u.group_name
+        ? `${highlight} <span class="text-gray-400 text-xs">(${u.group_name})</span>`
+        : highlight;
+      return `<div class="px-3 py-2 text-sm cursor-pointer hover:bg-indigo-50 transition-colors"
+                   data-value="${u.username}" onmousedown="selectUser('${u.username}')">${labelFull}</div>`;
+    }).join('');
+  }
+  dropdown.classList.remove('hidden');
+}
+
+// 选中用户
+function selectUser(username) {
+  currentUsername = username;
+  document.getElementById('userSearchInput').value = username;
+  document.getElementById('userSearchClear').classList.remove('hidden');
+  document.getElementById('userDropdown').classList.add('hidden');
+  document.getElementById('selectedUserInfo').textContent = `正在查看: ${username}`;
+  loadQuotaStatus();
+  loadUsageHistory(parseInt(document.getElementById('historyDaysSelect').value));
+  loadRecentRequests();
+}
+
+// 清除选择
+function clearUser() {
+  currentUsername = '';
+  document.getElementById('userSearchInput').value = '';
+  document.getElementById('userSearchClear').classList.add('hidden');
+  document.getElementById('userDropdown').classList.add('hidden');
+  document.getElementById('selectedUserInfo').textContent = '';
+}
+
+// 输入框事件
+document.getElementById('userSearchInput').addEventListener('input', function() {
+  document.getElementById('userSearchClear').classList.toggle('hidden', !this.value);
+  if (currentUsername && this.value !== currentUsername) {
+    currentUsername = '';
+    document.getElementById('selectedUserInfo').textContent = '';
+  }
+  renderDropdown(this.value);
+});
+
+document.getElementById('userSearchInput').addEventListener('focus', function() {
+  renderDropdown(this.value);
+});
+
+document.getElementById('userSearchInput').addEventListener('blur', function() {
+  // 延迟关闭，给 mousedown 事件留时间触发
+  setTimeout(() => document.getElementById('userDropdown').classList.add('hidden'), 150);
+});
+
+document.getElementById('userSearchInput').addEventListener('keydown', function(e) {
+  const dropdown = document.getElementById('userDropdown');
+  const items = dropdown.querySelectorAll('[data-value]');
+  const active = dropdown.querySelector('.bg-indigo-100:not(mark)');
+
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    const next = active ? active.nextElementSibling : items[0];
+    if (active) active.classList.remove('bg-indigo-100', 'text-indigo-700');
+    if (next) { next.classList.add('bg-indigo-100', 'text-indigo-700'); next.scrollIntoView({ block: 'nearest' }); }
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    const prev = active ? active.previousElementSibling : items[items.length - 1];
+    if (active) active.classList.remove('bg-indigo-100', 'text-indigo-700');
+    if (prev) { prev.classList.add('bg-indigo-100', 'text-indigo-700'); prev.scrollIntoView({ block: 'nearest' }); }
+  } else if (e.key === 'Enter') {
+    e.preventDefault();
+    const focused = dropdown.querySelector('.bg-indigo-100:not(mark)');
+    if (focused) selectUser(focused.dataset.value);
+  } else if (e.key === 'Escape') {
+    dropdown.classList.add('hidden');
+  }
+});
+
+document.getElementById('userSearchClear').addEventListener('click', clearUser);
 
 // 加载配额状态
 async function loadQuotaStatus() {
@@ -210,17 +331,89 @@ document.getElementById('historyDaysSelect').addEventListener('change', (e) => {
   loadUsageHistory(parseInt(e.target.value));
 });
 
-// 用户选择器
-document.getElementById('userSelect').addEventListener('change', (e) => {
-  currentUsername = e.target.value;
-  if (currentUsername) {
-    document.getElementById('selectedUserInfo').textContent = `正在查看: ${currentUsername}`;
-    loadQuotaStatus();
-    loadUsageHistory(parseInt(document.getElementById('historyDaysSelect').value));
-  } else {
-    document.getElementById('selectedUserInfo').textContent = '';
+// 最近请求分页状态
+let currentLogsPage = 1;
+let totalLogsPages = 1;
+
+// 加载最近请求（分页）
+async function loadRecentRequests(page) {
+  if (!currentUsername) return;
+  if (page === undefined) page = 1;
+  currentLogsPage = page;
+
+  const days = parseInt(document.getElementById('logsDaysSelect').value) || 7;
+  const pageSize = parseInt(document.getElementById('logsPageSizeSelect').value) || 10;
+  const tbody = document.getElementById('recentRequestsBody');
+  tbody.innerHTML = '<tr><td colspan="8" class="px-4 py-6 text-center text-gray-400">加载中...</td></tr>';
+
+  try {
+    const url = `/api/dashboard/user-logs?username=${encodeURIComponent(currentUsername)}&days=${days}&page=${page}&page_size=${pageSize}`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      tbody.innerHTML = '<tr><td colspan="7" class="px-4 py-6 text-center text-red-400">加载失败</td></tr>';
+      return;
+    }
+    const data = await res.json();
+    totalLogsPages = data.total_pages || 1;
+    renderLogsTable(data.logs);
+    renderLogsPagination(data.page, data.total_pages, data.total, data.page_size);
+  } catch (err) {
+    console.error('Failed to load recent requests:', err);
+    tbody.innerHTML = '<tr><td colspan="7" class="px-4 py-6 text-center text-red-400">请求失败</td></tr>';
   }
-});
+}
+
+function renderLogsTable(logs) {
+  const tbody = document.getElementById('recentRequestsBody');
+  if (!logs || logs.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="8" class="px-4 py-6 text-center text-gray-400">暂无请求记录</td></tr>';
+    return;
+  }
+  tbody.innerHTML = logs.map(l => `
+    <tr class="hover:bg-gray-50">
+      <td class="px-4 py-3 text-gray-400 text-xs whitespace-nowrap">${l.created_at}</td>
+      <td class="px-4 py-3 text-gray-500 text-xs">${l.model || '—'}</td>
+      <td class="px-4 py-3 text-xs">${l.actual_model ? `<span class="text-indigo-600">${l.actual_model}</span>` : '<span class="text-gray-300">—</span>'}</td>
+      <td class="px-4 py-3 text-right">${l.input_tokens.toLocaleString()}</td>
+      <td class="px-4 py-3 text-right">${l.output_tokens.toLocaleString()}</td>
+      <td class="px-4 py-3 text-right text-amber-600">${l.cost_usd > 0 ? l.cost_usd.toFixed(4) : '<span class="text-gray-300">—</span>'}</td>
+      <td class="px-4 py-3">${l.is_streaming ? '<span class="text-xs text-blue-500">流式</span>' : '<span class="text-xs text-gray-400">同步</span>'}</td>
+      <td class="px-4 py-3">${l.status_code === 200
+        ? '<span class="text-green-600 font-medium">✓ 200</span>'
+        : `<span class="text-red-500 font-medium">✗ ${l.status_code}</span>`}</td>
+    </tr>`).join('');
+}
+
+function renderLogsPagination(page, totalPages, total, pageSize) {
+  const container = document.getElementById('logsPagination');
+  container.classList.remove('hidden');
+
+  document.getElementById('logsPageInfo').textContent =
+    `第 ${page} / ${totalPages} 页，共 ${total} 条`;
+
+  document.getElementById('logsPrevBtn').disabled = page <= 1;
+  document.getElementById('logsNextBtn').disabled = page >= totalPages;
+
+  // 页码按钮（最多显示 5 个）
+  const btns = document.getElementById('logsPageButtons');
+  const start = Math.max(1, page - 2);
+  const end = Math.min(totalPages, start + 4);
+  let html = '';
+  for (let i = start; i <= end; i++) {
+    html += `<button onclick="goLogsPage(${i})"
+      class="px-2 py-1 rounded border ${i === page ? 'bg-indigo-600 text-white border-indigo-600' : 'border-gray-200 hover:bg-gray-50'}">${i}</button>`;
+  }
+  btns.innerHTML = html;
+}
+
+function goLogsPage(page) {
+  if (page < 1 || page > totalLogsPages) return;
+  loadRecentRequests(page);
+}
+
+// 时间范围或每页条数变化时重置到第 1 页
+document.getElementById('logsDaysSelect').addEventListener('change', () => loadRecentRequests(1));
+document.getElementById('logsPageSizeSelect').addEventListener('change', () => loadRecentRequests(1));
 
 // 页面加载时初始化（先加载用户列表，等待选择后再加载数据）
 loadActiveUsers();

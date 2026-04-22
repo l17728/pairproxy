@@ -364,8 +364,10 @@ func setupLLMTestWithTargetRepo(t *testing.T) (*AdminHandler, *auth.Manager, *ht
 
 // ---------------------------------------------------------------------------
 // TestSetBinding_SameURL_TwoKeys_Returns409
-// Issue #6: POST /api/admin/llm/bindings with target_url that matches two
-// targets (same URL, different API keys) must return 409 Conflict.
+// With URL-unique constraint each URL maps to exactly one target. This test
+// verifies that POST /api/admin/llm/bindings with a known target_url creates
+// the binding successfully, and an unknown URL returns 400 target_not_found.
+// (The 409 ambiguity scenario is no longer possible as of the URL-unique schema.)
 // ---------------------------------------------------------------------------
 
 func TestSetBinding_SameURL_TwoKeys_Returns409(t *testing.T) {
@@ -373,37 +375,42 @@ func TestSetBinding_SameURL_TwoKeys_Returns409(t *testing.T) {
 	tok := adminToken(t, jwtMgr)
 	authHdr := "Bearer " + tok
 
-	sharedURL := "https://api.openai.com/v1"
-
-	keyID1 := "key-uuid-1111"
-	keyID2 := "key-uuid-2222"
-	t1 := &db.LLMTarget{ID: uuid.NewString(), URL: sharedURL, Name: "OpenAI-Key1", Provider: "openai", Weight: 1, APIKeyID: &keyID1}
-	t2 := &db.LLMTarget{ID: uuid.NewString(), URL: sharedURL, Name: "OpenAI-Key2", Provider: "openai", Weight: 1, APIKeyID: &keyID2}
+	targetURL := "https://api.openai.com/v1"
+	keyID := "key-uuid-1111"
+	t1 := &db.LLMTarget{ID: uuid.NewString(), URL: targetURL, Name: "OpenAI-Key1", Provider: "openai", Weight: 1, APIKeyID: &keyID}
 	if err := targetRepo.Create(t1); err != nil {
 		t.Fatalf("Create t1: %v", err)
 	}
-	if err := targetRepo.Create(t2); err != nil {
-		t.Fatalf("Create t2: %v", err)
-	}
 
-	uid := "user-conflict"
+	// Known URL → binding created (200/201).
+	uid := "user-known"
 	body, _ := json.Marshal(createLLMBindingRequest{
-		TargetURL: sharedURL,
+		TargetURL: targetURL,
 		UserID:    &uid,
 	})
 	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/bindings", bytes.NewBuffer(body))
 	req.Header.Set("Authorization", authHdr)
 	rr := httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Errorf("known URL: status = %d, want 201; body: %s", rr.Code, rr.Body.String())
+	}
 
-	if rr.Code != http.StatusConflict {
-		t.Errorf("status = %d, want 409 Conflict; body: %s", rr.Code, rr.Body.String())
+	// Unknown URL → 400 target_not_found.
+	uid2 := "user-unknown"
+	body2, _ := json.Marshal(createLLMBindingRequest{
+		TargetURL: "https://nonexistent.example.com",
+		UserID:    &uid2,
+	})
+	req2 := httptest.NewRequest(http.MethodPost, "/api/admin/llm/bindings", bytes.NewBuffer(body2))
+	req2.Header.Set("Authorization", authHdr)
+	rr2 := httptest.NewRecorder()
+	mux.ServeHTTP(rr2, req2)
+	if rr2.Code != http.StatusBadRequest {
+		t.Errorf("unknown URL: status = %d, want 400; body: %s", rr2.Code, rr2.Body.String())
 	}
-	if !strings.Contains(rr.Body.String(), "target_url_ambiguous") {
-		t.Errorf("body should contain 'target_url_ambiguous', got: %s", rr.Body.String())
-	}
-	if !strings.Contains(rr.Body.String(), t1.ID) || !strings.Contains(rr.Body.String(), t2.ID) {
-		t.Errorf("body should list both target IDs; got: %s", rr.Body.String())
+	if !strings.Contains(rr2.Body.String(), "target_not_found") {
+		t.Errorf("body should contain 'target_not_found', got: %s", rr2.Body.String())
 	}
 }
 
@@ -468,22 +475,17 @@ func TestSetBinding_UnknownURL_Returns400(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // TestSetBinding_ByTargetID_Bypasses409
-// Providing target_id (UUID) directly bypasses URL lookup entirely.
+// Providing target_id (UUID) directly resolves the target without URL lookup.
 // ---------------------------------------------------------------------------
 
 func TestSetBinding_ByTargetID_Bypasses409(t *testing.T) {
 	_, jwtMgr, mux, targetRepo := setupLLMTestWithTargetRepo(t)
 	tok := adminToken(t, jwtMgr)
 
-	sharedURL := "https://api.anthropic.com/v1"
-	k1, k2 := "key-aaa", "key-bbb"
-	ta := &db.LLMTarget{ID: uuid.NewString(), URL: sharedURL, Name: "Claude-K1", Provider: "anthropic", Weight: 1, APIKeyID: &k1}
-	tb := &db.LLMTarget{ID: uuid.NewString(), URL: sharedURL, Name: "Claude-K2", Provider: "anthropic", Weight: 1, APIKeyID: &k2}
+	k1 := "key-aaa"
+	ta := &db.LLMTarget{ID: uuid.NewString(), URL: "https://api.anthropic.com/v1", Name: "Claude-K1", Provider: "anthropic", Weight: 1, APIKeyID: &k1}
 	if err := targetRepo.Create(ta); err != nil {
 		t.Fatalf("Create ta: %v", err)
-	}
-	if err := targetRepo.Create(tb); err != nil {
-		t.Fatalf("Create tb: %v", err)
 	}
 
 	uid := "user-uuid-direct"
@@ -503,27 +505,24 @@ func TestSetBinding_ByTargetID_Bypasses409(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // TestDistribute_SameURL_TwoKeys_ExpandsAll
-// Issue #6: distribute with a URL matching two targets must expand both.
+// Distribute with a known URL assigns a binding to each user.
+// (With URL-unique constraint each URL maps to exactly one target.)
 // ---------------------------------------------------------------------------
 
 func TestDistribute_SameURL_TwoKeys_ExpandsAll(t *testing.T) {
 	_, jwtMgr, mux, targetRepo := setupLLMTestWithTargetRepo(t)
 	tok := adminToken(t, jwtMgr)
 
-	sharedURL := "https://api.openai.com/v1"
-	k1, k2 := "key-dist-1", "key-dist-2"
-	ta := &db.LLMTarget{ID: uuid.NewString(), URL: sharedURL, Name: "Dist-K1", Provider: "openai", Weight: 1, APIKeyID: &k1}
-	tb := &db.LLMTarget{ID: uuid.NewString(), URL: sharedURL, Name: "Dist-K2", Provider: "openai", Weight: 1, APIKeyID: &k2}
+	targetURL := "https://api.openai.com/v1"
+	k1 := "key-dist-1"
+	ta := &db.LLMTarget{ID: uuid.NewString(), URL: targetURL, Name: "Dist-K1", Provider: "openai", Weight: 1, APIKeyID: &k1}
 	if err := targetRepo.Create(ta); err != nil {
 		t.Fatalf("Create ta: %v", err)
-	}
-	if err := targetRepo.Create(tb); err != nil {
-		t.Fatalf("Create tb: %v", err)
 	}
 
 	body, _ := json.Marshal(llmDistributeRequest{
 		UserIDs:    []string{"ua", "ub", "uc", "ud"},
-		TargetURLs: []string{sharedURL},
+		TargetURLs: []string{targetURL},
 	})
 	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/distribute", bytes.NewBuffer(body))
 	req.Header.Set("Authorization", "Bearer "+tok)
@@ -544,7 +543,8 @@ func TestDistribute_SameURL_TwoKeys_ExpandsAll(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // TestDistribute_MultipleURLs_EachMultiKey_ExpandsAll
-// Multiple URLs in target_urls, each with multiple keys — all expanded.
+// Multiple URLs in target_urls — each URL maps to one target, all 6 users
+// get bindings (round-robin across the 2 resolved targets).
 // ---------------------------------------------------------------------------
 
 func TestDistribute_MultipleURLs_EachMultiKey_ExpandsAll(t *testing.T) {
@@ -554,12 +554,10 @@ func TestDistribute_MultipleURLs_EachMultiKey_ExpandsAll(t *testing.T) {
 	url1 := "https://llm-host-1.example.com"
 	url2 := "https://llm-host-2.example.com"
 
-	k11, k12 := "key-h1-1", "key-h1-2"
-	k21 := "key-h2-1"
+	k1, k2 := "key-h1-1", "key-h2-1"
 	targets := []*db.LLMTarget{
-		{ID: uuid.NewString(), URL: url1, Name: "H1-K1", Provider: "openai", Weight: 1, APIKeyID: &k11},
-		{ID: uuid.NewString(), URL: url1, Name: "H1-K2", Provider: "openai", Weight: 1, APIKeyID: &k12},
-		{ID: uuid.NewString(), URL: url2, Name: "H2-K1", Provider: "openai", Weight: 1, APIKeyID: &k21},
+		{ID: uuid.NewString(), URL: url1, Name: "H1-K1", Provider: "openai", Weight: 1, APIKeyID: &k1},
+		{ID: uuid.NewString(), URL: url2, Name: "H2-K1", Provider: "openai", Weight: 1, APIKeyID: &k2},
 	}
 	for _, tgt := range targets {
 		if err := targetRepo.Create(tgt); err != nil {
@@ -584,6 +582,6 @@ func TestDistribute_MultipleURLs_EachMultiKey_ExpandsAll(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if resp["assigned"] != 6 {
-		t.Errorf("assigned = %d, want 6 (3 targets, 6 users round-robin)", resp["assigned"])
+		t.Errorf("assigned = %d, want 6 (2 targets, 6 users round-robin)", resp["assigned"])
 	}
 }

@@ -376,3 +376,15 @@ log:
   # 均以 DEBUG 级别写入该文件，敏感 header 自动过滤，body 截断至 64 KB。
   # 支持 SIGHUP 热重载：修改此行后发送 kill -HUP <pid> 立即生效，无需重启。
   # debug_file: "/var/log/pairproxy/debug.log"
+
+
+# ------------------------------------------------------------------------------
+# track — 用户对话跟踪配置
+# ------------------------------------------------------------------------------
+# track:
+#   dir: "./track"
+#   # 对话跟踪数据的根目录。
+#   # SQLite 模式：默认为 <database.path 所在目录>/track，无需配置。
+#   # Peer/PostgreSQL 模式：database.path 为空，默认退化为 ./track（相对于进程工作目录）。
+#   # 建议在 peer 模式下显式设置绝对路径，避免因工作目录不同导致路径不一致：
+#   #   dir: "/data/pairproxy/track"

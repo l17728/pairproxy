@@ -66,7 +66,8 @@ document.addEventListener('keydown', function(e) {
         <tr>
           <th class="px-4 py-3 text-left">时间</th>
           <th class="px-4 py-3 text-left">用户</th>
-          <th class="px-4 py-3 text-left">模型</th>
+          <th class="px-4 py-3 text-left">请求模型</th>
+          <th class="px-4 py-3 text-left">实际模型</th>
           <th class="px-4 py-3 text-right">输入</th>
           <th class="px-4 py-3 text-right">输出</th>
           <th class="px-4 py-3 text-right">费用($)</th>
@@ -81,6 +82,7 @@ document.addEventListener('keydown', function(e) {
           <td class="px-4 py-3 text-gray-400 text-xs whitespace-nowrap">{{.CreatedAt.Format "01-02 15:04:05"}}</td>
           <td class="px-4 py-3">{{username .UserID $.UserMap}}</td>
           <td class="px-4 py-3 text-gray-500 text-xs">{{if .Model}}{{.Model}}{{else}}—{{end}}</td>
+          <td class="px-4 py-3 text-xs">{{if .ActualModel}}<span class="text-indigo-600">{{.ActualModel}}</span>{{else}}<span class="text-gray-300">—</span>{{end}}</td>
           <td class="px-4 py-3 text-right">{{.InputTokens}}</td>
           <td class="px-4 py-3 text-right">{{.OutputTokens}}</td>
           <td class="px-4 py-3 text-right text-amber-600">{{if gt .CostUSD 0.0}}{{printf "%.4f" .CostUSD}}{{else}}<span class="text-gray-300">—</span>{{end}}</td>
@@ -94,7 +96,7 @@ document.addEventListener('keydown', function(e) {
           </td>
         </tr>
         {{else}}
-        <tr><td colspan="9" class="px-4 py-6 text-center text-gray-400">暂无日志</td></tr>
+        <tr><td colspan="10" class="px-4 py-6 text-center text-gray-400">暂无日志</td></tr>
         {{end}}
       </tbody>
     </table>

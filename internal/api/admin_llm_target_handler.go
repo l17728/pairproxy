@@ -83,14 +83,15 @@ func (h *AdminLLMTargetHandler) handleListTargets(w http.ResponseWriter, r *http
 // handleCreateTarget POST /api/admin/llm/targets - 创建新的 LLM target
 func (h *AdminLLMTargetHandler) handleCreateTarget(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		URL             string   `json:"url"`
-		APIKeyID        string   `json:"api_key_id"`
-		Provider        string   `json:"provider"`
-		Name            string   `json:"name"`
-		Weight          int      `json:"weight"`
-		HealthCheckPath string   `json:"health_check_path"`
-		SupportedModels []string `json:"supported_models"`
-		AutoModel       string   `json:"auto_model"`
+		URL             string            `json:"url"`
+		APIKeyID        string            `json:"api_key_id"`
+		Provider        string            `json:"provider"`
+		Name            string            `json:"name"`
+		Weight          int               `json:"weight"`
+		HealthCheckPath string            `json:"health_check_path"`
+		SupportedModels []string          `json:"supported_models"`
+		AutoModel       string            `json:"auto_model"`
+		ModelMapping    map[string]string `json:"model_mapping"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -108,19 +109,15 @@ func (h *AdminLLMTargetHandler) handleCreateTarget(w http.ResponseWriter, r *htt
 		return
 	}
 
-	// 检查 (URL, APIKeyID) 复合键是否已存在，支持同 URL + 不同 API Key 共存（Issue #6）
-	var apiKeyIDPtr *string
-	if req.APIKeyID != "" {
-		apiKeyIDPtr = &req.APIKeyID
-	}
-	exists, err := h.llmTargetRepo.ComboExists(req.URL, apiKeyIDPtr)
+	// 检查 URL 是否已存在（URL 现为全局唯一）
+	exists, err := h.llmTargetRepo.URLExists(req.URL)
 	if err != nil {
-		h.logger.Error("failed to check url+apikey exists", zap.String("url", req.URL), zap.Error(err))
+		h.logger.Error("failed to check url exists", zap.String("url", req.URL), zap.Error(err))
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 	if exists {
-		http.Error(w, "target with this URL and API key already exists", http.StatusConflict)
+		http.Error(w, "target with this URL already exists", http.StatusConflict)
 		return
 	}
 
@@ -140,6 +137,14 @@ func (h *AdminLLMTargetHandler) handleCreateTarget(w http.ResponseWriter, r *htt
 		}
 	}
 
+	// 转换 model_mapping 为 JSON
+	modelMappingJSON := "{}"
+	if len(req.ModelMapping) > 0 {
+		if b, err := json.Marshal(req.ModelMapping); err == nil {
+			modelMappingJSON = string(b)
+		}
+	}
+
 	// 创建 target
 	target := &db.LLMTarget{
 		ID:                  uuid.NewString(),
@@ -150,6 +155,7 @@ func (h *AdminLLMTargetHandler) handleCreateTarget(w http.ResponseWriter, r *htt
 		Weight:              req.Weight,
 		HealthCheckPath:     req.HealthCheckPath,
 		SupportedModelsJSON: supportedModelsJSON,
+		ModelMappingJSON:    modelMappingJSON,
 		AutoModel:           req.AutoModel,
 		Source:              "database",
 		IsEditable:          true,
@@ -172,7 +178,13 @@ func (h *AdminLLMTargetHandler) handleCreateTarget(w http.ResponseWriter, r *htt
 	if req.AutoModel != "" {
 		auditDetails += fmt.Sprintf(" auto_model=%s", req.AutoModel)
 	}
+	if len(req.ModelMapping) > 0 {
+		auditDetails += fmt.Sprintf(" model_mapping=%s", modelMappingJSON)
+	}
 	_ = h.auditRepo.Create("admin", "llm_target.create", req.URL, auditDetails)
+
+	// 标记为未同步（新 target 尚未被运行时加载）
+	_ = h.llmTargetRepo.MarkUnsynced(target.ID)
 
 	// 同步 balancer/HC（使新 target 立即参与健康检查）
 	if h.syncFn != nil {
@@ -233,20 +245,15 @@ func (h *AdminLLMTargetHandler) handleUpdateTarget(w http.ResponseWriter, r *htt
 		return
 	}
 
-	// 检查是否可编辑
-	if !target.IsEditable {
-		http.Error(w, "Cannot update config-sourced target", http.StatusForbidden)
-		return
-	}
-
 	var req struct {
-		Provider        *string  `json:"provider"`
-		APIKeyID        *string  `json:"api_key_id"`
-		Name            *string  `json:"name"`
-		Weight          *int     `json:"weight"`
-		HealthCheckPath *string  `json:"health_check_path"`
-		SupportedModels []string `json:"supported_models"`
-		AutoModel       *string  `json:"auto_model"`
+		Provider        *string           `json:"provider"`
+		APIKeyID        *string           `json:"api_key_id"`
+		Name            *string           `json:"name"`
+		Weight          *int              `json:"weight"`
+		HealthCheckPath *string           `json:"health_check_path"`
+		SupportedModels []string          `json:"supported_models"`
+		AutoModel       *string           `json:"auto_model"`
+		ModelMapping    map[string]string `json:"model_mapping"` // nil = no change; empty map = clear
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -308,6 +315,20 @@ func (h *AdminLLMTargetHandler) handleUpdateTarget(w http.ResponseWriter, r *htt
 		target.AutoModel = *req.AutoModel
 	}
 
+	// 处理 model_mapping（nil 表示不修改；空 map 表示清除）
+	if req.ModelMapping != nil {
+		newModelMappingJSON := "{}"
+		if len(req.ModelMapping) > 0 {
+			if b, err := json.Marshal(req.ModelMapping); err == nil {
+				newModelMappingJSON = string(b)
+			}
+		}
+		if newModelMappingJSON != target.ModelMappingJSON {
+			changes = append(changes, fmt.Sprintf("model_mapping: %s→%s", target.ModelMappingJSON, newModelMappingJSON))
+			target.ModelMappingJSON = newModelMappingJSON
+		}
+	}
+
 	if len(changes) == 0 {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -336,6 +357,9 @@ func (h *AdminLLMTargetHandler) handleUpdateTarget(w http.ResponseWriter, r *htt
 		changesSummary += change
 	}
 	_ = h.auditRepo.Create("admin", "llm_target.update", target.URL, changesSummary)
+
+	// 标记为未同步
+	_ = h.llmTargetRepo.MarkUnsynced(target.ID)
 
 	// 同步 balancer/HC（使变更立即生效）
 	if h.syncFn != nil {
@@ -372,12 +396,6 @@ func (h *AdminLLMTargetHandler) handleDeleteTarget(w http.ResponseWriter, r *htt
 		}
 		h.logger.Error("failed to get llm target", zap.String("id", id), zap.Error(err))
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	// 检查是否可编辑
-	if !target.IsEditable {
-		http.Error(w, "Cannot delete config-sourced target", http.StatusForbidden)
 		return
 	}
 
@@ -452,6 +470,9 @@ func (h *AdminLLMTargetHandler) handleEnableTarget(w http.ResponseWriter, r *htt
 	_ = h.auditRepo.Create("admin", "llm_target.enable", target.URL,
 		fmt.Sprintf("id=%s name=%s", target.ID, target.Name))
 
+	// 标记为未同步
+	_ = h.llmTargetRepo.MarkUnsynced(target.ID)
+
 	// 同步 balancer/HC（将启用的 target 加回轮询）
 	if h.syncFn != nil {
 		h.syncFn()
@@ -511,6 +532,9 @@ func (h *AdminLLMTargetHandler) handleDisableTarget(w http.ResponseWriter, r *ht
 	// 记录审计日志
 	_ = h.auditRepo.Create("admin", "llm_target.disable", target.URL,
 		fmt.Sprintf("id=%s name=%s", target.ID, target.Name))
+
+	// 标记为未同步
+	_ = h.llmTargetRepo.MarkUnsynced(target.ID)
 
 	// 同步 balancer/HC（将禁用的 target 从轮询中移除）
 	if h.syncFn != nil {

@@ -903,6 +903,8 @@ group:trial
 > **v2.9.0+** — 为普通用户签发 `sk-pp-` 格式的 API Key，用户无需运行 `cproxy` 守护进程，可直接以 API Key 访问 PairProxy，与 OpenAI / Anthropic SDK 兼容。
 >
 > **v2.15.0** — Keygen 算法升级为 HMAC-SHA256，替换旧版指纹算法，同一用户每次调用返回确定性相同的密钥。
+>
+> **v2.24.7** — Key 派生由共享 `keygen_secret` 改为 per-user `PasswordHash`；新增用户自助改密码端点 `POST /keygen/api/change-password`。
 
 ---
 
@@ -925,7 +927,7 @@ group:trial
 
 | Field | Description |
 |-------|-------------|
-| `api_key` | 生成的 API Key，`sk-pp-` 前缀，HMAC-SHA256 派生（v2.15.0+） |
+| `api_key` | 生成的 API Key，`sk-pp-` 前缀，由用户 PasswordHash 派生（v2.24.7+） |
 | `username` | 对应的用户名 |
 | `expires_at` | 过期时间（`null` 表示永不过期） |
 
@@ -964,6 +966,45 @@ group:trial
   "username": ""
 }
 ```
+
+---
+
+#### `POST /keygen/api/change-password` <small>v2.24.7+</small>
+
+用户自助修改密码，并获取由新密码派生的 API Key。修改成功后旧 Key 立即失效。
+
+**Authentication**: `Authorization: Bearer <session_token>`（登录 Keygen WebUI 后获得）
+
+**Request**
+```json
+{
+  "old_password": "current-password",
+  "new_password": "new-strong-password"
+}
+```
+
+**Response 200**
+```json
+{
+  "key": "sk-pp-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "message": "密码已更新，新 API Key 已生成"
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `key` | 新 API Key，由新 PasswordHash 派生，立即可用 |
+| `message` | 操作成功提示 |
+
+**Error responses**
+
+| Status | `error` code | Reason |
+|--------|-------------|--------|
+| 400 | `invalid_request` | 请求体解析失败、字段为空、新旧密码相同 |
+| 401 | `unauthorized` | session_token 无效或已过期 |
+| 401 | `invalid_password` | 旧密码验证失败 |
+| 403 | `forbidden` | LDAP 账户不支持本地密码修改 |
+| 503 | `worker_node` | 当前节点为 Worker，写操作须转发至 Primary |
 
 ---
 

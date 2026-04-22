@@ -35,6 +35,7 @@ type SProxyFullConfig struct {
 	Pricing   PricingConfig   `yaml:"pricing"`
 	Telemetry TelemetryConfig `yaml:"telemetry"`
 	Corpus         CorpusConfig         `yaml:"corpus"`
+	Track          TrackConfig          `yaml:"track"`
 	SemanticRouter SemanticRouterConfig `yaml:"semantic_router"`
 	Log            LogConfig            `yaml:"log"`
 }
@@ -49,6 +50,14 @@ type CorpusConfig struct {
 	FlushInterval   time.Duration `yaml:"flush_interval"`    // 强制 flush 间隔，默认 5s
 	MinOutputTokens int           `yaml:"min_output_tokens"` // 最小输出 token 数过滤，默认 50
 	ExcludeGroups   []string      `yaml:"exclude_groups"`    // 排除的分组列表
+}
+
+// TrackConfig 用户对话跟踪配置
+type TrackConfig struct {
+	// Dir 跟踪数据根目录。
+	// 默认值：SQLite 模式下为 <database.path 所在目录>/track，peer/postgres 模式下为 ./track。
+	// peer 模式建议显式配置绝对路径，避免依赖进程工作目录。
+	Dir string `yaml:"dir"`
 }
 
 // SemanticRouterConfig 语义路由模块配置
@@ -158,6 +167,8 @@ type LLMTarget struct {
 	ModelMapping    map[string]string `yaml:"model_mapping,omitempty"` // Anthropic 模型名 → Ollama/OpenAI 模型名映射；"*" 匹配所有未命中的模型
 	SupportedModels []string          `yaml:"supported_models,omitempty"` // 该 target 支持的模型名列表（支持通配符，空表示支持所有）
 	AutoModel       string            `yaml:"auto_model,omitempty"` // auto 模式下使用的模型名（空表示降级或透传）
+	// 运行时标志（不序列化）
+	APIKeyError     bool              `yaml:"-"` // true = API Key 解析失败；SyncLLMTargets 会将该 target 强制标记为不健康
 }
 
 // DatabaseConfig 数据库配置（支持 SQLite 和 PostgreSQL）
@@ -286,11 +297,8 @@ func (c *SProxyFullConfig) Validate() error {
 		errs = append(errs, "auth.jwt_secret should be at least 32 characters for security (current length is too short)")
 	}
 
-	if c.Auth.KeygenSecret == "" {
-		errs = append(errs, "auth.keygen_secret is required (set ${KEYGEN_SECRET} or provide the value directly)")
-	} else if len(c.Auth.KeygenSecret) < 32 {
-		errs = append(errs, "auth.keygen_secret should be at least 32 characters for security (current length is too short)")
-	}
+	// keygen_secret 已弃用：API Key 现由用户自己的 PasswordHash 派生，不再依赖共享密钥。
+	// 保留字段以兼容旧配置文件，但不再校验或使用。
 
 	switch c.Database.Driver {
 	case "postgres":

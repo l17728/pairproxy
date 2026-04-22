@@ -419,7 +419,7 @@ func TestConvertAnthropicToOpenAIRequest(t *testing.T) {
 
 		converted, newPath, err := convertAnthropicToOpenAIRequest(body, logger, "test-req-id", nil)
 		require.NoError(t, err)
-		assert.Equal(t, "/v1/chat/completions", newPath)
+		assert.Equal(t, "/chat/completions", newPath)
 
 		var openaiReq map[string]interface{}
 		require.NoError(t, json.Unmarshal(converted, &openaiReq))
@@ -535,7 +535,7 @@ func TestConvertAnthropicToOpenAIRequest(t *testing.T) {
 	t.Run("empty body", func(t *testing.T) {
 		converted, newPath, err := convertAnthropicToOpenAIRequest([]byte{}, logger, "test-req-id", nil)
 		require.NoError(t, err)
-		assert.Equal(t, "/v1/chat/completions", newPath)
+		assert.Equal(t, "/chat/completions", newPath)
 		assert.Empty(t, converted)
 	})
 
@@ -543,7 +543,7 @@ func TestConvertAnthropicToOpenAIRequest(t *testing.T) {
 		body := []byte(`{invalid json}`)
 		converted, newPath, err := convertAnthropicToOpenAIRequest(body, logger, "test-req-id", nil)
 		assert.Error(t, err)
-		assert.Equal(t, "/v1/chat/completions", newPath)
+		assert.Equal(t, "/chat/completions", newPath)
 		assert.Equal(t, body, converted) // Should return original
 	})
 }
@@ -793,7 +793,7 @@ func TestProtocolConversionRoundTrip(t *testing.T) {
 
 	openaiBody, newPath, err := convertAnthropicToOpenAIRequest(anthropicBody, logger, "test-req", nil)
 	require.NoError(t, err)
-	assert.Equal(t, "/v1/chat/completions", newPath)
+	assert.Equal(t, "/chat/completions", newPath)
 
 	var openaiReq map[string]interface{}
 	require.NoError(t, json.Unmarshal(openaiBody, &openaiReq))
@@ -1279,16 +1279,16 @@ func TestOpenAIToAnthropicStreamConverterTokenAccuracy(t *testing.T) {
 		}
 
 		output := w.String()
-		// message_start に input_tokens:0 を送る（プログレッシブモードの仕様）
+		// message_start 发送 input_tokens:0（渐进模式规范）
 		assert.Contains(t, output, `"input_tokens":0`)
-		// output_tokens は message_delta に正確な値で含まれる
+		// output_tokens 以精确值包含在 message_delta 中
 		assert.Contains(t, output, `"output_tokens":10`)
-		// message_delta には正確な input_tokens（= prompt_tokens - cached_tokens = 100 - 80 = 20）
+		// message_delta 中包含精确的 input_tokens（= prompt_tokens - cached_tokens = 100 - 80 = 20）
 		assert.Contains(t, output, `"input_tokens":20`)
-		// cache_read_input_tokens と cache_creation_input_tokens も message_delta に含まれる
+		// cache_read_input_tokens 和 cache_creation_input_tokens 也包含在 message_delta 中
 		assert.Contains(t, output, `"cache_read_input_tokens":80`)
 		assert.Contains(t, output, `"cache_creation_input_tokens":0`)
-		// content が即時に送信されること
+		// content 即时发送
 		assert.Contains(t, output, `"text":"Hi"`)
 	})
 
@@ -1312,8 +1312,8 @@ func TestOpenAIToAnthropicStreamConverterTokenAccuracy(t *testing.T) {
 	})
 
 	t.Run("content deltas emitted progressively before [DONE]", func(t *testing.T) {
-		// 渐進モード: usage が後から来ても、content は即座に発射される。
-		// message_start は最初の content delta 到着時に発射（input_tokens=0 のプレースホルダー付き）。
+		// 渐进模式：即使 usage 后到，content 也会立即发出。
+		// message_start 在首个 content delta 到达时发出（携带 input_tokens=0 占位符）。
 		w := newMockResponseWriter()
 		converter := NewOpenAIToAnthropicStreamConverter(w, logger, "test-req-ccc0", "")
 
@@ -2306,7 +2306,7 @@ func TestConvertDebugTxt_MultiTurnNoLastAssistant(t *testing.T) {
 
 	converted, newPath, err := convertAnthropicToOpenAIRequest(body, logger, "req-debug-multiturn", nil)
 	require.NoError(t, err, "multi-turn conversation not ending with assistant must not be rejected")
-	assert.Equal(t, "/v1/chat/completions", newPath)
+	assert.Equal(t, "/chat/completions", newPath)
 
 	var req map[string]interface{}
 	require.NoError(t, json.Unmarshal(converted, &req))
@@ -2346,7 +2346,7 @@ func TestProtocolConversion_EmptyBody(t *testing.T) {
 
 	converted, path, err := convertAnthropicToOpenAIRequest([]byte{}, logger, "test", nil)
 	require.NoError(t, err)
-	assert.Equal(t, "/v1/chat/completions", path)
+	assert.Equal(t, "/chat/completions", path)
 	assert.Empty(t, converted)
 
 	converted, err = convertOpenAIToAnthropicResponse([]byte{}, logger, "test", "")
@@ -2362,7 +2362,7 @@ func TestProtocolConversion_MalformedJSON(t *testing.T) {
 
 	converted, path, err := convertAnthropicToOpenAIRequest(body, logger, "test", nil)
 	assert.Error(t, err)
-	assert.Equal(t, "/v1/chat/completions", path)
+	assert.Equal(t, "/chat/completions", path)
 	assert.Equal(t, body, converted) // 原样返回
 
 	converted, err = convertOpenAIToAnthropicResponse(body, logger, "test", "")

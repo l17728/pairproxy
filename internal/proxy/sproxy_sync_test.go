@@ -95,8 +95,8 @@ func TestSyncConfigTargetsToDatabase(t *testing.T) {
 	// Verify properties
 	for _, target := range targets {
 		assert.Equal(t, "config", target.Source)
-		// Seed sets IsEditable=true on first insert, allowing WebUI modifications (F1)
-		assert.True(t, target.IsEditable)
+		// config-sourced targets are NOT editable via WebUI (IsEditable=false)
+		assert.False(t, target.IsEditable)
 		assert.True(t, target.IsActive)
 	}
 }
@@ -1018,8 +1018,8 @@ func TestResolveAPIKeyID_DBError(t *testing.T) {
 	assert.Nil(t, result)
 }
 
-// TestSyncConfigTargets_SameURL_TwoKeys 验证 Issue #6 核心场景：
-// 同一 URL 配置两个不同的 API Key → 同步后数据库中存在两个独立的 LLMTarget，
+// TestSyncConfigTargets_SameURL_TwoKeys 验证多 target 同步场景：
+// 两个不同 URL 配置两个不同的 API Key → 同步后数据库中存在两个独立的 LLMTarget，
 // SyncLLMTargets 加载后 balancer 中有两个条目（各自持有不同的 API Key）。
 func TestSyncConfigTargets_SameURL_TwoKeys(t *testing.T) {
 	logger := zap.NewNop()
@@ -1027,20 +1027,21 @@ func TestSyncConfigTargets_SameURL_TwoKeys(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, db.Migrate(logger, gormDB))
 
-	const targetURL = "https://api.anthropic.com"
+	const urlA = "https://api.anthropic.com"
+	const urlB = "https://api2.anthropic.com"
 
 	cfg := &config.SProxyFullConfig{
 		LLM: config.LLMConfig{
 			Targets: []config.LLMTarget{
 				{
-					URL:      targetURL,
+					URL:      urlA,
 					APIKey:   "sk-ant-key-account-A",
 					Provider: "anthropic",
 					Name:     "Anthropic Account A",
 					Weight:   2,
 				},
 				{
-					URL:      targetURL,
+					URL:      urlB,
 					APIKey:   "sk-ant-key-account-B",
 					Provider: "anthropic",
 					Name:     "Anthropic Account B",
@@ -1057,15 +1058,17 @@ func TestSyncConfigTargets_SameURL_TwoKeys(t *testing.T) {
 	err = sp.syncConfigTargetsToDatabase(repo)
 	require.NoError(t, err)
 
-	// 验证：数据库中应有 2 个 llm_targets（同 URL，不同 api_key_id）
+	// 验证：数据库中应有 2 个 llm_targets（不同 URL，不同 api_key_id）
 	targets, err := repo.ListAll()
 	require.NoError(t, err)
-	assert.Len(t, targets, 2, "同一 URL 两个不同 API Key 应创建两个独立的 target")
+	assert.Len(t, targets, 2, "两个不同 URL 的 API Key 应创建两个独立的 target")
 
-	// 验证两个 target 的 URL 相同
+	// 验证两个 target 的 URL 不同
+	urls := map[string]bool{}
 	for _, t_ := range targets {
-		assert.Equal(t, targetURL, t_.URL)
+		urls[t_.URL] = true
 	}
+	assert.True(t, urls[urlA] && urls[urlB], "两个 target 应各有独立的 URL")
 
 	// 验证两个 target 的 api_key_id 不同
 	require.NotNil(t, targets[0].APIKeyID)
@@ -1091,22 +1094,23 @@ func TestSyncConfigTargets_SameURL_TwoKeys(t *testing.T) {
 }
 
 // TestSyncConfigTargets_SameURL_TwoKeys_Cleanup 验证：
-// 配置从"同 URL 两个 Key"缩减为"同 URL 一个 Key"时，cleanup 精确删除被移除的那条，
-// 不影响保留的那条（精确 (url, api_key_id) 匹配，而非仅按 URL 删除）。
+// 配置从"两个不同 URL 两个 Key"缩减为"只有 URL-A 一个 Key"时，cleanup 精确删除
+// 被移除的那条（URL-B），不影响保留的那条（URL-A）。
 func TestSyncConfigTargets_SameURL_TwoKeys_Cleanup(t *testing.T) {
 	logger := zap.NewNop()
 	gormDB, err := db.Open(logger, ":memory:")
 	require.NoError(t, err)
 	require.NoError(t, db.Migrate(logger, gormDB))
 
-	const targetURL = "https://api.anthropic.com"
+	const urlA = "https://api.anthropic.com"
+	const urlB = "https://api2.anthropic.com"
 
-	// 初始：同 URL 两个 Key
+	// 初始：两个不同 URL，两个 Key
 	cfg := &config.SProxyFullConfig{
 		LLM: config.LLMConfig{
 			Targets: []config.LLMTarget{
-				{URL: targetURL, APIKey: "sk-ant-key-A", Provider: "anthropic", Name: "A", Weight: 1},
-				{URL: targetURL, APIKey: "sk-ant-key-B", Provider: "anthropic", Name: "B", Weight: 1},
+				{URL: urlA, APIKey: "sk-ant-key-A", Provider: "anthropic", Name: "A", Weight: 1},
+				{URL: urlB, APIKey: "sk-ant-key-B", Provider: "anthropic", Name: "B", Weight: 1},
 			},
 		},
 	}
@@ -1118,17 +1122,17 @@ func TestSyncConfigTargets_SameURL_TwoKeys_Cleanup(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, targets, 2, "初始同步后应有 2 个 target")
 
-	// 更新配置：只保留 Key-A
+	// 更新配置：只保留 URL-A / Key-A
 	cfg.LLM.Targets = []config.LLMTarget{
-		{URL: targetURL, APIKey: "sk-ant-key-A", Provider: "anthropic", Name: "A", Weight: 1},
+		{URL: urlA, APIKey: "sk-ant-key-A", Provider: "anthropic", Name: "A", Weight: 1},
 	}
 	require.NoError(t, sp.syncConfigTargetsToDatabase(repo))
 
-	// 验证：只剩 1 个 target（Key-B 被精确删除，Key-A 保留）
+	// 验证：只剩 1 个 target（URL-B 被精确删除，URL-A 保留）
 	targets, err = repo.ListAll()
 	require.NoError(t, err)
-	assert.Len(t, targets, 1, "移除一个 Key 后应只剩 1 个 target")
-	assert.Equal(t, targetURL, targets[0].URL)
+	assert.Len(t, targets, 1, "移除一个 target 后应只剩 1 个")
+	assert.Equal(t, urlA, targets[0].URL)
 
 	// 验证剩余的 target 对应 Key-A（通过查询 APIKey 表确认）
 	require.NotNil(t, targets[0].APIKeyID)
@@ -1139,21 +1143,22 @@ func TestSyncConfigTargets_SameURL_TwoKeys_Cleanup(t *testing.T) {
 }
 
 // TestSyncLLMTargets_SameURL_TwoKeys_BothInBalancer 验证端到端流程：
-// 同 URL 两个 Key → SyncLLMTargets 后 balancer 中有 2 个条目，
-// 两个条目的 Addr 相同（都是该 URL），但 ID 不同（UUID）。
+// 两个不同 URL 各配一个 Key → SyncLLMTargets 后 balancer 中有 2 个条目，
+// 两个条目的 Addr 不同（各自为各自的 URL），ID 均为 UUID。
 func TestSyncLLMTargets_SameURL_TwoKeys_BothInBalancer(t *testing.T) {
 	logger := zap.NewNop()
 	gormDB, err := db.Open(logger, ":memory:")
 	require.NoError(t, err)
 	require.NoError(t, db.Migrate(logger, gormDB))
 
-	const targetURL = "https://api.anthropic.com"
+	const urlA = "https://api.anthropic.com"
+	const urlB = "https://api2.anthropic.com"
 
 	cfg := &config.SProxyFullConfig{
 		LLM: config.LLMConfig{
 			Targets: []config.LLMTarget{
-				{URL: targetURL, APIKey: "sk-ant-key-A", Provider: "anthropic", Name: "A", Weight: 1},
-				{URL: targetURL, APIKey: "sk-ant-key-B", Provider: "anthropic", Name: "B", Weight: 1},
+				{URL: urlA, APIKey: "sk-ant-key-A", Provider: "anthropic", Name: "A", Weight: 1},
+				{URL: urlB, APIKey: "sk-ant-key-B", Provider: "anthropic", Name: "B", Weight: 1},
 			},
 		},
 	}
@@ -1173,18 +1178,21 @@ func TestSyncLLMTargets_SameURL_TwoKeys_BothInBalancer(t *testing.T) {
 
 	// balancer 应有 2 个条目
 	allTargets := sp.llmBalancer.Targets()
-	assert.Len(t, allTargets, 2, "balancer 应有 2 个条目（同 URL 不同 Key）")
+	assert.Len(t, allTargets, 2, "balancer 应有 2 个条目（两个不同 URL 各一个 Key）")
 
-	// 两个条目的 Addr 相同（同一 URL）
+	// 两个条目的 Addr 不同（各自的 URL）
+	addrs := map[string]bool{}
 	for _, tgt := range allTargets {
-		assert.Equal(t, targetURL, tgt.Addr, "balancer 条目的 Addr 应为 URL")
+		addrs[tgt.Addr] = true
+		assert.NotEmpty(t, tgt.ID, "balancer 条目应有 UUID")
 	}
+	assert.True(t, addrs[urlA] && addrs[urlB], "两个 balancer 条目应各有独立的 Addr")
 
 	// 两个条目的 ID 不同（UUID，而非 URL）
 	if len(allTargets) == 2 {
 		assert.NotEqual(t, allTargets[0].ID, allTargets[1].ID,
 			"两个条目的 UUID 应不同")
-		assert.NotEqual(t, allTargets[0].ID, targetURL,
+		assert.NotEqual(t, allTargets[0].ID, urlA,
 			"ID 应为 UUID，不应等于 URL")
 	}
 }

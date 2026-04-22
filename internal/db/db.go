@@ -108,6 +108,12 @@ func OpenWithConfig(logger *zap.Logger, cfg config.DatabaseConfig) (*gorm.DB, er
 
 	db, err := gorm.Open(dialector, &gorm.Config{
 		Logger: gormLog,
+		// PostgreSQL 的 AutoMigrate 会自动为 XxxID 字段创建 FK 约束，
+		// 但其生成的是 CREATE UNIQUE INDEX（非 UNIQUE CONSTRAINT），
+		// PostgreSQL 要求 FK 引用目标必须是 UNIQUE CONSTRAINT 或 PRIMARY KEY，
+		// 导致升级时报 "no unique constraint matching given keys for reference table groups"。
+		// 禁用后由应用层保证引用完整性（fail-open 设计，与 SQLite 行为对齐）。
+		DisableForeignKeyConstraintWhenMigrating: isPostgres,
 	})
 	if err != nil {
 		logger.Error("failed to open database",
@@ -213,6 +219,32 @@ func Migrate(logger *zap.Logger, db *gorm.DB) error {
 	logger = logger.Named("migrate")
 	logger.Info("running database migrations")
 
+	// 数据迁移前置：llm_bindings.target_id 和 group_target_set_members.target_id
+	// 在旧版本中不存在（旧版使用 target_url 字段）。
+	// AutoMigrate 向已有行的表添加 NOT NULL 列时会直接报错，必须先以 nullable 形式预建列，
+	// AutoMigrate 发现列已存在时会跳过，不再尝试施加 NOT NULL 约束。
+	// 回填逻辑（migrateBindingTargetID / migrateGroupTargetSetMemberTargetID）在后面执行。
+	preMigrateNullableColumn(logger, db, "llm_bindings", "target_id")
+	preMigrateNullableColumn(logger, db, "group_target_set_members", "target_id")
+
+	// 数据清理：users.external_id 旧版为 string（空字符串默认），新版为 *string（NULL 默认）。
+	// AutoMigrate 将列改为 nullable 但不会把 "" 转成 NULL，导致
+	// (auth_provider, external_id) 复合唯一索引因重复的 ('local','') 创建失败。
+	// 在 AutoMigrate 前将空字符串规范化为 NULL，确保升级路径幂等。
+	if err := db.Exec(`UPDATE users SET external_id = NULL WHERE external_id = ''`).Error; err != nil {
+		logger.Warn("users.external_id normalization failed (non-fatal, table may not exist yet)",
+			zap.Error(err))
+	} else {
+		logger.Debug("users.external_id: empty strings normalized to NULL")
+	}
+
+	// 数据迁移：llm_targets URL 唯一化（废弃同 URL 多 APIKey 场景）。
+	// 若存在同 URL 的多条记录，保留最早创建的那条；将指向被删除记录的 llm_bindings 重定向到保留记录；
+	// 删除多余记录。之后 AutoMigrate 将添加 URL 的唯一索引。
+	if err := deduplicateLLMTargetsByURL(logger, db); err != nil {
+		logger.Warn("llm_targets URL dedup failed (non-fatal)", zap.Error(err))
+	}
+
 	// AutoMigrate 创建/更新表结构
 	models := []interface{}{
 		&Group{},
@@ -268,6 +300,10 @@ func Migrate(logger *zap.Logger, db *gorm.DB) error {
 		}
 	}
 
+	// 索引迁移：废弃 idx_llm_target_url_apikey 复合索引，改为 URL 单列唯一索引。
+	// AutoMigrate 已通过 model tag 创建 idx_llm_targets_url，此处仅清理旧索引。
+	dropLLMTargetCompositeIndex(logger, db)
+
 	// 数据迁移：llm_bindings.target_url → target_id
 	// 若存在 target_url 列但 target_id 列值为空，则通过 JOIN 填充；无法匹配的行（孤儿）删除。
 	if err := migrateBindingTargetID(logger, db); err != nil {
@@ -279,8 +315,61 @@ func Migrate(logger *zap.Logger, db *gorm.DB) error {
 		logger.Warn("group_target_set_members target_id migration failed (non-fatal)", zap.Error(err))
 	}
 
+	// 回填完成后补 NOT NULL 约束（预建列时为 nullable，数据填充后恢复意图约束）
+	postMigrateSetNotNull(logger, db, "llm_bindings", "target_id")
+	postMigrateSetNotNull(logger, db, "group_target_set_members", "target_id")
+
 	logger.Info("database migrations completed")
 	return nil
+}
+
+// preMigrateNullableColumn 在 AutoMigrate 之前将指定列以 nullable TEXT 形式预加入表中。
+// 目的：防止 AutoMigrate 向已有行的表添加 NOT NULL 列时因现存 NULL 值报错。
+// AutoMigrate 发现列已存在时会跳过，不会再尝试施加 NOT NULL 约束。
+// 若表不存在（全新安装）则忽略错误，AutoMigrate 会完整建表。
+func preMigrateNullableColumn(logger *zap.Logger, db *gorm.DB, table, column string) {
+	var sql string
+	switch DriverName(db) {
+	case "postgres":
+		sql = fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s TEXT`, table, column)
+	default: // sqlite
+		sql = fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s TEXT`, table, column)
+	}
+	if err := db.Exec(sql).Error; err != nil {
+		// 表不存在或列已存在均属正常（全新安装 / 已迁移），记 debug 后继续
+		logger.Debug("preMigrateNullableColumn skipped (table absent or column exists)",
+			zap.String("table", table),
+			zap.String("column", column),
+			zap.Error(err),
+		)
+	} else {
+		logger.Info("pre-migrated nullable column",
+			zap.String("table", table),
+			zap.String("column", column),
+		)
+	}
+}
+
+// postMigrateSetNotNull 在数据回填完成后为指定列补设 NOT NULL 约束。
+// 仅在 PostgreSQL 下执行（SQLite 不支持 ALTER COLUMN SET NOT NULL）。
+// 若列仍有 NULL 值（孤儿行未删净），记 warn 后继续，不阻断启动。
+func postMigrateSetNotNull(logger *zap.Logger, db *gorm.DB, table, column string) {
+	if DriverName(db) != "postgres" {
+		return // SQLite 不支持此语法，且 SQLite FK 约束由 PRAGMA 层面保证
+	}
+	sql := fmt.Sprintf(`ALTER TABLE %s ALTER COLUMN %s SET NOT NULL`, table, column)
+	if err := db.Exec(sql).Error; err != nil {
+		logger.Warn("postMigrateSetNotNull failed (column may still contain NULLs)",
+			zap.String("table", table),
+			zap.String("column", column),
+			zap.Error(err),
+		)
+	} else {
+		logger.Debug("NOT NULL constraint applied",
+			zap.String("table", table),
+			zap.String("column", column),
+		)
+	}
 }
 
 // migrateBindingTargetID 将 llm_bindings 表中的 target_url（旧列）迁移到 target_id（新列）。
@@ -400,4 +489,84 @@ func migrateGroupTargetSetMemberTargetID(logger *zap.Logger, db *gorm.DB) error 
 
 	logger.Info("group_target_set_members target_id migration completed")
 	return nil
+}
+
+// deduplicateLLMTargetsByURL 合并同 URL 的多条 llm_targets 记录。
+// 对每组同 URL 的记录，保留 created_at 最早的一条（保持原有绑定稳定），
+// 将 llm_bindings 中指向被删除记录的 target_id 更新为保留记录的 ID，
+// 然后删除多余记录。
+func deduplicateLLMTargetsByURL(logger *zap.Logger, db *gorm.DB) error {
+	// 找出有重复 URL 的记录
+	type urlGroup struct {
+		URL string
+	}
+	var duplicates []urlGroup
+	if err := db.Raw(`
+		SELECT url FROM llm_targets
+		GROUP BY url
+		HAVING COUNT(*) > 1
+	`).Scan(&duplicates).Error; err != nil {
+		return fmt.Errorf("find duplicate urls: %w", err)
+	}
+
+	if len(duplicates) == 0 {
+		return nil
+	}
+
+	logger.Info("deduplicating llm_targets", zap.Int("duplicate_url_count", len(duplicates)))
+
+	for _, dup := range duplicates {
+		// 取该 URL 下所有记录，按 created_at ASC 排序（保留最早的）
+		type targetRow struct {
+			ID string
+		}
+		var rows []targetRow
+		if err := db.Raw(`SELECT id FROM llm_targets WHERE url = ? ORDER BY created_at ASC`, dup.URL).Scan(&rows).Error; err != nil {
+			logger.Warn("dedup: failed to list targets for url", zap.String("url", dup.URL), zap.Error(err))
+			continue
+		}
+		if len(rows) <= 1 {
+			continue
+		}
+
+		keepID := rows[0].ID
+		removeIDs := make([]string, 0, len(rows)-1)
+		for _, r := range rows[1:] {
+			removeIDs = append(removeIDs, r.ID)
+		}
+
+		// 更新绑定：将指向 removeIDs 的 llm_bindings.target_id 改为 keepID
+		if err := db.Exec(`UPDATE llm_bindings SET target_id = ? WHERE target_id IN ?`, keepID, removeIDs).Error; err != nil {
+			logger.Warn("dedup: failed to redirect bindings", zap.String("url", dup.URL), zap.Error(err))
+		}
+
+		// 删除多余记录
+		if err := db.Exec(`DELETE FROM llm_targets WHERE id IN ?`, removeIDs).Error; err != nil {
+			logger.Warn("dedup: failed to delete duplicate targets", zap.String("url", dup.URL), zap.Error(err))
+			continue
+		}
+
+		logger.Info("dedup: merged duplicate targets",
+			zap.String("url", dup.URL),
+			zap.String("kept_id", keepID),
+			zap.Strings("removed_ids", removeIDs))
+	}
+	return nil
+}
+
+// dropLLMTargetCompositeIndex 删除废弃的 (url, api_key_id) 复合索引。
+// 迁移到 URL 单列唯一索引后，旧复合索引变为冗余。
+func dropLLMTargetCompositeIndex(logger *zap.Logger, db *gorm.DB) {
+	var sql string
+	switch DriverName(db) {
+	case "postgres":
+		sql = `DROP INDEX IF EXISTS idx_llm_target_url_apikey`
+	default: // sqlite
+		sql = `DROP INDEX IF EXISTS idx_llm_target_url_apikey`
+	}
+	if err := db.Exec(sql).Error; err != nil {
+		logger.Debug("drop composite index (may not exist)", zap.Error(err))
+	} else {
+		logger.Info("dropped deprecated composite index idx_llm_target_url_apikey")
+	}
 }

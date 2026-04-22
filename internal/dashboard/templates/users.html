@@ -1,32 +1,29 @@
 {{define "content"}}
 <style>
-  /* ── 排序表头 ── */
   .sortable { cursor: pointer; user-select: none; white-space: nowrap; }
   .sortable:hover { background-color: #f3f4f6; }
   .sortable::after { content: " ⇅"; color: #9ca3af; font-size: 11px; }
   .sortable.asc::after  { content: " ↑"; color: #4f46e5; }
   .sortable.desc::after { content: " ↓"; color: #4f46e5; }
-
-  /* ── Token 数字 ── */
   .token-count  { font-family: 'Courier New', monospace; font-weight: 600; }
   .token-input  { color: #3b82f6; }
   .token-output { color: #10b981; }
   .token-total  { color: #7c3aed; }
   .avg-stat     { font-size: 12px; color: #6b7280; }
-
-  /* ── 骨架屏 ── */
-  .skeleton { background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
-              background-size: 200% 100%; animation: shimmer 1.4s infinite; border-radius: 4px; }
-  @keyframes shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+  .page-btn { display:inline-flex; align-items:center; justify-content:center;
+              min-width:2rem; height:2rem; padding:0 0.5rem; border-radius:0.375rem;
+              font-size:0.75rem; border:1px solid #e5e7eb; background:#fff;
+              cursor:pointer; transition:background 0.15s; }
+  .page-btn:hover:not(:disabled) { background:#f3f4f6; }
+  .page-btn.active { background:#4f46e5; color:#fff; border-color:#4f46e5; }
+  .page-btn:disabled { opacity:0.4; cursor:default; }
 </style>
 
 <div class="flex items-center justify-between mb-6">
   <h2 class="text-xl font-bold text-gray-800">用户管理</h2>
   <button id="refreshStatsBtn"
     class="text-xs text-indigo-500 hover:text-indigo-700 flex items-center gap-1"
-    onclick="loadUserStats(true)">
-    ↻ 刷新统计
-  </button>
+    onclick="loadUsers(true)">↻ 刷新统计</button>
 </div>
 
 <!-- 创建用户 -->
@@ -60,224 +57,270 @@
   </form>
 </div>
 
-<!-- 用户列表（含用量统计列） -->
+<!-- 过滤 + 每页条数 -->
+<div class="bg-white rounded-xl shadow-sm border border-gray-100 px-6 py-4 mb-4 flex flex-wrap gap-3 items-end">
+  <div>
+    <label class="block text-xs text-gray-500 mb-1">搜索用户名</label>
+    <input type="text" id="filterUsername" placeholder="输入用户名…"
+      class="border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 w-44">
+  </div>
+  <div>
+    <label class="block text-xs text-gray-500 mb-1">分组过滤</label>
+    <select id="filterGroup"
+      class="border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 w-36">
+      <option value="">全部分组</option>
+    </select>
+  </div>
+  <div>
+    <label class="block text-xs text-gray-500 mb-1">每页显示</label>
+    <select id="pageSizeSel"
+      class="border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 w-28">
+      <option value="20">20 条</option>
+      <option value="50">50 条</option>
+      <option value="100">100 条</option>
+      <option value="200">200 条</option>
+    </select>
+  </div>
+  <span id="statsStatus" class="text-xs text-gray-400 ml-auto self-center">加载中…</span>
+</div>
+
+<!-- 用户列表 -->
 <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-  <div class="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
-    <h3 class="text-sm font-semibold text-gray-700">用户列表（{{len .Users}} 人）</h3>
-    <span id="statsStatus" class="text-xs text-gray-400">加载统计中…</span>
+  <div class="px-6 py-3 border-b border-gray-100 flex items-center justify-between">
+    <span id="statsInfo" class="text-xs text-gray-500"></span>
   </div>
   <div class="overflow-x-auto">
-    <table class="min-w-full min-w-max divide-y divide-gray-100 text-sm">
+    <table class="min-w-max divide-y divide-gray-100 text-sm">
       <thead class="bg-gray-50 text-xs text-gray-500 uppercase">
         <tr>
-          <th class="px-4 py-3 text-left whitespace-nowrap">用户名</th>
-          <th class="px-4 py-3 text-left whitespace-nowrap">分组</th>
+          <th class="px-4 py-3 text-left sortable whitespace-nowrap" data-sort="username">用户名</th>
+          <th class="px-4 py-3 text-left sortable whitespace-nowrap" data-sort="group_name">分组</th>
           <th class="px-4 py-3 text-right sortable whitespace-nowrap" data-sort="total_input">累计输入</th>
           <th class="px-4 py-3 text-right sortable whitespace-nowrap" data-sort="total_output">累计输出</th>
-          <th class="px-4 py-3 text-right sortable desc whitespace-nowrap" data-sort="total_tokens">累计总用量</th>
+          <th class="px-4 py-3 text-right sortable whitespace-nowrap" data-sort="total_tokens">累计总用量</th>
           <th class="px-4 py-3 text-right sortable whitespace-nowrap" data-sort="avg_daily">平均日用量</th>
           <th class="px-4 py-3 text-right sortable whitespace-nowrap" data-sort="avg_monthly">平均月用量</th>
-          <th class="px-4 py-3 text-left whitespace-nowrap">首次使用</th>
-          <th class="px-4 py-3 text-left whitespace-nowrap">最后使用</th>
+          <th class="px-4 py-3 text-left sortable whitespace-nowrap" data-sort="first_used_at">首次使用</th>
+          <th class="px-4 py-3 text-left sortable whitespace-nowrap" data-sort="last_used_at">最后使用</th>
           <th class="px-4 py-3 text-left whitespace-nowrap">状态</th>
           <th class="px-4 py-3 text-left whitespace-nowrap" style="min-width:10rem">操作</th>
         </tr>
       </thead>
-      {{/* 服务端渲染静态行，统计列初始显示骨架屏，JS 加载完成后替换为真实数据 */}}
       <tbody id="userStatsBody" class="divide-y divide-gray-50 text-gray-700">
-        {{range .Users}}
-        <tr class="hover:bg-gray-50" data-user-id="{{.ID}}">
-          <td class="px-4 py-3 font-medium">{{.Username}}</td>
-          <td class="px-4 py-3 text-gray-500">{{if .GroupID}}{{.Group.Name}}{{else}}<span class="text-gray-300">—</span>{{end}}</td>
-          <td class="px-4 py-3 text-right"><div class="skeleton h-4 w-12 ml-auto"></div></td>
-          <td class="px-4 py-3 text-right"><div class="skeleton h-4 w-12 ml-auto"></div></td>
-          <td class="px-4 py-3 text-right"><div class="skeleton h-4 w-14 ml-auto"></div></td>
-          <td class="px-4 py-3 text-right"><div class="skeleton h-4 w-16 ml-auto"></div></td>
-          <td class="px-4 py-3 text-right"><div class="skeleton h-4 w-16 ml-auto"></div></td>
-          <td class="px-4 py-3 text-gray-400 text-xs"><div class="skeleton h-4 w-20"></div></td>
-          <td class="px-4 py-3 text-gray-400 text-xs"><div class="skeleton h-4 w-20"></div></td>
-          <td class="px-4 py-3">
-            {{if .IsActive}}
-            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">启用</span>
-            {{else}}
-            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-600">禁用</span>
-            {{end}}
-          </td>
-          <td class="px-4 py-3">
-            <div class="flex flex-col gap-1.5">
-              {{if .IsActive}}
-              <form method="POST" action="/dashboard/users/{{.ID}}/active">
-                <input type="hidden" name="active" value="false">
-                <button type="submit" class="text-xs text-red-500 hover:underline whitespace-nowrap">禁用</button>
-              </form>
-              {{else}}
-              <form method="POST" action="/dashboard/users/{{.ID}}/active">
-                <input type="hidden" name="active" value="true">
-                <button type="submit" class="text-xs text-green-600 hover:underline whitespace-nowrap">启用</button>
-              </form>
-              {{end}}
-              <form method="POST" action="/dashboard/users/{{.ID}}/password" class="flex gap-1 items-center">
-                <input type="password" name="password" placeholder="新密码" required
-                  class="border border-gray-200 rounded px-2 py-0.5 text-xs w-20 focus:outline-none focus:ring-1 focus:ring-indigo-400">
-                <button type="submit" class="text-xs text-indigo-500 hover:underline whitespace-nowrap">重置密码</button>
-              </form>
-              <form method="POST" action="/dashboard/users/{{.ID}}/group" class="flex gap-1 items-center">
-                <select name="group_id"
-                  class="border border-gray-200 rounded px-1 py-0.5 text-xs w-20 focus:outline-none focus:ring-1 focus:ring-indigo-400">
-                  <option value="">无分组</option>
-                  {{range $.Groups}}
-                  <option value="{{.ID}}"{{if and $.Users (eq (index $.Users 0).Group.Name .Name)}}} selected{{end}}>{{.Name}}</option>
-                  {{end}}
-                </select>
-                <button type="submit" class="text-xs text-purple-500 hover:underline whitespace-nowrap">改组</button>
-              </form>
-              <form method="POST" action="/dashboard/users/{{.ID}}/revoke-tokens"
-                onsubmit="return confirm('吊销该用户所有 Token？')">
-                <button type="submit" class="text-xs text-orange-500 hover:underline whitespace-nowrap">吊销Token</button>
-              </form>
-            </div>
-          </td>
-        </tr>
-        {{else}}
-        <tr><td colspan="11" class="px-4 py-6 text-center text-gray-400">暂无用户</td></tr>
-        {{end}}
+        <tr><td colspan="11" class="px-4 py-8 text-center text-gray-400">加载中…</td></tr>
       </tbody>
     </table>
   </div>
+  <!-- 分页控件 -->
+  <div id="paginationBar" class="px-6 py-3 border-t border-gray-100 flex items-center justify-between gap-3 text-xs text-gray-500"></div>
 </div>
 
+<!-- 服务端注入分组数据供 JS 使用 -->
 <script>
-// ── 格式化大数字（K / M / B），tooltip 显示精确值 ──
-function formatTokens(num) {
-  if (num === undefined || num === null || num === 0) return '0';
-  if (num < 1000)          return num.toString();
-  if (num < 1_000_000)     return (num / 1000).toFixed(1).replace(/\.0$/, '') + 'K';
-  if (num < 1_000_000_000) return (num / 1_000_000).toFixed(1).replace(/\.0$/, '') + 'M';
-  return (num / 1_000_000_000).toFixed(1).replace(/\.0$/, '') + 'B';
-}
-function fmtDate(s) { return s || '—'; }
+const GROUPS = [{{range .Groups}}{id:"{{.ID}}",name:"{{.Name}}"},{{end}}];
+</script>
 
+<script>
 // ── 状态 ──
-let userStats = [];
+let currentPage = 1;
+let currentPageSize = 20;
 let currentSort = { field: 'total_tokens', order: 'desc' };
+let filterUsername = '';
+let filterGroupId = '';
+let debounceTimer = null;
 
-// 排序状态持久化（sessionStorage，刷新页面保持）
-(function restoreSort() {
+// 排序状态持久化
+(function() {
   try {
-    const saved = sessionStorage.getItem('userStatsSort');
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      if (parsed && parsed.field) currentSort = parsed;
-    }
+    const s = JSON.parse(sessionStorage.getItem('userStatsSort') || 'null');
+    if (s && s.field) currentSort = s;
   } catch(_) {}
 })();
-
 function saveSort() {
   try { sessionStorage.setItem('userStatsSort', JSON.stringify(currentSort)); } catch(_) {}
 }
 
-// ── 加载统计数据 ──
-async function loadUserStats(forceRefresh) {
+// ── 工具函数 ──
+function fmtTokens(n) {
+  if (!n) return '0';
+  if (n < 1000) return '' + n;
+  if (n < 1e6)  return (n/1000).toFixed(1).replace(/\.0$/,'') + 'K';
+  if (n < 1e9)  return (n/1e6).toFixed(1).replace(/\.0$/,'') + 'M';
+  return (n/1e9).toFixed(1).replace(/\.0$/,'') + 'B';
+}
+function fmtDate(s) { return s || '—'; }
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── 初始化分组下拉 ──
+(function populateGroupFilter() {
+  const sel = document.getElementById('filterGroup');
+  GROUPS.forEach(g => {
+    const o = document.createElement('option');
+    o.value = g.id; o.textContent = g.name;
+    sel.appendChild(o);
+  });
+})();
+
+// ── 加载数据 ──
+async function loadUsers(forceRefresh) {
   const btn = document.getElementById('refreshStatsBtn');
   const status = document.getElementById('statsStatus');
   if (btn) btn.disabled = true;
   status.textContent = '加载中…';
 
+  const params = new URLSearchParams({
+    page: currentPage,
+    page_size: currentPageSize,
+    sort_by: currentSort.field,
+    sort_order: currentSort.order,
+  });
+  if (filterUsername) params.set('username', filterUsername);
+  if (filterGroupId)  params.set('group_id', filterGroupId);
+  if (forceRefresh)   params.set('_', Date.now());
+
   try {
-    const url = forceRefresh
-      ? '/dashboard/api/user-stats?_=' + Date.now()
-      : '/dashboard/api/user-stats';
-    const res = await fetch(url, { credentials: 'same-origin' });
+    const res = await fetch('/dashboard/api/user-stats?' + params, { credentials: 'same-origin' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
-    userStats = await res.json();
-    if (!Array.isArray(userStats)) userStats = [];
-    sortAndRender();
+    const data = await res.json();
+    renderTable(data.users || []);
+    renderPagination(data.page, data.total_pages, data.total, data.page_size);
     status.textContent = '已更新 ' + new Date().toLocaleTimeString();
-  } catch (err) {
-    console.error('Failed to load user stats:', err);
-    status.textContent = '统计加载失败，请刷新重试';
+  } catch(err) {
+    console.error(err);
+    document.getElementById('userStatsBody').innerHTML =
+      '<tr><td colspan="11" class="px-4 py-6 text-center text-red-400">加载失败，请刷新重试</td></tr>';
+    status.textContent = '加载失败';
   } finally {
     if (btn) btn.disabled = false;
   }
 }
 
-// ── 排序 + 渲染 ──
-function sortAndRender() {
-  const { field, order } = currentSort;
-  userStats.sort((a, b) => {
-    const va = a[field] ?? '';
-    const vb = b[field] ?? '';
-    if (typeof va === 'string') {
-      return order === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
-    }
-    return order === 'asc' ? va - vb : vb - va;
+// ── 渲染表格 ──
+function renderTable(users) {
+  const tbody = document.getElementById('userStatsBody');
+  if (!users.length) {
+    tbody.innerHTML = '<tr><td colspan="11" class="px-4 py-6 text-center text-gray-400">暂无用户</td></tr>';
+    return;
+  }
+
+  // 构建分组选项 HTML（用于操作列）
+  const groupOpts = '<option value="">无分组</option>' +
+    GROUPS.map(g => `<option value="${esc(g.id)}">${esc(g.name)}</option>`).join('');
+
+  tbody.innerHTML = users.map(u => {
+    const statusBadge = u.is_active
+      ? '<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">启用</span>'
+      : '<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-600">禁用</span>';
+
+    const toggleBtn = u.is_active
+      ? `<form method="POST" action="/dashboard/users/${esc(u.user_id)}/active">
+           <input type="hidden" name="active" value="false">
+           <button type="submit" class="text-xs text-red-500 hover:underline whitespace-nowrap">禁用</button>
+         </form>`
+      : `<form method="POST" action="/dashboard/users/${esc(u.user_id)}/active">
+           <input type="hidden" name="active" value="true">
+           <button type="submit" class="text-xs text-green-600 hover:underline whitespace-nowrap">启用</button>
+         </form>`;
+
+    return `<tr class="hover:bg-gray-50">
+      <td class="px-4 py-3 font-medium">${esc(u.username)}</td>
+      <td class="px-4 py-3 text-gray-500">${u.group_name ? esc(u.group_name) : '<span class="text-gray-300">—</span>'}</td>
+      <td class="px-4 py-3 text-right">
+        <span class="token-count token-input" title="${(u.total_input||0).toLocaleString()} tokens">${fmtTokens(u.total_input)}</span>
+      </td>
+      <td class="px-4 py-3 text-right">
+        <span class="token-count token-output" title="${(u.total_output||0).toLocaleString()} tokens">${fmtTokens(u.total_output)}</span>
+      </td>
+      <td class="px-4 py-3 text-right">
+        <span class="token-count token-total" title="${(u.total_tokens||0).toLocaleString()} tokens">${fmtTokens(u.total_tokens)}</span>
+      </td>
+      <td class="px-4 py-3 text-right">
+        <span class="avg-stat" title="有记录 ${u.days_active||0} 天">${fmtTokens(u.avg_daily)}<span class="text-gray-400">/天</span></span>
+      </td>
+      <td class="px-4 py-3 text-right">
+        <span class="avg-stat" title="使用约 ${u.months_active||0} 个月">${fmtTokens(u.avg_monthly)}<span class="text-gray-400">/月</span></span>
+      </td>
+      <td class="px-4 py-3 text-gray-400 text-xs">${fmtDate(u.first_used_at)}</td>
+      <td class="px-4 py-3 text-gray-400 text-xs">${fmtDate(u.last_used_at)}</td>
+      <td class="px-4 py-3">${statusBadge}</td>
+      <td class="px-4 py-3">
+        <div class="flex flex-col gap-1.5">
+          ${toggleBtn}
+          <form method="POST" action="/dashboard/users/${esc(u.user_id)}/password" class="flex gap-1 items-center">
+            <input type="password" name="password" placeholder="新密码" required
+              class="border border-gray-200 rounded px-2 py-0.5 text-xs w-20 focus:outline-none focus:ring-1 focus:ring-indigo-400">
+            <button type="submit" class="text-xs text-indigo-500 hover:underline whitespace-nowrap">重置密码</button>
+          </form>
+          <form method="POST" action="/dashboard/users/${esc(u.user_id)}/group" class="flex gap-1 items-center">
+            <select name="group_id"
+              class="border border-gray-200 rounded px-1 py-0.5 text-xs w-20 focus:outline-none focus:ring-1 focus:ring-indigo-400">
+              ${groupOpts}
+            </select>
+            <button type="submit" class="text-xs text-purple-500 hover:underline whitespace-nowrap">改组</button>
+          </form>
+          <form method="POST" action="/dashboard/users/${esc(u.user_id)}/revoke-tokens"
+            onsubmit="return confirm('吊销该用户所有 Token？')">
+            <button type="submit" class="text-xs text-orange-500 hover:underline whitespace-nowrap">吊销Token</button>
+          </form>
+        </div>
+      </td>
+    </tr>`;
+  }).join('');
+
+  // 设置改组下拉的当前值
+  users.forEach(u => {
+    if (!u.group_id) return;
+    const forms = tbody.querySelectorAll(`form[action="/dashboard/users/${u.user_id}/group"]`);
+    forms.forEach(f => {
+      const sel = f.querySelector('select');
+      if (sel) sel.value = u.group_id;
+    });
   });
-  fillStatsIntoRows();
+
   updateSortHeaders();
 }
 
-// ── 将统计数据填入服务端渲染的 tr（保留操作列 DOM 不变）──
-function fillStatsIntoRows() {
-  const tbody = document.getElementById('userStatsBody');
-  if (!tbody) return;
+// ── 渲染分页控件 ──
+function renderPagination(page, totalPages, total, pageSize) {
+  const info = document.getElementById('statsInfo');
+  const bar  = document.getElementById('paginationBar');
 
-  // 构建 userId → stat 映射
-  const statMap = {};
-  for (const s of userStats) statMap[s.user_id] = s;
+  const start = Math.min((page - 1) * pageSize + 1, total);
+  const end   = Math.min(page * pageSize, total);
+  info.textContent = total > 0 ? `共 ${total} 人，显示第 ${start}–${end} 条` : '暂无用户';
 
-  // 收集所有带 data-user-id 的 tr
-  const allRows = Array.from(tbody.querySelectorAll('tr[data-user-id]'));
-  const rowMap = {};
-  for (const tr of allRows) rowMap[tr.dataset.userId] = tr;
+  if (totalPages <= 1) { bar.innerHTML = ''; return; }
 
-  // 按排序后的 userStats 顺序重建 tbody（只排可见用户）
-  tbody.innerHTML = '';
+  // 生成页码列表（当前页前后各 2 页，首尾各 1 页，省略号补位）
+  const pages = new Set([1, totalPages, page,
+    page - 1, page - 2, page + 1, page + 2].filter(p => p >= 1 && p <= totalPages));
+  const sorted = [...pages].sort((a,b) => a - b);
 
-  for (const stat of userStats) {
-    const tr = rowMap[stat.user_id];
-    if (!tr) continue;
-
-    const tds = tr.querySelectorAll('td');
-    if (tds.length < 9) continue;
-
-    // col 2: 累计输入
-    tds[2].className = 'px-4 py-3 text-right';
-    tds[2].innerHTML = `<span class="token-count token-input" title="${(stat.total_input||0).toLocaleString()} tokens">${formatTokens(stat.total_input)}</span>`;
-    // col 3: 累计输出
-    tds[3].className = 'px-4 py-3 text-right';
-    tds[3].innerHTML = `<span class="token-count token-output" title="${(stat.total_output||0).toLocaleString()} tokens">${formatTokens(stat.total_output)}</span>`;
-    // col 4: 累计总用量
-    tds[4].className = 'px-4 py-3 text-right';
-    tds[4].innerHTML = `<span class="token-count token-total" title="${(stat.total_tokens||0).toLocaleString()} tokens">${formatTokens(stat.total_tokens)}</span>`;
-    // col 5: 平均日用量
-    tds[5].className = 'px-4 py-3 text-right';
-    tds[5].innerHTML = `<span class="avg-stat" title="有记录 ${stat.days_active||0} 天">${formatTokens(stat.avg_daily)}<span class="text-gray-400">/天</span></span>`;
-    // col 6: 平均月用量
-    tds[6].className = 'px-4 py-3 text-right';
-    tds[6].innerHTML = `<span class="avg-stat" title="使用约 ${stat.months_active||0} 个月">${formatTokens(stat.avg_monthly)}<span class="text-gray-400">/月</span></span>`;
-    // col 7: 首次使用
-    tds[7].className = 'px-4 py-3 text-gray-400 text-xs';
-    tds[7].textContent = fmtDate(stat.first_used_at);
-    // col 8: 最后使用
-    tds[8].className = 'px-4 py-3 text-gray-400 text-xs';
-    tds[8].textContent = fmtDate(stat.last_used_at);
-
-    tbody.appendChild(tr);
+  let html = `<button class="page-btn" onclick="gotoPage(${page-1})" ${page<=1?'disabled':''}>‹ 上一页</button>`;
+  html += '<div class="flex gap-1">';
+  let prev = 0;
+  for (const p of sorted) {
+    if (prev && p - prev > 1) html += '<span class="page-btn" style="border:none;cursor:default">…</span>';
+    html += `<button class="page-btn${p===page?' active':''}" onclick="gotoPage(${p})">${p}</button>`;
+    prev = p;
   }
-
-  // 追加无统计数据的行（用户从未使用或 stat 中缺失）
-  for (const [uid, tr] of Object.entries(rowMap)) {
-    if (!statMap[uid]) tbody.appendChild(tr);
-  }
+  html += '</div>';
+  html += `<button class="page-btn" onclick="gotoPage(${page+1})" ${page>=totalPages?'disabled':''}>下一页 ›</button>`;
+  bar.innerHTML = html;
 }
 
-// ── 更新表头排序图标 ──
+function gotoPage(p) {
+  currentPage = p;
+  loadUsers(false);
+}
+
+// ── 表头排序图标 ──
 function updateSortHeaders() {
   document.querySelectorAll('.sortable').forEach(th => {
     th.classList.remove('asc', 'desc');
-    if (th.dataset.sort === currentSort.field) {
-      th.classList.add(currentSort.order);
-    }
+    if (th.dataset.sort === currentSort.field) th.classList.add(currentSort.order);
   });
 }
 
@@ -285,18 +328,37 @@ function updateSortHeaders() {
 document.querySelectorAll('.sortable').forEach(th => {
   th.addEventListener('click', () => {
     const field = th.dataset.sort;
-    let order = 'desc';
-    if (currentSort.field === field) {
-      order = currentSort.order === 'desc' ? 'asc' : 'desc';
-    }
-    currentSort = { field, order };
+    currentSort = {
+      field,
+      order: currentSort.field === field && currentSort.order === 'desc' ? 'asc' : 'desc'
+    };
     saveSort();
-    sortAndRender();
+    currentPage = 1;
+    loadUsers(false);
   });
 });
 
-// ── 初始化：恢复表头状态，拉取数据 ──
+// ── 过滤事件 ──
+document.getElementById('filterUsername').addEventListener('input', e => {
+  clearTimeout(debounceTimer);
+  filterUsername = e.target.value.trim();
+  debounceTimer = setTimeout(() => { currentPage = 1; loadUsers(false); }, 350);
+});
+
+document.getElementById('filterGroup').addEventListener('change', e => {
+  filterGroupId = e.target.value;
+  currentPage = 1;
+  loadUsers(false);
+});
+
+document.getElementById('pageSizeSel').addEventListener('change', e => {
+  currentPageSize = parseInt(e.target.value);
+  currentPage = 1;
+  loadUsers(false);
+});
+
+// ── 初始化 ──
 updateSortHeaders();
-loadUserStats(false);
+loadUsers(false);
 </script>
 {{end}}

@@ -34,16 +34,16 @@ func (m *mockSProxy) ServeDirect(w http.ResponseWriter, r *http.Request) {
 
 func TestDirectHandler_AnthropicPathRewrite(t *testing.T) {
 	mock := &mockSProxy{response: "ok"}
-	aliceKey, _ := keygen.GenerateKey("alice", []byte(testKeygenSecret))
+	aliceKey, _ := keygen.GenerateKey("alice", []byte(testPasswordHash))
 	cache, err := keygen.NewKeyCache(10, time.Minute)
 	require.NoError(t, err)
 	cache.Set(aliceKey, &keygen.CachedUser{UserID: "u1", Username: "alice"})
 
 	users := &fakeUserLookup{users: []keygen.UserEntry{
-		{ID: "u1", Username: "alice", IsActive: true},
+		{ID: "u1", Username: "alice", PasswordHash: testPasswordHash, IsActive: true},
 	}}
 
-	dh := proxy.NewDirectProxyHandler(zap.NewNop(), mock, users, cache, testKeygenSecret)
+	dh := proxy.NewDirectProxyHandler(zap.NewNop(), mock, users, cache, nil, nil)
 	handler := dh.HandlerAnthropic()
 
 	req := httptest.NewRequest("POST", "/anthropic/v1/messages", strings.NewReader(`{}`))
@@ -59,16 +59,16 @@ func TestDirectHandler_AnthropicPathRewrite(t *testing.T) {
 
 func TestDirectHandler_OpenAIPathUnchanged(t *testing.T) {
 	mock := &mockSProxy{response: "ok"}
-	aliceKey, _ := keygen.GenerateKey("alice", []byte(testKeygenSecret))
+	aliceKey, _ := keygen.GenerateKey("alice", []byte(testPasswordHash))
 	cache, err := keygen.NewKeyCache(10, time.Minute)
 	require.NoError(t, err)
 	cache.Set(aliceKey, &keygen.CachedUser{UserID: "u1", Username: "alice"})
 
 	users := &fakeUserLookup{users: []keygen.UserEntry{
-		{ID: "u1", Username: "alice", IsActive: true},
+		{ID: "u1", Username: "alice", PasswordHash: testPasswordHash, IsActive: true},
 	}}
 
-	dh := proxy.NewDirectProxyHandler(zap.NewNop(), mock, users, cache, testKeygenSecret)
+	dh := proxy.NewDirectProxyHandler(zap.NewNop(), mock, users, cache, nil, nil)
 	handler := dh.HandlerOpenAI()
 
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{}`))
@@ -85,7 +85,7 @@ func TestDirectHandler_HandlerBuiltOnce(t *testing.T) {
 	users := &fakeUserLookup{}
 	cache, err := keygen.NewKeyCache(10, time.Minute)
 	require.NoError(t, err)
-	dh := proxy.NewDirectProxyHandler(zap.NewNop(), mock, users, cache, testKeygenSecret)
+	dh := proxy.NewDirectProxyHandler(zap.NewNop(), mock, users, cache, nil, nil)
 
 	// HandlerOpenAI/HandlerAnthropic 返回指针类型，可通过 assert.Same 验证同一实例
 	h1 := dh.HandlerOpenAI()

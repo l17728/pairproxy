@@ -160,7 +160,7 @@ func TestProbe_RealEndpoints(t *testing.T) {
 // 旧版本：任意 err!=nil,status==0 都触发 return nil, true（认为不可达），跳过剩余策略。
 // 修复后：HTTP 客户端超时（单端点）与连接拒绝区分，超时仅跳过该方法，继续尝试下一个。
 func TestProbe_Discover_ContinuesPastEndpointTimeout(t *testing.T) {
-	// 服务器：/health 超时（无响应）, /v1/models 返回 200
+	// 服务器：/health 超时（无响应）, /models 返回 200
 	// 使用极短的 HTTP client 超时（50ms）确保 /health 快速超时
 	slowPath := make(chan struct{}) // /health 永远阻塞，直到测试结束
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -176,7 +176,7 @@ func TestProbe_Discover_ContinuesPastEndpointTimeout(t *testing.T) {
 		srv.Close()
 	}()
 
-	// 使用 50ms 超时——/health 会超时，/v1/models 会成功
+	// 使用 50ms 超时——/health 会超时，/models 会成功
 	logger := zaptest.NewLogger(t, zaptest.Level(zap.DebugLevel))
 	prober := NewProber(50*time.Millisecond, logger)
 
@@ -186,13 +186,13 @@ func TestProbe_Discover_ContinuesPastEndpointTimeout(t *testing.T) {
 	found, unreachable := prober.Discover(ctx, srv.URL, "t-timeout", "", nil)
 
 	if unreachable {
-		t.Error("service should NOT be unreachable — /v1/models responds 200; only /health times out")
+		t.Error("service should NOT be unreachable — /models responds 200; only /health times out")
 	}
 	if found == nil {
-		t.Fatal("expected Discover to find /v1/models after /health timeout, got nil")
+		t.Fatal("expected Discover to find /models after /health timeout, got nil")
 	}
-	if found.Path != "/v1/models" {
-		t.Errorf("expected found path /v1/models, got %q", found.Path)
+	if found.Path != "/models" {
+		t.Errorf("expected found path /models, got %q", found.Path)
 	}
 }
 
@@ -253,11 +253,11 @@ func TestProbe_Discover_ConnectionRefusedIsUnreachable(t *testing.T) {
 // TestProbe_SmartHealthChecker_Integration 用 httptest 服务器验证智能探活完整流程：
 // HealthChecker 自动发现并缓存探活策略，后续 checkAll 复用缓存。
 func TestProbe_SmartHealthChecker_Integration(t *testing.T) {
-	// 场景 1：服务只有 /v1/models（模拟 OpenAI/腾讯/小米）
-	t.Run("discovers /v1/models when /health is 404", func(t *testing.T) {
+	// 场景 1：服务只有 /models（模拟 OpenAI/腾讯/小米）
+	t.Run("discovers /models when /health is 404", func(t *testing.T) {
 		srv := newSelectiveServer(map[string]int{
-			"/health":    404,
-			"/v1/models": 200,
+			"/health":  404,
+			"/models":  200,
 		})
 		defer srv.close()
 
@@ -272,7 +272,7 @@ func TestProbe_SmartHealthChecker_Integration(t *testing.T) {
 		}()
 		hc.wg.Wait()
 
-		// 探活缓存应命中 /v1/models
+		// 探活缓存应命中 /models
 		entry := hc.probeCache.get("t1")
 		if entry == nil {
 			t.Fatal("expected probe cache entry after discovery")
@@ -280,8 +280,8 @@ func TestProbe_SmartHealthChecker_Integration(t *testing.T) {
 		if entry.method == nil {
 			t.Fatal("expected valid method in cache entry")
 		}
-		if entry.method.Path != "/v1/models" {
-			t.Errorf("expected cached path /v1/models, got %s", entry.method.Path)
+		if entry.method.Path != "/models" {
+			t.Errorf("expected cached path /models, got %s", entry.method.Path)
 		}
 		// target 应标记为健康
 		targets := bal.Targets()
@@ -313,11 +313,11 @@ func TestProbe_SmartHealthChecker_Integration(t *testing.T) {
 		}
 	})
 
-	// 场景 3：/health=401（需认证），注入 Bearer 后视为健康
+	// 场景 3：/health=401（需认证），/models 也返回 401，均视为服务在线
 	t.Run("401 on /health treated as online (auth required)", func(t *testing.T) {
 		srv := newSelectiveServer(map[string]int{
-			"/health":    401,
-			"/v1/models": 401,
+			"/health":  401,
+			"/models":  401,
 		})
 		defer srv.close()
 
@@ -409,7 +409,7 @@ func TestProbe_SmartHealthChecker_Integration(t *testing.T) {
 
 	// 场景 6：探活缓存 TTL 过期后重新发现
 	t.Run("cache invalidated after TTL, rediscovery triggered", func(t *testing.T) {
-		srv := newSelectiveServer(map[string]int{"/v1/models": 200})
+		srv := newSelectiveServer(map[string]int{"/models": 200})
 		defer srv.close()
 
 		bal := NewWeightedRandom([]Target{{ID: "t6", Addr: srv.url, Weight: 1, Healthy: true}})
@@ -441,14 +441,14 @@ func TestProbe_SmartHealthChecker_Integration(t *testing.T) {
 		// Scenario 7: cache hit + connection error -> clear cache -> rediscover next heartbeat
 		// Covers: checkOneSmart cache-hit path + definitivelyUnhealthy() branch
 		t.Run("cache hit + connection error clears cache for rediscovery", func(t *testing.T) {
-			srv := newSelectiveServer(map[string]int{"/v1/models": 200})
+			srv := newSelectiveServer(map[string]int{"/models": 200})
 
 			bal := NewWeightedRandom([]Target{{ID: "t7", Addr: srv.url, Weight: 1, Healthy: true}})
 			hc := NewHealthChecker(bal, zaptest.NewLogger(t),
 				WithTimeout(300*time.Millisecond),
 			)
 
-			// First checkAll: discover and cache /v1/models
+			// First checkAll: discover and cache /models
 			hc.wg.Add(1)
 			go func() {
 				defer hc.wg.Done()
@@ -485,7 +485,7 @@ func TestProbe_SmartHealthChecker_Integration(t *testing.T) {
 			// All builtin probe paths return 500 (service online but no path matches)
 			srv := newCountingServer(map[string]int{
 				"/health":              500,
-				"/v1/models":           500,
+				"/models":              500,
 				"/v1/chat/completions": 500,
 				"/v1/messages":         500,
 			})

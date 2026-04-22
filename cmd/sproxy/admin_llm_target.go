@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -15,38 +14,18 @@ import (
 )
 
 // resolveUniqueTarget 将 UUID 或 URL 解析为单一 LLMTarget。
-// 若输入是已知 UUID，直接按 ID 查找。
-// 若输入是 URL 且对应多条记录（同 URL 多 APIKey），返回错误并列出所有匹配的 UUID，
-// 提示用户改用 UUID 明确指定目标。
+// 若输入是已知 UUID，直接按 ID 查找；否则按 URL 查找（URL 现为全局唯一）。
 func resolveUniqueTarget(repo *db.LLMTargetRepo, uuidOrURL string) (*db.LLMTarget, error) {
 	// 先尝试按 ID 精确查
 	if t, err := repo.GetByID(uuidOrURL); err == nil && t != nil {
 		return t, nil
 	}
-	// 再按 URL 查，检测是否有歧义
-	matches, err := repo.ListByURL(uuidOrURL)
+	// 再按 URL 查（URL 现为全局唯一）
+	t, err := repo.GetByURL(uuidOrURL)
 	if err != nil {
-		return nil, fmt.Errorf("target lookup failed: %w", err)
-	}
-	switch len(matches) {
-	case 0:
 		return nil, fmt.Errorf("LLM target not found: %s", uuidOrURL)
-	case 1:
-		return matches[0], nil
-	default:
-		ids := make([]string, len(matches))
-		for i, m := range matches {
-			keyInfo := "(no api key)"
-			if m.APIKeyID != nil {
-				keyInfo = "api_key_id=" + *m.APIKeyID
-			}
-			ids[i] = fmt.Sprintf("  %s  [%s]", m.ID, keyInfo)
-		}
-		return nil, fmt.Errorf(
-			"URL %q matches %d targets (multiple API keys configured for this URL).\n"+
-				"Please use a UUID to specify which target:\n%s",
-			uuidOrURL, len(matches), strings.Join(ids, "\n"))
 	}
+	return t, nil
 }
 
 // llmTargetCmd LLM target 管理命令（父命令）
@@ -79,6 +58,7 @@ var (
 	addHealthCheckPath string
 	addSupportedModels []string
 	addAutoModel       string
+	addModelMapping    string // JSON string, e.g. '{"*":"llama3.2"}'
 )
 
 // llmTargetAddCmd 添加 LLM target
@@ -101,17 +81,13 @@ var llmTargetAddCmd = &cobra.Command{
 
 		repo := db.NewLLMTargetRepo(gormDB, logger)
 
-		// 验证 (URL, APIKeyID) 组合唯一性
-		var apiKeyIDPtr *string
-		if addAPIKeyID != "" {
-			apiKeyIDPtr = &addAPIKeyID
-		}
-		exists, err := repo.ComboExists(addURL, apiKeyIDPtr)
+		// 验证 URL 唯一性（URL 现为全局唯一）
+		exists, err := repo.URLExists(addURL)
 		if err != nil {
 			return fmt.Errorf("check url exists: %w", err)
 		}
 		if exists {
-			return fmt.Errorf("URL+API-key combination already exists: %s", addURL)
+			return fmt.Errorf("URL already exists: %s", addURL)
 		}
 
 		// 验证 API Key 存在性
@@ -131,6 +107,17 @@ var llmTargetAddCmd = &cobra.Command{
 			}
 		}
 
+		modelMappingJSON := "{}"
+		if addModelMapping != "" {
+			var mm map[string]string
+			if err := json.Unmarshal([]byte(addModelMapping), &mm); err != nil {
+				return fmt.Errorf("invalid --model-mapping JSON: %w\nExample: --model-mapping '{\"*\":\"llama3.2\"}'", err)
+			}
+			if b, err := json.Marshal(mm); err == nil {
+				modelMappingJSON = string(b)
+			}
+		}
+
 		target := &db.LLMTarget{
 			ID:                  uuid.NewString(),
 			URL:                 addURL,
@@ -140,6 +127,7 @@ var llmTargetAddCmd = &cobra.Command{
 			Weight:              addWeight,
 			HealthCheckPath:     addHealthCheckPath,
 			SupportedModelsJSON: supportedModelsJSON,
+			ModelMappingJSON:    modelMappingJSON,
 			AutoModel:           addAutoModel,
 			Source:              "database",
 			IsEditable:          true,
@@ -151,6 +139,7 @@ var llmTargetAddCmd = &cobra.Command{
 		if err := repo.Create(target); err != nil {
 			return fmt.Errorf("create target: %w", err)
 		}
+		_ = repo.MarkUnsynced(target.ID)
 
 		// 记录审计日志
 		auditDetails := fmt.Sprintf("provider=%s name=%s", addProvider, addName)
@@ -159,6 +148,9 @@ var llmTargetAddCmd = &cobra.Command{
 		}
 		if addAutoModel != "" {
 			auditDetails += fmt.Sprintf(" auto_model=%s", addAutoModel)
+		}
+		if addModelMapping != "" {
+			auditDetails += fmt.Sprintf(" model_mapping=%s", modelMappingJSON)
 		}
 		auditCLI(gormDB, logger, "llm_target.add", addURL, auditDetails)
 
@@ -175,6 +167,9 @@ var llmTargetAddCmd = &cobra.Command{
 		if addAutoModel != "" {
 			fmt.Printf("  Auto Model:       %s\n", addAutoModel)
 		}
+		if addModelMapping != "" {
+			fmt.Printf("  Model Mapping:    %s\n", modelMappingJSON)
+		}
 		fmt.Printf("  Source:   %s\n", target.Source)
 
 		return nil
@@ -190,6 +185,7 @@ func init() {
 	llmTargetAddCmd.Flags().StringVar(&addHealthCheckPath, "health-check-path", "", "Health check path")
 	llmTargetAddCmd.Flags().StringSliceVar(&addSupportedModels, "supported-models", []string{}, "Supported models (comma-separated, e.g., claude-3-*,gpt-4-*)")
 	llmTargetAddCmd.Flags().StringVar(&addAutoModel, "auto-model", "", "Model to use for auto mode requests")
+	llmTargetAddCmd.Flags().StringVar(&addModelMapping, "model-mapping", "", `Model name mapping as JSON, e.g. '{"*":"llama3.2"}' or '{"claude-3-5-sonnet-20241022":"mistral"}'`)
 
 	_ = llmTargetAddCmd.MarkFlagRequired("url")
 	_ = llmTargetAddCmd.MarkFlagRequired("api-key-id")
@@ -208,6 +204,7 @@ var (
 	updateHealthCheckPath string
 	updateSupportedModels []string
 	updateAutoModel       string
+	updateModelMapping    string // JSON string, e.g. '{"*":"llama3.2"}'; use '{}' to clear
 )
 
 // llmTargetUpdateCmd 更新 LLM target
@@ -235,11 +232,6 @@ var llmTargetUpdateCmd = &cobra.Command{
 		target, err := resolveUniqueTarget(repo, targetURL)
 		if err != nil {
 			return err
-		}
-
-		// 检查是否可编辑
-		if !target.IsEditable {
-			return fmt.Errorf("cannot update config-sourced target: %s\nConfig-sourced targets must be modified in sproxy.yaml", targetURL)
 		}
 
 		// 记录变更前的值（用于审计日志）
@@ -313,6 +305,26 @@ var llmTargetUpdateCmd = &cobra.Command{
 				target.AutoModel = updateAutoModel
 			}
 		}
+
+		if cmd.Flags().Changed("model-mapping") {
+			var mm map[string]string
+			if updateModelMapping != "" && updateModelMapping != "{}" {
+				if err := json.Unmarshal([]byte(updateModelMapping), &mm); err != nil {
+					return fmt.Errorf("invalid --model-mapping JSON: %w\nExample: --model-mapping '{\"*\":\"llama3.2\"}'", err)
+				}
+			}
+			newModelMappingJSON := "{}"
+			if len(mm) > 0 {
+				if b, err := json.Marshal(mm); err == nil {
+					newModelMappingJSON = string(b)
+				}
+			}
+			if newModelMappingJSON != target.ModelMappingJSON {
+				changes = append(changes, fmt.Sprintf("model_mapping: %s→%s", target.ModelMappingJSON, newModelMappingJSON))
+				target.ModelMappingJSON = newModelMappingJSON
+			}
+		}
+
 		if len(changes) == 0 {
 			fmt.Printf("No changes detected for target: %s\n", targetURL)
 			return nil
@@ -325,6 +337,7 @@ var llmTargetUpdateCmd = &cobra.Command{
 		if err := repo.Update(target); err != nil {
 			return fmt.Errorf("update target: %w", err)
 		}
+		_ = repo.MarkUnsynced(target.ID)
 
 		// 记录审计日志
 		changesSummary := ""
@@ -361,6 +374,7 @@ func init() {
 	llmTargetUpdateCmd.Flags().StringVar(&updateHealthCheckPath, "health-check-path", "", "Health check path")
 	llmTargetUpdateCmd.Flags().StringSliceVar(&updateSupportedModels, "supported-models", []string{}, "Supported models (comma-separated, e.g., claude-3-*,gpt-4-*)")
 	llmTargetUpdateCmd.Flags().StringVar(&updateAutoModel, "auto-model", "", "Model to use for auto mode requests")
+	llmTargetUpdateCmd.Flags().StringVar(&updateModelMapping, "model-mapping", "", `Model name mapping as JSON, e.g. '{"*":"llama3.2"}'; use '{}' to clear`)
 }
 
 // ---------------------------------------------------------------------------
@@ -389,11 +403,6 @@ var llmTargetDeleteCmd = &cobra.Command{
 		target, err := resolveUniqueTarget(repo, targetURL)
 		if err != nil {
 			return err
-		}
-
-		// 检查是否可编辑
-		if !target.IsEditable {
-			return fmt.Errorf("cannot delete config-sourced target: %s\nConfig-sourced targets must be removed from sproxy.yaml", targetURL)
 		}
 
 		// 删除 target
@@ -464,6 +473,7 @@ var llmTargetEnableCmd = &cobra.Command{
 				zap.Error(err))
 			return fmt.Errorf("enable target: %w", err)
 		}
+		_ = repo.MarkUnsynced(target.ID)
 
 		// 记录审计日志
 		auditCLI(gormDB, logger, "llm_target.enable", targetURL, fmt.Sprintf("id=%s name=%s", target.ID, target.Name))
@@ -529,6 +539,7 @@ var llmTargetDisableCmd = &cobra.Command{
 				zap.Error(err))
 			return fmt.Errorf("disable target: %w", err)
 		}
+		_ = repo.MarkUnsynced(target.ID)
 
 		// 记录审计日志
 		auditCLI(gormDB, logger, "llm_target.disable", targetURL, fmt.Sprintf("id=%s name=%s", target.ID, target.Name))

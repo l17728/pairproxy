@@ -69,7 +69,7 @@ func (c *KeyCache) Set(key string, user *CachedUser) {
 	)
 }
 
-// InvalidateUser 删除指定用户名对应的所有缓存条目（用户重新生成 Key 时调用）。
+// InvalidateUser 删除指定用户名对应的所有缓存条目（用户禁用或重新生成 Key 时调用）。
 func (c *KeyCache) InvalidateUser(username string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -83,6 +83,24 @@ func (c *KeyCache) InvalidateUser(username string) {
 	}
 	zap.L().Info("api key cache invalidated for user",
 		zap.String("username", username),
+		zap.Int("removed_entries", removed),
+	)
+}
+
+// InvalidateByUserID 删除指定 userID 对应的所有缓存条目（密码重置后立即踢出旧 Key）。
+func (c *KeyCache) InvalidateByUserID(userID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	keys := c.inner.Keys()
+	removed := 0
+	for _, k := range keys {
+		if entry, ok := c.inner.Peek(k); ok && entry.UserID == userID {
+			c.inner.Remove(k)
+			removed++
+		}
+	}
+	zap.L().Info("api key cache invalidated by user_id",
+		zap.String("user_id", userID),
 		zap.Int("removed_entries", removed),
 	)
 }

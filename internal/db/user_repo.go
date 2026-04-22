@@ -180,9 +180,13 @@ func (r *UserRepo) UpdateLastLogin(id string, at time.Time) error {
 	return nil
 }
 
-// UpdatePassword 更新用户密码 hash
+// UpdatePassword 更新用户密码 hash，同时撤销旧版 keygenSecret 派生的 Key（legacy_key_revoked=true）。
+// 用户主动改密后，旧版共享密钥派生的 Key 不应继续有效。
 func (r *UserRepo) UpdatePassword(id string, hash string) error {
-	result := r.db.Model(&User{}).Where("id = ?", id).Update("password_hash", hash)
+	result := r.db.Model(&User{}).Where("id = ?", id).Updates(map[string]any{
+		"password_hash":      hash,
+		"legacy_key_revoked": true,
+	})
 	if result.Error != nil {
 		r.logger.Error("failed to update password",
 			zap.String("user_id", id),
@@ -190,7 +194,7 @@ func (r *UserRepo) UpdatePassword(id string, hash string) error {
 		)
 		return fmt.Errorf("update password for user %q: %w", id, result.Error)
 	}
-	r.logger.Info("user password updated", zap.String("user_id", id))
+	r.logger.Info("user password updated, legacy key revoked", zap.String("user_id", id))
 	return nil
 }
 
