@@ -41,6 +41,8 @@ type OpenAISSEParser struct {
 	outputTokens int
 	done         bool
 	onComplete   OnCompleteFunc
+	hasError     bool
+	errorData    string
 }
 
 // NewOpenAISSEParser 创建 OpenAI SSE 解析器，注册完成回调。
@@ -87,6 +89,12 @@ func (p *OpenAISSEParser) InputTokens() int { return p.inputTokens }
 // OutputTokens 返回已解析的输出 token 数量。实现 ResponseParser 接口。
 func (p *OpenAISSEParser) OutputTokens() int { return p.outputTokens }
 
+// HasError 返回 true 表示 SSE 流中收到了错误数据。实现 ResponseParser 接口。
+func (p *OpenAISSEParser) HasError() bool { return p.hasError }
+
+// SSEErrorData 返回 SSE 错误数据的原始 payload。实现 ResponseParser 接口。
+func (p *OpenAISSEParser) SSEErrorData() string { return p.errorData }
+
 // ParseNonStreaming 解析 OpenAI 非 streaming JSON 响应体。实现 ResponseParser 接口。
 func (p *OpenAISSEParser) ParseNonStreaming(body []byte) (inputTokens, outputTokens int) {
 	var resp struct {
@@ -119,6 +127,22 @@ func (p *OpenAISSEParser) processLine(line []byte) {
 	if err := json.Unmarshal(payload, &chunk); err != nil {
 		return
 	}
+	// OpenAI SSE 错误：{"error": {"message":"...","type":"..."}}
+	if chunk.Error != nil {
+		p.hasError = true
+		const maxErrorData = 1024
+		raw := string(payload)
+		if len(raw) > maxErrorData {
+			p.errorData = raw[:maxErrorData]
+		} else {
+			p.errorData = raw
+		}
+		p.done = true
+		if p.onComplete != nil {
+			p.onComplete(p.inputTokens, p.outputTokens)
+		}
+		return
+	}
 	if chunk.Usage != nil {
 		p.inputTokens = chunk.Usage.PromptTokens
 		p.outputTokens = chunk.Usage.CompletionTokens
@@ -129,9 +153,15 @@ func (p *OpenAISSEParser) processLine(line []byte) {
 // 内部 JSON 结构体
 // ---------------------------------------------------------------------------
 
-// openAIChunk SSE streaming 数据块（仅关心 usage 字段）。
+// openAIChunk SSE streaming 数据块（仅关心 usage 和 error 字段）。
 type openAIChunk struct {
-	Usage *openAIUsage `json:"usage"`
+	Usage *openAIUsage  `json:"usage"`
+	Error *openAIError  `json:"error"`
+}
+
+type openAIError struct {
+	Message string `json:"message"`
+	Type    string `json:"type"`
 }
 
 // openAIUsage OpenAI usage 字段（streaming 和非 streaming 共用）。

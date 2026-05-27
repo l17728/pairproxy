@@ -87,6 +87,7 @@
       <thead class="bg-gray-50 text-xs text-gray-500 uppercase">
         <tr>
           <th class="px-4 py-3 text-left">时间</th>
+          <th class="px-4 py-3 text-left">请求路径</th>
           <th class="px-4 py-3 text-left">请求模型</th>
           <th class="px-4 py-3 text-left">实际模型</th>
           <th class="px-4 py-3 text-right">输入</th>
@@ -97,7 +98,7 @@
         </tr>
       </thead>
       <tbody class="divide-y divide-gray-50 text-gray-700" id="recentRequestsBody">
-        <tr><td colspan="8" class="px-4 py-6 text-center text-gray-400">请先选择用户</td></tr>
+        <tr><td colspan="9" class="px-4 py-6 text-center text-gray-400">请先选择用户</td></tr>
       </tbody>
     </table>
   </div>
@@ -344,13 +345,13 @@ async function loadRecentRequests(page) {
   const days = parseInt(document.getElementById('logsDaysSelect').value) || 7;
   const pageSize = parseInt(document.getElementById('logsPageSizeSelect').value) || 10;
   const tbody = document.getElementById('recentRequestsBody');
-  tbody.innerHTML = '<tr><td colspan="8" class="px-4 py-6 text-center text-gray-400">加载中...</td></tr>';
+  tbody.innerHTML = '<tr><td colspan="9" class="px-4 py-6 text-center text-gray-400">加载中...</td></tr>';
 
   try {
     const url = `/api/dashboard/user-logs?username=${encodeURIComponent(currentUsername)}&days=${days}&page=${page}&page_size=${pageSize}`;
     const res = await fetch(url);
     if (!res.ok) {
-      tbody.innerHTML = '<tr><td colspan="7" class="px-4 py-6 text-center text-red-400">加载失败</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="9" class="px-4 py-6 text-center text-red-400">加载失败</td></tr>';
       return;
     }
     const data = await res.json();
@@ -359,19 +360,32 @@ async function loadRecentRequests(page) {
     renderLogsPagination(data.page, data.total_pages, data.total, data.page_size);
   } catch (err) {
     console.error('Failed to load recent requests:', err);
-    tbody.innerHTML = '<tr><td colspan="7" class="px-4 py-6 text-center text-red-400">请求失败</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="9" class="px-4 py-6 text-center text-red-400">请求失败</td></tr>';
   }
+}
+
+function escHtml(s) {
+  if (!s) return '';
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
 function renderLogsTable(logs) {
   const tbody = document.getElementById('recentRequestsBody');
   if (!logs || logs.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="8" class="px-4 py-6 text-center text-gray-400">暂无请求记录</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="9" class="px-4 py-6 text-center text-gray-400">暂无请求记录</td></tr>';
     return;
   }
-  tbody.innerHTML = logs.map(l => `
+  tbody.innerHTML = logs.map(l => {
+    const pathCell = l.error_body
+      ? `<td class="px-4 py-3">
+          <span class="text-gray-400 text-xs font-mono">${escHtml(l.request_path) || '—'}</span>
+          <span data-errtip="${escHtml(l.error_body)}" class="ml-1 text-red-400 text-xs cursor-help align-middle">⚠</span>
+        </td>`
+      : `<td class="px-4 py-3 text-gray-400 text-xs font-mono">${l.request_path || '—'}</td>`;
+    return `
     <tr class="hover:bg-gray-50">
       <td class="px-4 py-3 text-gray-400 text-xs whitespace-nowrap">${l.created_at}</td>
+      ${pathCell}
       <td class="px-4 py-3 text-gray-500 text-xs">${l.model || '—'}</td>
       <td class="px-4 py-3 text-xs">${l.actual_model ? `<span class="text-indigo-600">${l.actual_model}</span>` : '<span class="text-gray-300">—</span>'}</td>
       <td class="px-4 py-3 text-right">${l.input_tokens.toLocaleString()}</td>
@@ -381,7 +395,8 @@ function renderLogsTable(logs) {
       <td class="px-4 py-3">${l.status_code === 200
         ? '<span class="text-green-600 font-medium">✓ 200</span>'
         : `<span class="text-red-500 font-medium">✗ ${l.status_code}</span>`}</td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
 }
 
 function renderLogsPagination(page, totalPages, total, pageSize) {
@@ -417,5 +432,27 @@ document.getElementById('logsPageSizeSelect').addEventListener('change', () => l
 
 // 页面加载时初始化（先加载用户列表，等待选择后再加载数据）
 loadActiveUsers();
+
+// ── 错误信息 Tooltip ────────────────────────────────────────────────────────
+(function() {
+  var tip = document.createElement('div');
+  tip.style.cssText = 'position:fixed;display:none;z-index:9999;max-width:480px;background:#1f2937;color:#fca5a5;font-size:12px;line-height:1.6;padding:8px 12px;border-radius:6px;white-space:pre-wrap;word-break:break-all;box-shadow:0 4px 16px rgba(0,0,0,.45);pointer-events:none;';
+  document.body.appendChild(tip);
+  function move(e) {
+    var x = e.clientX + 14, y = e.clientY + 14;
+    tip.style.left = x + 'px'; tip.style.top = y + 'px';
+    var r = tip.getBoundingClientRect();
+    if (r.right > window.innerWidth - 8) tip.style.left = (e.clientX - r.width - 8) + 'px';
+    if (r.bottom > window.innerHeight - 8) tip.style.top = (e.clientY - r.height - 8) + 'px';
+  }
+  document.addEventListener('mouseover', function(e) {
+    var el = e.target.closest('[data-errtip]');
+    if (!el) { tip.style.display = 'none'; return; }
+    tip.textContent = el.dataset.errtip;
+    tip.style.display = 'block'; move(e);
+  });
+  document.addEventListener('mousemove', function(e) { if (tip.style.display !== 'none') move(e); });
+  document.addEventListener('mouseout', function(e) { if (!e.target.closest('[data-errtip]')) tip.style.display = 'none'; });
+})();
 </script>
 {{end}}

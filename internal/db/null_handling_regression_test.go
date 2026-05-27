@@ -161,12 +161,12 @@ func TestLLMTarget_Composite_NULLHandling(t *testing.T) {
 	}
 }
 
-// TestLLMBinding_Composite_NULLHandling tests the (user_id, target_id) and (group_id, target_id)
-// composite constraints with NULL values.
-// Key insight: UNIQUE(user_id, target_id) with NULLs means:
-// - Multiple rows with user_id=NULL are all distinct (allowed)
-// - But application should never have multiple NULL user_ids (semantically wrong)
-func TestLLMBinding_Composite_NULLHandling(t *testing.T) {
+// TestLLMBinding_GroupBinding_1N_NULLHandling tests that group bindings use 1:N semantics:
+// - AddGroupBinding is idempotent for the same (group_id, target_id) pair
+// - Adding a second target with the same provider is allowed (1:N)
+// - Adding a target with a different provider is rejected (provider consistency constraint)
+// - Set() with groupID=non-nil and userID=nil is rejected (must use AddGroupBinding for groups)
+func TestLLMBinding_GroupBinding_1N_NULLHandling(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	gormDB, err := db.Open(logger, ":memory:")
 	if err != nil {
@@ -179,112 +179,57 @@ func TestLLMBinding_Composite_NULLHandling(t *testing.T) {
 	llmBindingRepo := db.NewLLMBindingRepo(gormDB, logger)
 	llmTargetRepo := db.NewLLMTargetRepo(gormDB, logger)
 
-	// Create two targets
-	target1 := &db.LLMTarget{
-		ID:       "target-1",
-		URL:      "https://llm1.example.com",
-		Provider: "anthropic",
-	}
-	if err := llmTargetRepo.Create(target1); err != nil {
-		t.Fatalf("create target1: %v", err)
-	}
-
-	target2 := &db.LLMTarget{
-		ID:       "target-2",
-		URL:      "https://llm2.example.com",
-		Provider: "openai",
-	}
-	if err := llmTargetRepo.Create(target2); err != nil {
-		t.Fatalf("create target2: %v", err)
-	}
-
-	// Set binding for group "group-1" to target1
-	groupID := "group-1"
-	if err := llmBindingRepo.Set(target1.URL, nil, &groupID); err != nil {
-		t.Fatalf("set group binding to target1: %v", err)
-	}
-
-	// Try to set binding for same group to target1 again (should replace, not duplicate)
-	// This tests that Set() (delete-then-insert) maintains uniqueness
-	if err := llmBindingRepo.Set(target1.URL, nil, &groupID); err != nil {
-		t.Fatalf("set same group binding again: %v", err)
-	}
-
-	// Set binding for same group to target2 (different target)
-	if err := llmBindingRepo.Set(target2.URL, nil, &groupID); err != nil {
-		t.Fatalf("set group binding to target2: %v", err)
-	}
-
-	// Verify only one binding exists for the group (the last Set() call overwrites)
-	bindings, err := llmBindingRepo.List()
-	if err != nil {
-		t.Fatalf("list bindings: %v", err)
-	}
-
-	groupBindings := 0
-	for _, b := range bindings {
-		if b.GroupID != nil && *b.GroupID == groupID {
-			groupBindings++
+	// Create two anthropic targets and one openai target
+	target1 := &db.LLMTarget{ID: "target-1", URL: "https://llm1.example.com", Provider: "anthropic"}
+	target2 := &db.LLMTarget{ID: "target-2", URL: "https://llm2.example.com", Provider: "anthropic"}
+	targetOAI := &db.LLMTarget{ID: "target-oai", URL: "https://oai.example.com", Provider: "openai"}
+	for _, tgt := range []*db.LLMTarget{target1, target2, targetOAI} {
+		if err := llmTargetRepo.Create(tgt); err != nil {
+			t.Fatalf("create target %s: %v", tgt.ID, err)
 		}
 	}
 
-	if groupBindings != 1 {
-		t.Errorf("expected 1 binding for group after Set() calls, got %d", groupBindings)
+	groupID := "group-1"
+
+	// Add target1 to group
+	if err := llmBindingRepo.AddGroupBinding(target1.ID, groupID); err != nil {
+		t.Fatalf("AddGroupBinding target1: %v", err)
+	}
+
+	// Adding target1 again is idempotent (no error, still 1 binding)
+	if err := llmBindingRepo.AddGroupBinding(target1.ID, groupID); err != nil {
+		t.Fatalf("AddGroupBinding target1 (idempotent): %v", err)
+	}
+	ids, err := llmBindingRepo.FindAllForGroup(groupID)
+	if err != nil {
+		t.Fatalf("FindAllForGroup: %v", err)
+	}
+	if len(ids) != 1 {
+		t.Errorf("expected 1 binding after idempotent add, got %d", len(ids))
+	}
+
+	// Adding target2 (same provider) is allowed → 2 bindings
+	if err := llmBindingRepo.AddGroupBinding(target2.ID, groupID); err != nil {
+		t.Fatalf("AddGroupBinding target2 (same provider): %v", err)
+	}
+	ids, err = llmBindingRepo.FindAllForGroup(groupID)
+	if err != nil {
+		t.Fatalf("FindAllForGroup after target2: %v", err)
+	}
+	if len(ids) != 2 {
+		t.Errorf("expected 2 bindings after same-provider add, got %d", len(ids))
+	}
+
+	// Adding openai target to group with existing anthropic → provider conflict
+	err = llmBindingRepo.AddGroupBinding(targetOAI.ID, groupID)
+	if err == nil {
+		t.Error("expected provider conflict error when mixing providers, got nil")
+	}
+
+	// Set() with userID=nil must be rejected (use AddGroupBinding for groups)
+	err = llmBindingRepo.Set(target1.ID, nil, &groupID)
+	if err == nil {
+		t.Error("expected error from Set() with userID=nil, got nil")
 	}
 }
 
-// TestGroupTargetSetMember_Composite_NULLHandling tests the (target_set_id, target_id)
-// composite constraint. Both fields are NOT NULL, so NULL handling is not applicable.
-// This test documents that the constraint is strict (no NULL values).
-func TestGroupTargetSetMember_Composite_NULLHandling(t *testing.T) {
-	logger := zaptest.NewLogger(t)
-	gormDB, err := db.Open(logger, ":memory:")
-	if err != nil {
-		t.Fatalf("db.Open: %v", err)
-	}
-	if err := db.Migrate(logger, gormDB); err != nil {
-		t.Fatalf("db.Migrate: %v", err)
-	}
-
-	gtSetRepo := db.NewGroupTargetSetRepo(gormDB, logger)
-	llmTargetRepo := db.NewLLMTargetRepo(gormDB, logger)
-
-	// Create a target set
-	set := &db.GroupTargetSet{
-		ID:   "set-1",
-		Name: "test-set",
-	}
-	if err := gtSetRepo.Create(set); err != nil {
-		t.Fatalf("create set: %v", err)
-	}
-
-	// Create a target
-	target := &db.LLMTarget{
-		ID:       "target-1",
-		URL:      "https://llm.example.com",
-		Provider: "anthropic",
-	}
-	if err := llmTargetRepo.Create(target); err != nil {
-		t.Fatalf("create target: %v", err)
-	}
-
-	// Add member
-	member := &db.GroupTargetSetMember{
-		TargetSetID: set.ID,
-		TargetID:    target.ID,
-	}
-	if err := gtSetRepo.AddMember(set.ID, member); err != nil {
-		t.Fatalf("add member: %v", err)
-	}
-
-	// Both target_set_id and target_id are NOT NULL and unique-constrained,
-	// so no special NULL handling — composite constraint is strict.
-	// Verify the member exists
-	members, err := gtSetRepo.ListMembers(set.ID)
-	if err != nil {
-		t.Fatalf("list members: %v", err)
-	}
-	if len(members) != 1 {
-		t.Errorf("expected 1 member, got %d", len(members))
-	}
-}

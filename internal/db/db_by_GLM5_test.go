@@ -692,7 +692,7 @@ func TestUsageRepo_DailyTokensExt(t *testing.T) {
 	from := yesterday.Truncate(24 * time.Hour)
 	to := now
 
-	rows, err := repo.DailyTokens(from, to, "user-daily")
+	rows, err := repo.DailyTokens(from, to, "user-daily", "day")
 	if err != nil {
 		t.Fatalf("DailyTokens: %v", err)
 	}

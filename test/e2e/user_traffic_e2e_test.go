@@ -353,10 +353,10 @@ func TestE2E_AdminQueryUsageHistory_SpecificUser(t *testing.T) {
 		t.Fatalf("Create dave: %v", err)
 	}
 
-	// 写入最近 5 天的用量记录
+	// 写入最近 5 天的用量记录（使用 now-i*24h-1h 确保始终在当前时刻之前）
 	now := time.Now()
 	for i := 0; i < 5; i++ {
-		day := now.AddDate(0, 0, -i).Truncate(24 * time.Hour).Add(time.Hour)
+		day := now.AddDate(0, 0, -i).Add(-time.Hour)
 		if err := env.gormDB.Create(&db.UsageLog{
 			RequestID:    fmt.Sprintf("req-dave-day%d", i),
 			UserID:       user.ID,

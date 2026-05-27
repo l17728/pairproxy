@@ -1121,7 +1121,7 @@ sproxy admin track clear <username>
 ### File Storage Layout
 
 ```
-<db_dir>/track/
+<track.dir>/
 ├── users/
 │   ├── alice          # 空标记文件，存在即表示追踪已启用
 │   └── bob

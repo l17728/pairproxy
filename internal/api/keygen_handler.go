@@ -30,8 +30,8 @@ import (
 type KeygenHandler struct {
 	logger       *zap.Logger
 	userRepo     *db.UserRepo
-	usageRepo    *db.UsageRepo  // 用量查询（可选，nil 时跳过用量相关端点）
-	groupRepo    *db.GroupRepo  // 分组配额查询（可选）
+	usageRepo    *db.UsageRepo // 用量查询（可选，nil 时跳过用量相关端点）
+	groupRepo    *db.GroupRepo // 分组配额查询（可选）
 	jwtMgr       *auth.Manager
 	keyCache     *keygen.KeyCache // 可选，改密后立即踢出旧 Key 缓存
 	isWorkerNode bool
@@ -138,6 +138,9 @@ type keygenQuotaResponse struct {
 	MonthlyUsed   int64 `json:"monthly_used"`
 	MonthlyRemain int64 `json:"monthly_remain"`
 	RPMLimit      int   `json:"rpm_limit"`
+	RPM15mLimit   int   `json:"rpm_15m_limit"`
+	RPM30mLimit   int   `json:"rpm_30m_limit"`
+	RPHLimit      int   `json:"rph_limit"`
 }
 
 func (h *KeygenHandler) handleStaticPage(w http.ResponseWriter, _ *http.Request) {
@@ -389,6 +392,15 @@ func (h *KeygenHandler) handleQuota(w http.ResponseWriter, r *http.Request) {
 				if group.RequestsPerMinute != nil {
 					resp.RPMLimit = *group.RequestsPerMinute
 				}
+				if group.RequestsPer15Minutes != nil {
+					resp.RPM15mLimit = *group.RequestsPer15Minutes
+				}
+				if group.RequestsPer30Minutes != nil {
+					resp.RPM30mLimit = *group.RequestsPer30Minutes
+				}
+				if group.RequestsPerHour != nil {
+					resp.RPHLimit = *group.RequestsPerHour
+				}
 			}
 		}
 	}
@@ -425,7 +437,7 @@ func (h *KeygenHandler) handleHistory(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	from := now.AddDate(0, 0, -days)
 
-	rows, err := h.usageRepo.DailyTokens(from, now, claims.UserID)
+	rows, err := h.usageRepo.DailyTokens(from, now, claims.UserID, "day")
 	if err != nil {
 		h.logger.Error("keygen history: failed", zap.String("user_id", claims.UserID), zap.Error(err))
 		writeKeygenError(w, http.StatusInternalServerError, "internal_error", "failed to get usage history")
@@ -471,6 +483,10 @@ func (h *KeygenHandler) handleLogs(w http.ResponseWriter, r *http.Request) {
 		StatusCode   int     `json:"status_code"`
 		IsStreaming  bool    `json:"is_streaming"`
 		DurationMs   int64   `json:"duration_ms"`
+		TtftMs       int64   `json:"ttft_ms"`
+		TpotMs       float64 `json:"tpot_ms"`
+		RequestPath  string  `json:"request_path"`
+		ErrorBody    string  `json:"error_body"`
 	}
 	type logsResp struct {
 		Logs       []logEntry `json:"logs"`
@@ -532,6 +548,10 @@ func (h *KeygenHandler) handleLogs(w http.ResponseWriter, r *http.Request) {
 			StatusCode:   l.StatusCode,
 			IsStreaming:  l.IsStreaming,
 			DurationMs:   l.DurationMs,
+			TtftMs:       l.TtftMs,
+			TpotMs:       l.TpotMs,
+			RequestPath:  l.RequestPath,
+			ErrorBody:    l.ErrorBody,
 		})
 	}
 
@@ -739,17 +759,20 @@ const keygenHTML = `<!DOCTYPE html>
           <thead class="bg-gray-50 text-xs text-gray-500 uppercase">
             <tr>
               <th class="px-4 py-3 text-left">时间</th>
+              <th class="px-4 py-3 text-left">接口</th>
               <th class="px-4 py-3 text-left">请求模型</th>
               <th class="px-4 py-3 text-left">实际模型</th>
               <th class="px-4 py-3 text-right">输入</th>
               <th class="px-4 py-3 text-right">输出</th>
-              <th class="px-4 py-3 text-right">费用($)</th>
               <th class="px-4 py-3 text-left">类型</th>
+              <th class="px-4 py-3 text-right">耗时</th>
+              <th class="px-4 py-3 text-right">TTFT</th>
+              <th class="px-4 py-3 text-right">TPOT</th>
               <th class="px-4 py-3 text-left">状态</th>
             </tr>
           </thead>
           <tbody class="divide-y divide-gray-50 text-gray-700" id="logsBody">
-            <tr><td colspan="8" class="px-4 py-8 text-center text-gray-400 text-sm">加载中...</td></tr>
+            <tr><td colspan="11" class="px-4 py-8 text-center text-gray-400 text-sm">加载中...</td></tr>
           </tbody>
         </table>
       </div>
@@ -770,11 +793,41 @@ const keygenHTML = `<!DOCTYPE html>
 
 <script>
 const BASE = window.location.origin;
+const SESSION_KEY = 'pp_keygen_session';
+const SESSION_TTL_MS = 60 * 60 * 1000; // 1 小时
 let sessionToken = '';
 let currentKey = '';
 let usageChart;
 let currentLogsPage = 1;
 let totalLogsPages = 1;
+
+// ── Session 持久化 ─────────────────────────────────────────────────────────────
+
+function saveSession(token, username, key) {
+  try {
+    localStorage.setItem(SESSION_KEY, JSON.stringify({
+      token, username, key,
+      expiresAt: Date.now() + SESSION_TTL_MS
+    }));
+  } catch(e) {}
+}
+
+function loadSession() {
+  try {
+    const raw = localStorage.getItem(SESSION_KEY);
+    if (!raw) return null;
+    const s = JSON.parse(raw);
+    if (!s || !s.token || !s.expiresAt || Date.now() > s.expiresAt) {
+      localStorage.removeItem(SESSION_KEY);
+      return null;
+    }
+    return s;
+  } catch(e) { return null; }
+}
+
+function clearSession() {
+  try { localStorage.removeItem(SESSION_KEY); } catch(e) {}
+}
 
 // ── 登录 ──────────────────────────────────────────────────────────────────────
 
@@ -803,6 +856,7 @@ async function login() {
       return;
     }
     sessionToken = data.token;
+    saveSession(data.token, data.username, data.key);
     showDashboard(data.username, data.key);
   } catch (e) {
     errEl.textContent = '网络错误，请稍后重试';
@@ -829,6 +883,7 @@ function updateKeyDisplay(key) {
 }
 
 function logout() {
+  clearSession();
   sessionToken = ''; currentKey = '';
   document.getElementById('dashScreen').classList.add('hidden');
   document.getElementById('loginScreen').classList.remove('hidden');
@@ -965,13 +1020,13 @@ async function loadLogs(page) {
   const days = parseInt(document.getElementById('logsDaysSelect').value) || 7;
   const pageSize = parseInt(document.getElementById('logsPageSizeSelect').value) || 10;
   const tbody = document.getElementById('logsBody');
-  tbody.innerHTML = '<tr><td colspan="7" class="px-4 py-8 text-center text-gray-400">加载中...</td></tr>';
+  tbody.innerHTML = '<tr><td colspan="11" class="px-4 py-8 text-center text-gray-400">加载中...</td></tr>';
 
   try {
     const url = '/keygen/api/logs?days=' + days + '&page=' + page + '&page_size=' + pageSize;
     const r = await fetch(url, {headers: {'Authorization': 'Bearer ' + sessionToken}});
     if (!r.ok) {
-      tbody.innerHTML = '<tr><td colspan="7" class="px-4 py-8 text-center text-red-400">加载失败</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="11" class="px-4 py-8 text-center text-red-400">加载失败</td></tr>';
       return;
     }
     const data = await r.json();
@@ -980,29 +1035,64 @@ async function loadLogs(page) {
     renderLogsPagination(data.page, data.total_pages, data.total, data.page_size);
   } catch (e) {
     console.error('loadLogs failed:', e);
-    tbody.innerHTML = '<tr><td colspan="8" class="px-4 py-8 text-center text-red-400">请求失败</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="9" class="px-4 py-8 text-center text-red-400">请求失败</td></tr>';
   }
+}
+
+function fmtMs(ms) {
+  if (!ms || ms === 0) return '<span class="text-gray-300">—</span>';
+  if (ms < 1000) return ms + 'ms';
+  return (ms / 1000).toFixed(1) + 's';
+}
+function fmtTpot(tpot) {
+  if (!tpot || tpot === 0) return '<span class="text-gray-300">—</span>';
+  return tpot.toFixed(1) + 'ms/tok';
 }
 
 function renderLogsTable(logs) {
   const tbody = document.getElementById('logsBody');
   if (!logs || logs.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="8" class="px-4 py-8 text-center text-gray-400">暂无请求记录</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="11" class="px-4 py-8 text-center text-gray-400">暂无请求记录</td></tr>';
     return;
   }
-  tbody.innerHTML = logs.map(l => ` + "`" + `
-    <tr class="hover:bg-gray-50">
-      <td class="px-4 py-3 text-gray-400 text-xs whitespace-nowrap">${l.created_at}</td>
-      <td class="px-4 py-3 text-gray-500 text-xs">${l.model || '—'}</td>
-      <td class="px-4 py-3 text-xs">${l.actual_model ? ` + "`" + `<span class="text-indigo-600">${l.actual_model}</span>` + "`" + ` : '<span class="text-gray-300">—</span>'}</td>
-      <td class="px-4 py-3 text-right text-xs">${l.input_tokens.toLocaleString()}</td>
-      <td class="px-4 py-3 text-right text-xs">${l.output_tokens.toLocaleString()}</td>
-      <td class="px-4 py-3 text-right text-xs text-amber-600">${l.cost_usd > 0 ? l.cost_usd.toFixed(4) : '<span class="text-gray-300">—</span>'}</td>
-      <td class="px-4 py-3 text-xs">${l.is_streaming ? '<span class="text-blue-500">流式</span>' : '<span class="text-gray-400">同步</span>'}</td>
-      <td class="px-4 py-3 text-xs">${l.status_code === 200
-        ? '<span class="text-green-600 font-medium">✓ 200</span>'
-        : '<span class="text-red-500 font-medium">✗ ' + l.status_code + '</span>'}</td>
-    </tr>` + "`" + `).join('');
+  const rows = [];
+  logs.forEach(function(l) {
+    const isErr = l.status_code !== 200;
+    let pathCell;
+    if (l.error_body) {
+      pathCell = '<td class="px-4 py-3">'
+        + '<span class="text-gray-400 text-xs font-mono">' + escHtml(l.request_path || '—') + '</span>'
+        + ' <span data-errtip="' + escAttr(l.error_body) + '" class="text-red-400 text-xs cursor-help align-middle">⚠</span>'
+        + '</td>';
+    } else {
+      pathCell = '<td class="px-4 py-3 text-gray-400 text-xs font-mono">' + (l.request_path || '<span class="text-gray-200">—</span>') + '</td>';
+    }
+    let tr = '<tr class="hover:bg-gray-50">';
+    tr += '<td class="px-4 py-3 text-gray-400 text-xs whitespace-nowrap">' + l.created_at + '</td>';
+    tr += pathCell;
+    tr += '<td class="px-4 py-3 text-gray-500 text-xs">' + (l.model || '—') + '</td>';
+    tr += '<td class="px-4 py-3 text-xs">' + (l.actual_model ? '<span class="text-indigo-600">' + l.actual_model + '</span>' : '<span class="text-gray-300">—</span>') + '</td>';
+    tr += '<td class="px-4 py-3 text-right text-xs">' + l.input_tokens.toLocaleString() + '</td>';
+    tr += '<td class="px-4 py-3 text-right text-xs">' + l.output_tokens.toLocaleString() + '</td>';
+    tr += '<td class="px-4 py-3 text-xs">' + (l.is_streaming ? '<span class="text-blue-500">流式</span>' : '<span class="text-gray-400">同步</span>') + '</td>';
+    tr += '<td class="px-4 py-3 text-right text-xs text-gray-500">' + fmtMs(l.duration_ms) + '</td>';
+    tr += '<td class="px-4 py-3 text-right text-xs text-gray-500">' + (l.is_streaming ? fmtMs(l.ttft_ms) : '<span class="text-gray-300">—</span>') + '</td>';
+    tr += '<td class="px-4 py-3 text-right text-xs text-gray-500">' + fmtTpot(l.tpot_ms) + '</td>';
+    tr += '<td class="px-4 py-3 text-xs">' + (isErr ? '<span class="text-red-500 font-medium">✗ ' + l.status_code + '</span>' : '<span class="text-green-600 font-medium">✓ 200</span>') + '</td>';
+    tr += '</tr>';
+    rows.push(tr);
+  });
+  tbody.innerHTML = rows.join('');
+}
+
+function escHtml(s) {
+  if (!s) return '';
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function escAttr(s) {
+  if (!s) return '';
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
 function renderLogsPagination(page, totalPages, total, pageSize) {
@@ -1098,6 +1188,37 @@ document.getElementById('loginPassword').addEventListener('keydown', function(e)
 document.getElementById('loginUsername').addEventListener('keydown', function(e) {
   if (e.key === 'Enter') document.getElementById('loginPassword').focus();
 });
+
+// ── 页面加载：尝试从 localStorage 恢复 session ─────────────────────────────────
+
+(function initSession() {
+  const s = loadSession();
+  if (!s) return;
+  sessionToken = s.token;
+  showDashboard(s.username, s.key);
+})();
+
+// ── 错误信息 Tooltip ────────────────────────────────────────────────────────
+(function() {
+  var tip = document.createElement('div');
+  tip.style.cssText = 'position:fixed;display:none;z-index:9999;max-width:480px;background:#1f2937;color:#fca5a5;font-size:12px;line-height:1.6;padding:8px 12px;border-radius:6px;white-space:pre-wrap;word-break:break-all;box-shadow:0 4px 16px rgba(0,0,0,.45);pointer-events:none;';
+  document.body.appendChild(tip);
+  function move(e) {
+    var x = e.clientX + 14, y = e.clientY + 14;
+    tip.style.left = x + 'px'; tip.style.top = y + 'px';
+    var r = tip.getBoundingClientRect();
+    if (r.right > window.innerWidth - 8) tip.style.left = (e.clientX - r.width - 8) + 'px';
+    if (r.bottom > window.innerHeight - 8) tip.style.top = (e.clientY - r.height - 8) + 'px';
+  }
+  document.addEventListener('mouseover', function(e) {
+    var el = e.target.closest('[data-errtip]');
+    if (!el) { tip.style.display = 'none'; return; }
+    tip.textContent = el.dataset.errtip;
+    tip.style.display = 'block'; move(e);
+  });
+  document.addEventListener('mousemove', function(e) { if (tip.style.display !== 'none') move(e); });
+  document.addEventListener('mouseout', function(e) { if (!e.target.closest('[data-errtip]')) tip.style.display = 'none'; });
+})();
 </script>
 </body>
 </html>`

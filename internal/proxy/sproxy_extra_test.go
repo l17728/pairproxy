@@ -362,29 +362,8 @@ func TestNewSProxy_NoTargets_ReturnsError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// SetAPIKeyResolver / SetBindingResolver
+// SetBindingResolver
 // ---------------------------------------------------------------------------
-
-func TestSProxy_SetAPIKeyResolver(t *testing.T) {
-	sp, cancel := newTestSProxySimple(t)
-	defer cancel()
-
-	called := false
-	sp.SetAPIKeyResolver(func(userID, groupID string) (string, bool) {
-		called = true
-		return "dynamic-key", true
-	})
-
-	// 触发一次（内部函数，通过字段验证注入成功）
-	if sp.apiKeyResolver == nil {
-		t.Error("apiKeyResolver should be set")
-	}
-	// 调用验证 resolver 可以被调用
-	key, found := sp.apiKeyResolver("test-user", "test-group")
-	if !found || key != "dynamic-key" || !called {
-		t.Error("apiKeyResolver should have been called and returned dynamic-key")
-	}
-}
 
 func TestSProxy_SetBindingResolver(t *testing.T) {
 	sp, cancel := newTestSProxySimple(t)

@@ -193,6 +193,45 @@ llm:
 > There is no global `health_check.interval`/`health_check.path` block in the cproxy config — those parameters
 > are internal to sproxy and not exposed as cproxy client settings.
 
+### LLM 可靠性配置（sproxy.yaml）
+
+```yaml
+llm:
+  # request_timeout: 等待 LLM 响应头的超时（不含流式响应体传输时间）
+  # 默认 300s（即使不配置也生效）；-1=禁用超时
+  request_timeout: 300s
+
+  # max_retries: 上游返回 5xx / 连接错误时切换 target 的重试次数（不含首次）
+  # 0=使用默认值 2；-1=禁用重试（首次失败直接返回，不切换 target）
+  max_retries: 2
+
+  # fail_threshold: 被动熔断阈值（连续失败多少次后将节点移出调度池）
+  # 默认 3；调大可容忍偶发抖动，调小可更快隔离故障节点
+  fail_threshold: 3
+
+  # recovery_delay: 节点熔断后多久自动尝试恢复
+  # 默认 60s；0=禁用自动恢复
+  recovery_delay: 60s
+
+  # retry_on_status: 除 5xx 和连接错误外，额外触发 try-next 的 HTTP 状态码
+  # 默认空（仅重试 5xx/连接错误）
+  retry_on_status: [429]
+```
+
+**超时说明**：`request_timeout` 使用 `ResponseHeaderTimeout`，只限制等待 LLM 开始返回响应头的时间。一旦 LLM 开始流式输出（200 OK + headers 到达），后续数据传输不受此限制，长回复不会被中断。
+
+**熔断流程**：
+
+```
+请求失败（5xx / 连接错误）
+    ↓
+RetryTransport 切换 target 重试（最多 max_retries 次）
+    ↓ 如果某个 target 连续失败达到 fail_threshold 次
+将该 target 标记为 unhealthy，移出调度池
+    ↓ 等待 recovery_delay
+尝试恢复（有主动健康检查时先探活，无则半开放行）
+```
+
 ### Request Configuration
 
 ```yaml

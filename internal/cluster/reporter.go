@@ -176,6 +176,8 @@ func (r *Reporter) flushUsage(ctx context.Context) {
 			UpstreamURL:  log.UpstreamURL,
 			StatusCode:   log.StatusCode,
 			DurationMs:   log.DurationMs,
+			TtftMs:       log.TtftMs,
+			TpotMs:       log.TpotMs,
 			SourceNode:   log.SourceNode,
 			CreatedAt:    log.CreatedAt,
 		})
@@ -318,4 +320,3 @@ func (r *Reporter) ReportUsage(ctx context.Context, records []db.UsageRecord) er
 	)
 	return nil
 }
-

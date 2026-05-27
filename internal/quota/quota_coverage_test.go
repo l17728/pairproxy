@@ -381,7 +381,7 @@ func TestCoverage_Check_OnlyRPMLimit_Exceeded(t *testing.T) {
 	checker := NewChecker(logger, userRepo, usageRepo, NewQuotaCache(time.Minute))
 
 	// 先消耗掉唯一 RPM 配额
-	checker.rateLimiter.Allow("u-only-rpm", 1)
+	checker.rateLimiter.AllowWindows("u-only-rpm", []WindowLimit{{Window: time.Minute, Limit: 1}})
 
 	// 第二次应触发 rate_limit ExceededError
 	err := checker.Check(context.Background(), "u-only-rpm")
@@ -392,7 +392,7 @@ func TestCoverage_Check_OnlyRPMLimit_Exceeded(t *testing.T) {
 	if !errors.As(err, &qErr) {
 		t.Fatalf("expected *ExceededError, got %T", err)
 	}
-	if qErr.Kind != "rate_limit" {
-		t.Errorf("Kind = %q, want 'rate_limit'", qErr.Kind)
+	if qErr.Kind != "rate_limit_1m" {
+		t.Errorf("Kind = %q, want 'rate_limit_1m'", qErr.Kind)
 	}
 }

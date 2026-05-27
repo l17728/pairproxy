@@ -61,7 +61,7 @@ func TestAuthMiddlewareValidJWT(t *testing.T) {
 		gotClaims = ClaimsFromContext(r.Context())
 		w.WriteHeader(http.StatusOK)
 	})
-	handler := AuthMiddleware(logger, jwtMgr, inner)
+	handler := AuthMiddleware(logger, jwtMgr, nil, inner)
 
 	token, err := jwtMgr.Sign(auth.JWTClaims{UserID: "u1", Username: "alice"}, time.Hour)
 	if err != nil {
@@ -92,7 +92,7 @@ func TestAuthMiddlewareNoHeader(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	jwtMgr, _ := auth.NewManager(logger, "secret")
 
-	handler := AuthMiddleware(logger, jwtMgr, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := AuthMiddleware(logger, jwtMgr, nil, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("handler should not be reached")
 	}))
 
@@ -120,7 +120,7 @@ func TestAuthMiddlewareExpired(t *testing.T) {
 	}
 	time.Sleep(5 * time.Millisecond) // 等待过期
 
-	handler := AuthMiddleware(logger, jwtMgr, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := AuthMiddleware(logger, jwtMgr, nil, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("handler should not be reached")
 	}))
 
@@ -154,7 +154,7 @@ func TestAuthMiddlewareBlacklisted(t *testing.T) {
 	}
 	jwtMgr.Blacklist(claims.JTI, claims.ExpiresAt.Time)
 
-	handler := AuthMiddleware(logger, jwtMgr, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := AuthMiddleware(logger, jwtMgr, nil, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("handler should not be reached")
 	}))
 
@@ -181,7 +181,7 @@ func TestAuthMiddleware_BearerTokenValid(t *testing.T) {
 		gotClaims = ClaimsFromContext(r.Context())
 		w.WriteHeader(http.StatusOK)
 	})
-	handler := AuthMiddleware(logger, jwtMgr, inner)
+	handler := AuthMiddleware(logger, jwtMgr, nil, inner)
 
 	token, err := jwtMgr.Sign(auth.JWTClaims{UserID: "u-openai", Username: "openai-user"}, time.Hour)
 	if err != nil {
@@ -208,7 +208,7 @@ func TestAuthMiddleware_BearerTokenInvalid(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	jwtMgr, _ := auth.NewManager(logger, "secret")
 
-	handler := AuthMiddleware(logger, jwtMgr, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := AuthMiddleware(logger, jwtMgr, nil, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("handler should not be reached")
 	}))
 
@@ -231,7 +231,7 @@ func TestAuthMiddleware_BothHeadersPriority(t *testing.T) {
 		gotClaims = ClaimsFromContext(r.Context())
 		w.WriteHeader(http.StatusOK)
 	})
-	handler := AuthMiddleware(logger, jwtMgr, inner)
+	handler := AuthMiddleware(logger, jwtMgr, nil, inner)
 
 	// 创建两个不同的 token
 	tokenPairProxy, _ := jwtMgr.Sign(auth.JWTClaims{UserID: "u-pairproxy", Username: "pairproxy-user"}, time.Hour)
@@ -252,6 +252,103 @@ func TestAuthMiddleware_BothHeadersPriority(t *testing.T) {
 	// 应该使用 X-PairProxy-Auth 的 token（优先级更高）
 	if gotClaims.UserID != "u-pairproxy" {
 		t.Errorf("UserID = %q, want %q (X-PairProxy-Auth should take priority)", gotClaims.UserID, "u-pairproxy")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestAuthMiddleware_DisabledUser — 禁用用户的 JWT 应被立即拒绝（403）
+// ---------------------------------------------------------------------------
+
+// stubActiveChecker 是 UserActiveChecker 的测试桩。
+type stubActiveChecker struct {
+	active bool
+	err    error
+}
+
+func (s *stubActiveChecker) IsUserActive(_ string) (bool, error) {
+	return s.active, s.err
+}
+
+func TestAuthMiddleware_DisabledUser(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	jwtMgr, _ := auth.NewManager(logger, "secret")
+
+	token, err := jwtMgr.Sign(auth.JWTClaims{UserID: "u-disabled", Username: "disabled"}, time.Hour)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+
+	checker := &stubActiveChecker{active: false}
+	handler := AuthMiddleware(logger, jwtMgr, checker, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("handler should not be reached for disabled user")
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	req.Header.Set("X-PairProxy-Auth", token)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 for disabled user", rr.Code)
+	}
+}
+
+func TestAuthMiddleware_ActiveUser_Passes(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	jwtMgr, _ := auth.NewManager(logger, "secret")
+
+	token, err := jwtMgr.Sign(auth.JWTClaims{UserID: "u-active", Username: "active"}, time.Hour)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+
+	checker := &stubActiveChecker{active: true}
+	reached := false
+	handler := AuthMiddleware(logger, jwtMgr, checker, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	req.Header.Set("X-PairProxy-Auth", token)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 for active user", rr.Code)
+	}
+	if !reached {
+		t.Error("inner handler should be reached for active user")
+	}
+}
+
+func TestAuthMiddleware_CheckerError_FailOpen(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	jwtMgr, _ := auth.NewManager(logger, "secret")
+
+	token, err := jwtMgr.Sign(auth.JWTClaims{UserID: "u-err", Username: "err-user"}, time.Hour)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+
+	// DB 查询失败 → fail-open，不阻断请求
+	checker := &stubActiveChecker{active: false, err: errors.New("db error")}
+	reached := false
+	handler := AuthMiddleware(logger, jwtMgr, checker, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	req.Header.Set("X-PairProxy-Auth", token)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 (fail-open on DB error)", rr.Code)
+	}
+	if !reached {
+		t.Error("inner handler should be reached on DB error (fail-open)")
 	}
 }
 
@@ -525,7 +622,7 @@ func TestSProxyRejectsRequestWhenBoundTargetUnhealthy(t *testing.T) {
 	})
 
 	// 直接测试 pickLLMTarget 在 tried 包含 boundURL 时返回 ErrBoundTargetUnavailable
-	_, err := sp.pickLLMTarget("/v1/messages", "user1", "", "", []string{boundURL}, nil)
+	_, err := sp.pickLLMTarget("/v1/messages", "user1", "", "", []string{boundURL}, "")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

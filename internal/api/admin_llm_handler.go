@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -157,10 +158,25 @@ func (h *AdminHandler) handleCreateLLMBinding(w http.ResponseWriter, r *http.Req
 		targetID = req.TargetURL
 	}
 
-	if err := h.llmBindingRepo.Set(targetID, req.UserID, req.GroupID); err != nil {
-		h.logger.Error("create LLM binding failed", zap.Error(err))
-		writeJSONError(w, http.StatusInternalServerError, "internal_error", "an internal error occurred")
-		return
+	if req.UserID != nil {
+		// 用户级绑定：1:1 语义，Set() 会先删除旧绑定再插入新绑定
+		if err := h.llmBindingRepo.Set(targetID, req.UserID, nil); err != nil {
+			h.logger.Error("create user LLM binding failed", zap.Error(err))
+			writeJSONError(w, http.StatusInternalServerError, "internal_error", "an internal error occurred")
+			return
+		}
+	} else {
+		// 分组级绑定：1:N 语义，AddGroupBinding() 追加绑定（相同 provider 约束）
+		if err := h.llmBindingRepo.AddGroupBinding(targetID, *req.GroupID); err != nil {
+			// provider 冲突 / target 不存在 → 400；其余 → 500
+			if strings.Contains(err.Error(), "provider conflict") || strings.Contains(err.Error(), "not found") {
+				writeJSONError(w, http.StatusBadRequest, "binding_error", err.Error())
+			} else {
+				h.logger.Error("create group LLM binding failed", zap.Error(err))
+				writeJSONError(w, http.StatusInternalServerError, "internal_error", "an internal error occurred")
+			}
+			return
+		}
 	}
 	h.logger.Info("LLM binding created",
 		zap.String("target_id", targetID),

@@ -163,22 +163,23 @@ func TestUserHandler_UsageHistory(t *testing.T) {
 	}
 
 	// 插入 3 天的用量（不同用户，验证隔离）
+	// 使用 now - i*24h 避免 midnight+1h 在 UTC 00:00-01:00 时落到查询窗口"未来"
 	now := time.Now()
 	for i := 0; i < 3; i++ {
-		day := now.AddDate(0, 0, -i).Truncate(24 * time.Hour)
+		ts := now.AddDate(0, 0, -i).Add(-time.Hour) // 确保始终在当前时刻之前
 		// u1 的记录
 		log1 := db.UsageLog{
 			RequestID:    "r-u1-" + string(rune('a'+i)),
 			UserID:       "u1",
 			InputTokens:  (i + 1) * 100,
 			OutputTokens: (i + 1) * 50,
-			CreatedAt:    day.Add(time.Hour),
+			CreatedAt:    ts,
 		}
 		log2 := db.UsageLog{
 			RequestID:   "r-u2-" + string(rune('a'+i)),
 			UserID:      "u2",
 			InputTokens: 9999,
-			CreatedAt:   day.Add(2 * time.Hour),
+			CreatedAt:   ts.Add(-time.Minute),
 		}
 		for _, l := range []db.UsageLog{log1, log2} {
 			if err := gormDB.Create(&l).Error; err != nil {

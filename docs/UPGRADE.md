@@ -1,6 +1,6 @@
 # PairProxy 升级指南
 
-> 当前版本：**v3.0.2** | 更新日期：2026-04-20
+> 当前版本：**v3.1.1** | 更新日期：2026-04-28
 
 本文档描述各版本间的升级步骤、数据库 Schema 变更、回滚方法及不兼容变更。
 
@@ -51,6 +51,164 @@
 ---
 
 ## 版本变更记录
+
+### v3.2.2 — invalid JWT 日志增强
+
+**数据库 Schema 变更**：无，直接替换二进制重启即可。
+
+**变更内容**：`invalid JWT` warn 日志新增 `path`、`method`、`remote_addr` 字段，Dashboard 告警页同步展示。
+
+---
+
+### v3.2.1 — UI 改进 + 配置增强 + 日志修复
+
+**数据库 Schema 变更**
+
+无。直接替换二进制重启即可。
+
+**行为变更**
+
+| 变更项 | 旧行为 | 新行为 |
+|--------|--------|--------|
+| `request_timeout` 填 `-1` | YAML 解析报错 | 禁用超时 |
+| `request_timeout` 填裸整数（如 `600`） | YAML 解析报错 | 按秒解析（600s） |
+| model_router 触发范围 | 所有代理路径 | 仅 `/v1/messages` 和 `*chat/completions` |
+| sproxy 日志 `remote_addr` | cproxy 地址 | 真实客户端 IP（via X-Forwarded-For） |
+
+**升级步骤**
+
+```bash
+systemctl restart sproxy
+```
+
+---
+
+### v3.2.0 — 多窗口限速 + 错误可观测性 + 配置修复
+
+**数据库 Schema 变更**
+
+`groups` 表新增三个限速字段：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `rpm_limit_15m` | integer | 15 分钟最大请求次数（0=不限） |
+| `rpm_limit_30m` | integer | 30 分钟最大请求次数（0=不限） |
+| `rpm_limit_1h`  | integer | 1 小时最大请求次数（0=不限） |
+
+`usage_logs` 表新增字段：`client_ip`、`model_router_*` 元数据字段。
+
+所有变更通过 `db.AutoMigrate` 自动应用，无需手动迁移。
+
+**行为变更（需注意）**
+
+| 变更项 | 旧行为 | 新行为 |
+|--------|--------|--------|
+| `llm.request_timeout` | 配置无效，永久等待 | **默认 300s**，等待响应头超时后断连 |
+| `llm.max_retries: -1` | 与 0 相同，回退到默认值 2 | 禁用重试，首次失败直接返回 |
+| SSE 嵌套错误（如 504） | 记录为 200（误报成功） | 正确记录为 502 + error_body |
+| 502 transport 错误 | `error_body` 为空 | 填充实际错误信息 |
+
+> ⚠️ **`request_timeout` 默认值生效**：若你的 LLM 后端正常情况下响应头延迟超过 5 分钟（极罕见），需在配置中显式设置更大的值：
+> ```yaml
+> llm:
+>   request_timeout: 600s  # 或 -1 禁用
+> ```
+
+**升级步骤**
+
+```bash
+# 无需手动迁移，AutoMigrate 自动处理
+systemctl restart sproxy
+```
+
+---
+
+### v3.1.1 — Track / Peer 模式 / Model Router 问题修复
+
+**数据库 Schema 变更**
+
+无。直接替换二进制重启即可。
+
+**问题修复**
+
+| # | 修复内容 |
+|---|---------|
+| 1 | **track.dir 独立配置**：`track.dir` 不再与 `database.path` 绑定，可单独配置指向 NFS 等共享存储；peer 模式下所有节点共享同一 track 目录时均可正常写入 |
+| 2 | **peer 模式 source_node 始终为 "local"**：`usage_logs.source_node` 在 peer 模式下因代码路径错误始终写入 `"local"`，已修复为正确记录各节点地址 |
+| 3 | **alerts 页面 SSE 报错**：`/api/admin/alerts/stream` 因 EventSource 无法携带认证头持续报 `missing authentication header`；已改为 15 秒轮询，报错消除 |
+| 4 | **model_router AtoO 路径预转换**：model_router 路由时未对 Anthropic 格式请求预先转换为 OpenAI 格式，导致路由器收到错误格式的 body；已在路由前完成转换 |
+| 5 | **track 流式兜底 Flush**：流式响应若未发出 `message_stop` / `[DONE]` 终止信号，对话记录会丢失；已在 `proxy.ServeHTTP` 完成后补加幂等 `Flush()` |
+| 6 | **track 目录权限**：`sproxy admin track enable` 以 root 身份创建的对话目录（mode 0755）导致 service 用户（如 `pairproxy`）无法写入文件；已改为 0o777，CLI 与 service 用户不同时无需手动 chown |
+| 7 | **track 写入错误可见性**：对话文件写入失败之前静默丢弃；现改为打印 `[track]` 前缀错误日志，成功写入也打印路径，便于排查 |
+| 8 | **track 活跃日志级别**：`conversation tracking active` 从 DEBUG 提升为 INFO，无需开启 debug 日志即可确认 track 是否正确触发 |
+
+**升级注意（track 目录权限）**
+
+若已通过旧版 `track enable` 创建了目录，需手动修复权限：
+
+```bash
+chmod -R a+w <track.dir>/conversations/
+```
+
+新版本执行 `track enable` 时会自动使用正确权限，无需额外操作。
+
+**升级步骤**
+
+```bash
+# 无 Schema 变更，直接替换二进制重启
+systemctl restart sproxy
+```
+
+---
+
+### v3.1.0 — 分组多绑定（1:N）+ MaaS Model Router 智能路由
+
+**数据库 Schema 变更**
+
+`llm_bindings` 表的分组唯一索引升级：
+
+| 变更 | 说明 |
+|------|------|
+| `idx_llmb_group_target`: `UNIQUE(group_id)` → `UNIQUE(group_id, target_id)` | 允许同一分组绑定多个 LLM target（1:N）；防止同一 (group, target) 重复绑定 |
+
+启动时 `db.AutoMigrate` **自动完成**：先删除旧单列索引，再建复合索引，**无需手动操作**。
+
+**新增功能**
+
+| 功能 | 说明 |
+|------|------|
+| 分组多绑定（1:N） | 通过 Admin API `POST /api/admin/llm/bindings`（传 `group_id`）为分组追加多个同 provider 的 LLM target |
+| provider 一致性约束 | 分组内所有绑定 target 必须是同一 provider；跨 provider 添加返回 400 `binding_error` |
+| Model Router 智能选取 | 当分组有 ≥2 个绑定且用户无个人绑定时，调用外部 MaaS Router API 自动选取最优模型对应的 target |
+| session_id 提取 | body `session_id` → `X-Session-Id` 头 → 自动生成 `auto-session-{uuid}` |
+| Failover 保护 | Router 调用失败（超时/错误）时自动 fallback 到分组第一条绑定，不影响正常请求 |
+
+**不兼容变更**
+
+- `LLMBindingRepo.Set()` 现在**拒绝**分组绑定（`userID=nil`），分组绑定必须改用 `AddGroupBinding()`。对通过 Admin API 或 CLI 操作的用户**无感**（API 层已自动路由）；仅影响直接调用 `Set()` 的内部代码（已全部更新）。
+
+**新增配置**（可选，默认不启用）
+
+```yaml
+model_router:
+  enabled: false
+  url: "https://api.your-router.com/v1/models/router"
+  timeout: 3s        # 路由器调用超时，超时后 fallback 到首条分组绑定
+```
+
+**升级步骤**
+
+```bash
+# Schema 变更由 AutoMigrate 自动处理，直接替换二进制重启即可
+systemctl restart sproxy
+
+# 验证
+curl http://localhost:9000/health
+```
+
+若要启用 Model Router，在 `sproxy.yaml` 中添加 `model_router` 块后重启。
+
+---
 
 ### v3.0.2 — LLM 目标稳定性 + 直连认证错误格式修复
 
@@ -761,12 +919,12 @@ cluster:
 **新增文件系统目录**（启动时自动创建，无需手动操作）
 
 ```
-<db_dir>/track/
+<track.dir>/
 ├── users/          # 追踪状态标记文件
 └── conversations/  # 按用户分目录存储的 JSON 对话记录
 ```
 
-目录位置：数据库文件（`database.path`）同级目录下的 `track/` 子目录。例如数据库在 `./pairproxy.db`，则追踪目录为 `./track/`。
+目录位置由配置项 `track.dir` 决定，默认为 `./track`（相对于 sproxy 进程工作目录），与数据库路径无关。Peer 模式下建议显式配置为共享存储的绝对路径。
 
 **新增 CLI 命令**（无需配置文件变更）
 

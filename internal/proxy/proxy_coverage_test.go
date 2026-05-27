@@ -722,7 +722,7 @@ func TestWeightedPickExcluding_NoPreferredProvider_FallbackToAll(t *testing.T) {
 	})
 	defer cleanup()
 
-	info, err := sp.weightedPickExcluding("/v1/messages", "", nil, nil)
+	info, err := sp.weightedPickExcluding("/v1/messages", "", nil)
 	if err != nil {
 		t.Fatalf("weightedPickExcluding: %v", err)
 	}
@@ -742,7 +742,7 @@ func TestWeightedPickExcluding_AllTried_ReturnsError(t *testing.T) {
 
 	// 将唯一 target 标记为已尝试
 	tried := map[string]bool{"https://api.anthropic.com": true}
-	_, err := sp.weightedPickExcluding("/v1/messages", "", tried, nil)
+	_, err := sp.weightedPickExcluding("/v1/messages", "", tried)
 	if err == nil {
 		t.Error("expected error when all targets are tried")
 	}

@@ -5,33 +5,48 @@ import (
 	"time"
 )
 
-// RateLimiter 基于滑动窗口的每分钟请求限速器。
-// 线程安全，使用内存存储（进程重启后计数归零）。
+// WindowLimit defines a sliding-window rate limit: at most Limit requests per Window.
+type WindowLimit struct {
+	Window time.Duration
+	Limit  int
+}
+
+// RateLimiter is a multi-window sliding-window rate limiter.
+// Thread-safe; state is in-memory only (resets on process restart).
 type RateLimiter struct {
 	mu      sync.Mutex
-	windows map[string][]time.Time // userID → 窗口内的请求时间戳
-	window  time.Duration          // 滑动窗口长度（固定 1 分钟）
+	windows map[string][]time.Time // userID → recorded request timestamps (chronological)
 }
 
-// NewRateLimiter 创建 RateLimiter
+// NewRateLimiter creates a RateLimiter.
 func NewRateLimiter() *RateLimiter {
-	return &RateLimiter{
-		windows: make(map[string][]time.Time),
-		window:  time.Minute,
-	}
+	return &RateLimiter{windows: make(map[string][]time.Time)}
 }
 
-// Allow 检查 userID 是否可发起新请求（窗口内不超过 limit 次）。
-// 若允许，记录本次请求并返回 (true, 当前计数)。
-// 若超限，不记录并返回 (false, 当前计数)。
-func (r *RateLimiter) Allow(userID string, limit int) (allowed bool, current int) {
+// AllowWindows checks whether a new request is permitted under all given window limits.
+// Limits are checked in the order provided; the first exceeded limit is returned.
+// If all limits pass, the current timestamp is recorded and (true, ...) is returned.
+// If a limit is exceeded, returns (false, exceeded limit, current count in that window, reset time).
+func (r *RateLimiter) AllowWindows(userID string, limits []WindowLimit) (allowed bool, exceeded WindowLimit, current int, resetAt time.Time) {
+	if len(limits) == 0 {
+		return true, WindowLimit{}, 0, time.Time{}
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	now := time.Now()
-	cutoff := now.Add(-r.window)
 
-	// 过滤窗口外的旧时间戳（原地操作复用底层数组）
+	// Determine the longest window so we can prune older timestamps.
+	maxWindow := limits[0].Window
+	for _, l := range limits[1:] {
+		if l.Window > maxWindow {
+			maxWindow = l.Window
+		}
+	}
+
+	// Prune timestamps older than the longest window (in-place, reuse backing array).
+	cutoff := now.Add(-maxWindow)
 	times := r.windows[userID]
 	valid := times[:0]
 	for _, t := range times {
@@ -40,37 +55,40 @@ func (r *RateLimiter) Allow(userID string, limit int) (allowed bool, current int
 		}
 	}
 
-	current = len(valid)
-	if current >= limit {
-		r.windows[userID] = valid
-		return false, current
+	// Check each window limit. Timestamps in valid are in chronological order.
+	for _, lim := range limits {
+		wCutoff := now.Add(-lim.Window)
+		count := 0
+		var firstInWindow time.Time
+		for _, t := range valid {
+			if t.After(wCutoff) {
+				if firstInWindow.IsZero() {
+					firstInWindow = t // oldest timestamp in this window
+				}
+				count++
+			}
+		}
+		if count >= lim.Limit {
+			r.windows[userID] = valid
+			reset := now.Add(lim.Window)
+			if !firstInWindow.IsZero() {
+				reset = firstInWindow.Add(lim.Window)
+			}
+			return false, lim, count, reset
+		}
 	}
 
 	r.windows[userID] = append(valid, now)
-	return true, current + 1
+	return true, WindowLimit{}, 0, time.Time{}
 }
 
-// ResetAt 返回窗口内最早一条请求过期的时间（即最早可重试的时刻）。
-// 若用户无历史记录，返回 now。
-func (r *RateLimiter) ResetAt(userID string) time.Time {
+// Purge removes entries whose timestamps are all older than maxAge.
+// Call periodically (e.g., every minute) to prevent unbounded memory growth.
+func (r *RateLimiter) Purge(maxAge time.Duration) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	times := r.windows[userID]
-	if len(times) == 0 {
-		return time.Now()
-	}
-	// 最早的时间戳 + 1 分钟 = 窗口内最老记录何时过期
-	return times[0].Add(r.window)
-}
-
-// Purge 清理长时间无请求的用户条目（减少内存占用）。
-// 建议每隔几分钟调用一次。
-func (r *RateLimiter) Purge() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	cutoff := time.Now().Add(-r.window)
+	cutoff := time.Now().Add(-maxAge)
 	for uid, times := range r.windows {
 		var valid []time.Time
 		for _, t := range times {

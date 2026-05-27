@@ -145,10 +145,10 @@ func TestGroupRepo_SetQuota_NilValues(t *testing.T) {
 	require.NoError(t, repo.Create(g))
 
 	daily := int64(1000)
-	require.NoError(t, repo.SetQuota(g.ID, &daily, nil, nil, nil, nil))
+	require.NoError(t, repo.SetQuota(g.ID, &daily, nil, nil, nil, nil, nil, nil, nil))
 
 	// 传 nil 全部清除
-	require.NoError(t, repo.SetQuota(g.ID, nil, nil, nil, nil, nil))
+	require.NoError(t, repo.SetQuota(g.ID, nil, nil, nil, nil, nil, nil, nil, nil))
 
 	found, err := repo.GetByID(g.ID)
 	require.NoError(t, err)
@@ -169,7 +169,7 @@ func TestGroupRepo_SetQuota_AllFields(t *testing.T) {
 	rpm := 20
 	maxReq := int64(4096)
 	concurrent := 5
-	require.NoError(t, repo.SetQuota(g.ID, &daily, &monthly, &rpm, &maxReq, &concurrent))
+	require.NoError(t, repo.SetQuota(g.ID, &daily, &monthly, &rpm, &maxReq, &concurrent, nil, nil, nil))
 
 	found, err := repo.GetByID(g.ID)
 	require.NoError(t, err)
@@ -321,20 +321,6 @@ func TestRefreshTokenRepo_DeleteExpired_WithMultipleRows(t *testing.T) {
 // APIKeyRepo — 覆盖缺失分支
 // ============================================================================
 
-// TestAPIKeyRepo_FindForUser_BothEmpty_Cov 验证 FindForUser 在 userID 和 groupID 均为空时返回 nil。
-func TestAPIKeyRepo_FindForUser_BothEmpty_Cov(t *testing.T) {
-	db := openTestDB(t)
-	logger := zaptest.NewLogger(t)
-	repo := NewAPIKeyRepo(db, logger)
-
-	_, err := repo.Create("unassigned-cov", "enc", "anthropic", "obfuscated")
-	require.NoError(t, err)
-
-	found, err := repo.FindForUser("", "")
-	require.NoError(t, err)
-	assert.Nil(t, found)
-}
-
 // TestAPIKeyRepo_List_Empty_Cov 验证空库时 List 返回空切片。
 func TestAPIKeyRepo_List_Empty_Cov(t *testing.T) {
 	db := openTestDB(t)
@@ -344,29 +330,6 @@ func TestAPIKeyRepo_List_Empty_Cov(t *testing.T) {
 	keys, err := repo.List()
 	require.NoError(t, err)
 	assert.Empty(t, keys)
-}
-
-// TestAPIKeyRepo_Assign_WithGroupOnly 验证仅传 groupID 时 Assign 正常工作。
-func TestAPIKeyRepo_Assign_WithGroupOnly(t *testing.T) {
-	db := openTestDB(t)
-	logger := zaptest.NewLogger(t)
-	repo := NewAPIKeyRepo(db, logger)
-	groupRepo := NewGroupRepo(db, logger)
-
-	g := &Group{Name: "assign-group-only-cov"}
-	require.NoError(t, groupRepo.Create(g))
-
-	key, err := repo.Create("group-only-key-cov", "enc", "anthropic", "obfuscated")
-	require.NoError(t, err)
-
-	gid := g.ID
-	require.NoError(t, repo.Assign(key.ID, nil, &gid))
-
-	// FindForUser 通过 groupID 应能找到
-	found, err := repo.FindForUser("", g.ID)
-	require.NoError(t, err)
-	require.NotNil(t, found)
-	assert.Equal(t, "group-only-key-cov", found.Name)
 }
 
 // ============================================================================
@@ -613,7 +576,7 @@ func TestUsageRepo_DailyTokens_WithUserID_Cov(t *testing.T) {
 		CreatedAt:    now,
 	}).Error)
 
-	rows, err := repo.DailyTokens(now.Add(-time.Minute), now.Add(time.Minute), "user-dt-cov-1")
+	rows, err := repo.DailyTokens(now.Add(-time.Minute), now.Add(time.Minute), "user-dt-cov-1", "day")
 	require.NoError(t, err)
 	require.Len(t, rows, 1)
 	assert.Equal(t, int64(50), rows[0].InputTokens)
@@ -627,7 +590,7 @@ func TestUsageRepo_DailyTokens_GlobalEmpty(t *testing.T) {
 	repo := NewUsageRepo(db, logger)
 
 	now := time.Now()
-	rows, err := repo.DailyTokens(now.Add(-time.Hour), now, "")
+	rows, err := repo.DailyTokens(now.Add(-time.Hour), now, "", "day")
 	require.NoError(t, err)
 	assert.Empty(t, rows)
 }
@@ -1013,7 +976,6 @@ func TestGroupRepo_Delete_NonEmpty_NoForce_Cov(t *testing.T) {
 // 通过关闭底层 sql.DB，触发 GORM 操作返回错误，覆盖各 repo 的 error path。
 // ============================================================================
 
-
 // TestUserRepo_ErrorPaths_OnClosedDB 验证 UserRepo 在 DB 关闭后各方法返回错误。
 func TestUserRepo_ErrorPaths_OnClosedDB(t *testing.T) {
 	logger := zaptest.NewLogger(t)
@@ -1099,7 +1061,7 @@ func TestGroupRepo_ErrorPaths_OnClosedDB(t *testing.T) {
 	})
 
 	t.Run("SetQuota error", func(t *testing.T) {
-		err := groupRepo.SetQuota("some-id", nil, nil, nil, nil, nil)
+		err := groupRepo.SetQuota("some-id", nil, nil, nil, nil, nil, nil, nil, nil)
 		assert.Error(t, err)
 	})
 
@@ -1158,7 +1120,7 @@ func TestUsageRepo_ErrorPaths_OnClosedDB(t *testing.T) {
 	})
 
 	t.Run("DailyTokens error", func(t *testing.T) {
-		_, err := repo.DailyTokens(now, now, "")
+		_, err := repo.DailyTokens(now, now, "", "day")
 		assert.Error(t, err)
 	})
 
@@ -1288,11 +1250,6 @@ func TestAPIKeyRepo_ErrorPaths_OnClosedDB(t *testing.T) {
 
 	t.Run("Revoke error", func(t *testing.T) {
 		err := repo.Revoke(key.ID)
-		assert.Error(t, err)
-	})
-
-	t.Run("FindForUser error (via findByAssignment)", func(t *testing.T) {
-		_, err := repo.FindForUser("user-err", "group-err")
 		assert.Error(t, err)
 	})
 }
@@ -1437,21 +1394,25 @@ func TestLLMTargetRepo_Delete_GetByIDFails(t *testing.T) {
 	assert.Error(t, err)
 }
 
-// TestLLMBindingRepo_Set_GroupDeleteError 验证 Set(groupID) 在 DB 关闭时返回错误（覆盖 group delete 路径）。
+// TestLLMBindingRepo_Set_GroupDeleteError 验证 AddGroupBinding 在 DB 关闭时返回错误。
 func TestLLMBindingRepo_Set_GroupDeleteError(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	gormDB := openTestDB(t)
 	repo := NewLLMBindingRepo(gormDB, logger)
+	targetRepo := NewLLMTargetRepo(gormDB, logger)
+
+	tgt := &LLMTarget{ID: "grp-err-tgt", URL: "https://orig.com", Provider: "anthropic"}
+	require.NoError(t, targetRepo.Create(tgt))
 
 	groupID := "set-grp-err"
-	require.NoError(t, repo.Set("https://orig.com", nil, &groupID))
+	require.NoError(t, repo.AddGroupBinding(tgt.ID, groupID))
 
 	sqlDB, err := gormDB.DB()
 	require.NoError(t, err)
 	require.NoError(t, sqlDB.Close())
 
-	// DB 关闭，Set group 会失败（在 delete old binding 时）
-	err = repo.Set("https://new.com", nil, &groupID)
+	// DB 关闭，AddGroupBinding 会失败（查询时 DB 不可用）
+	err = repo.AddGroupBinding(tgt.ID, groupID)
 	assert.Error(t, err)
 }
 
@@ -1492,25 +1453,6 @@ func TestLLMTargetRepo_Upsert_UpdateError(t *testing.T) {
 	assert.Error(t, err)
 }
 
-// TestAPIKeyRepo_Assign_DeleteError 验证 Assign 在 DB 关闭时 delete old assignment 也继续（soft fail）。
-func TestAPIKeyRepo_Assign_DeleteThenCreateError(t *testing.T) {
-	logger := zaptest.NewLogger(t)
-	gormDB := openTestDB(t)
-	repo := NewAPIKeyRepo(gormDB, logger)
-
-	key, err := repo.Create("assign-err-key", "enc", "anthropic", "obfuscated")
-	require.NoError(t, err)
-
-	sqlDB, dbErr := gormDB.DB()
-	require.NoError(t, dbErr)
-	require.NoError(t, sqlDB.Close())
-
-	uid := "assign-err-user"
-	// DB 关闭，Assign 在 Create 时会失败
-	err = repo.Assign(key.ID, &uid, nil)
-	assert.Error(t, err)
-}
-
 // TestLLMBindingRepo_FindForUser_GroupError 验证 FindForUser 在查 group binding 时 DB 出错返回 error。
 func TestLLMBindingRepo_FindForUser_GroupError(t *testing.T) {
 	logger := zaptest.NewLogger(t)
@@ -1530,32 +1472,37 @@ func TestLLMBindingRepo_FindForUser_GroupError(t *testing.T) {
 // 额外覆盖分支：LLMBindingRepo.Set — groupID 路径
 // ============================================================================
 
-// TestLLMBindingRepo_Set_GroupID 验证 Set 使用 groupID（非 userID）时正确执行删旧建新。
-// 覆盖 llm_binding_repo.go:41 的 `group_id = ?` delete 分支。
+// TestLLMBindingRepo_Set_GroupID 验证 AddGroupBinding 为分组追加多绑定（1:N 语义）。
+// Set() 对 groupID 路径已返回错误；分组绑定必须通过 AddGroupBinding。
 func TestLLMBindingRepo_Set_GroupID(t *testing.T) {
 	gormDB := openTestDB(t)
 	logger := zaptest.NewLogger(t)
 	repo := NewLLMBindingRepo(gormDB, logger)
+	targetRepo := NewLLMTargetRepo(gormDB, logger)
 
 	gid := uuid.NewString()
 
+	tgt1 := &LLMTarget{ID: "grp-tgt-1", URL: "http://target-group.local", Provider: "anthropic"}
+	tgt2 := &LLMTarget{ID: "grp-tgt-2", URL: "http://target-group2.local", Provider: "anthropic"}
+	require.NoError(t, targetRepo.Create(tgt1))
+	require.NoError(t, targetRepo.Create(tgt2))
+
 	// 第一次绑定（groupID 路径）
-	err := repo.Set("http://target-group.local", nil, &gid)
+	err := repo.AddGroupBinding(tgt1.ID, gid)
 	require.NoError(t, err)
 
-	url, found, err := repo.FindForUser("", gid)
+	ids, err := repo.FindAllForGroup(gid)
 	require.NoError(t, err)
-	assert.True(t, found)
-	assert.Equal(t, "http://target-group.local", url)
+	assert.Equal(t, 1, len(ids))
+	assert.Equal(t, tgt1.ID, ids[0])
 
-	// 第二次绑定：覆盖旧的分组绑定（触发 delete old group binding 分支）
-	err = repo.Set("http://target-group2.local", nil, &gid)
+	// 第二次绑定：追加（1:N，不替换）
+	err = repo.AddGroupBinding(tgt2.ID, gid)
 	require.NoError(t, err)
 
-	url2, found2, err := repo.FindForUser("", gid)
+	ids, err = repo.FindAllForGroup(gid)
 	require.NoError(t, err)
-	assert.True(t, found2)
-	assert.Equal(t, "http://target-group2.local", url2)
+	assert.Equal(t, 2, len(ids))
 }
 
 // ============================================================================
@@ -1614,32 +1561,6 @@ func TestLLMTargetRepo_Upsert_NewTargetWithBoolFalse(t *testing.T) {
 	require.Len(t, all, 1)
 	assert.False(t, all[0].IsActive, "IsActive 应为 false")
 	assert.False(t, all[0].IsEditable, "IsEditable 应为 false")
-}
-
-// ============================================================================
-// APIKeyRepo.findByAssignment — key 已被吊销（assignment 存在但 key inactive）
-// ============================================================================
-
-// TestAPIKeyRepo_FindForUser_KeyRevoked 验证 findByAssignment 在 key 被吊销（is_active=false）时返回 nil。
-// 覆盖 apikey_repo.go:199-201 的 key-not-found（inactive）路径。
-func TestAPIKeyRepo_FindForUser_KeyRevoked(t *testing.T) {
-	gormDB := openTestDB(t)
-	logger := zaptest.NewLogger(t)
-	repo := NewAPIKeyRepo(gormDB, logger)
-
-	// 创建 key，然后将其设为 inactive
-	key, err := repo.Create("revoked-key", "enc-val", "anthropic", "obfuscated")
-	require.NoError(t, err)
-	require.NoError(t, gormDB.Model(&APIKey{}).Where("id = ?", key.ID).Update("is_active", false).Error)
-
-	// 创建 assignment 指向该 key
-	uid := uuid.NewString()
-	require.NoError(t, repo.Assign(key.ID, &uid, nil))
-
-	// FindForUser 应返回 nil（key 不活跃，视同未找到）
-	found, err := repo.FindForUser(uid, "")
-	require.NoError(t, err)
-	assert.Nil(t, found, "key 已吊销，应返回 nil")
 }
 
 // ============================================================================
@@ -1750,62 +1671,6 @@ func TestLLMBindingRepo_Set_GroupIDDelete_Error(t *testing.T) {
 
 	err = repo.Set("http://target-grp-err.local", nil, &gid)
 	assert.Error(t, err)
-}
-
-// ============================================================================
-// APIKeyRepo.FindForUser — group assignment error path
-// ============================================================================
-
-// TestAPIKeyRepo_FindForUser_GroupError 验证 FindForUser 在 group 级 findByAssignment 报错时返回 error。
-// 覆盖 apikey_repo.go:163-165 的 group error 分支。
-func TestAPIKeyRepo_FindForUser_GroupError(t *testing.T) {
-	gormDB := openTestDB(t)
-	logger := zaptest.NewLogger(t)
-	repo := NewAPIKeyRepo(gormDB, logger)
-
-	sqlDB, err := gormDB.DB()
-	require.NoError(t, err)
-	require.NoError(t, sqlDB.Close())
-
-	// userID="" → 跳过 user 查询；groupID 非空 → 进入 group 查询，DB 关闭返回 error
-	_, err = repo.FindForUser("", "some-group-id")
-	assert.Error(t, err)
-}
-
-// TestAPIKeyRepo_FindForUser_UserError 验证 FindForUser 在 user 级 findByAssignment 报错时返回 error。
-// 覆盖 apikey_repo.go:149-151 的 user error 分支。
-func TestAPIKeyRepo_FindForUser_UserError(t *testing.T) {
-	gormDB := openTestDB(t)
-	logger := zaptest.NewLogger(t)
-	repo := NewAPIKeyRepo(gormDB, logger)
-
-	sqlDB, err := gormDB.DB()
-	require.NoError(t, err)
-	require.NoError(t, sqlDB.Close())
-
-	// userID 非空 → 进入 user 查询，DB 关闭返回 error
-	_, err = repo.FindForUser("some-user-id", "some-group-id")
-	assert.Error(t, err)
-}
-
-// TestAPIKeyRepo_FindForUser_GroupAssignmentFound 验证 FindForUser 在 user 无分配时查找 group 级分配并返回。
-// 覆盖 apikey_repo.go:167-173 的 group key found 分支。
-func TestAPIKeyRepo_FindForUser_GroupAssignmentFound(t *testing.T) {
-	gormDB := openTestDB(t)
-	logger := zaptest.NewLogger(t)
-	repo := NewAPIKeyRepo(gormDB, logger)
-
-	key, err := repo.Create("grp-assign-key", "enc", "anthropic", "obfuscated")
-	require.NoError(t, err)
-
-	gid := uuid.NewString()
-	require.NoError(t, repo.Assign(key.ID, nil, &gid))
-
-	// userID="" → 跳过 user 查询；groupID 非空 → 找到 group 分配
-	found, err := repo.FindForUser("", gid)
-	require.NoError(t, err)
-	require.NotNil(t, found)
-	assert.Equal(t, key.ID, found.ID)
 }
 
 // ============================================================================

@@ -124,7 +124,7 @@ func TestAuthMiddleware_ByMinMax(t *testing.T) {
 	}
 
 	// Test missing auth header
-	handler := AuthMiddleware(logger, mgr, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := AuthMiddleware(logger, mgr, nil, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 

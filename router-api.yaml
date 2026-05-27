@@ -1,0 +1,521 @@
+openapi: 3.0.3
+info:
+  title: MaaS Router API
+  description: 基于华为云MaaS协议的自动模型路由接口（精简版）
+  version: "v1"
+
+servers:
+  - url: https://api.your-router.com/v1
+
+paths:
+  /models/router:
+    post:
+      x-api-type: inner-public-api
+      summary: 自动模型路由对话接口
+      description: |
+        当前V1版本，暂不支持传递模型列表给router，router内置了所有的模型，后续增加模型的时候需要同步升级router，不然router无法返回最新的模型。 
+        只有当用户指定模型为auto时，才需要转发请求到router模块。
+      operationId: routeChatCompletion
+      parameters:
+        - name: X-Span-Id
+          in: header
+          description: 请求的唯一追踪 ID
+          required: true
+          schema:
+            type: string
+        - name: X-Domain-Id
+          in: header
+          description: 租户ID
+          required: true
+          schema:
+            type: string
+        - name: X-User-Alias
+          in: header
+          description: 用户别名
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelRouterRequest'
+      responses:
+        "200":
+          description: 模型路由结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelRouterResponse'
+        '500':
+          description: 服务器内部错误, 无消息体。
+
+components:
+  schemas:
+
+    # =========================
+    # 🔹 请求（兼容MaaS + Router增强）
+    # =========================
+    ModelRouterRequest:
+      type: object
+      oneOf:
+        # 有 max_completion_tokens 时，不允许有 max_tokens
+        - type: object
+          required: [ "max_completion_tokens" ]
+          not:
+            required: [ "max_tokens" ] 
+        # 有 max_tokens 时，不允许有 max_completion_tokens
+        - type: object
+          required: [ "max_tokens" ]
+          not:
+            required: [ "max_completion_tokens" ] 
+        # 两个都没有
+        - type: object
+          not:
+            anyOf:
+              - required: [ "max_completion_tokens" ]
+              - required: [ "max_tokens " ]
+      required:
+        - session_id
+        - model
+        - messages
+      properties:
+        # ✅ MaaS原字段
+        session_id:
+          type: string
+          description: 同一会话ID
+
+        model:
+          type: string
+          description: 模型ID或auto
+
+        messages: # 必须
+          type: array
+          items:
+            $ref: '#/components/schemas/RequestMessage'
+
+        thinking:
+          type: object
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum: [enabled, disabled]
+
+        max_completion_tokens: # 必须
+          type: integer
+          format: int32
+          description: 控制模型输出的最大长度，包括两部分：模型回答（content部分）和模型思维链部分（reasoning_content）。
+
+        max_tokens: # 必须
+          type: integer
+          format: int32
+          default: 4096
+          description: 模型回答不包含思维链内容,模型回答=模型输出-模型思维链（如有）。
+
+        temperature:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 2
+          description: |
+            采样温度，用于控制模型生成内容的随机性。
+            建议仅调整temperature或top_p其中之一，不建议两者都修改。
+
+        top_p:
+          type: number
+          format: float
+          minimum: 0
+          exclusiveMinimum: true
+          maximum: 2
+          default: 0.7
+        
+        top_k:
+          type: integer
+          format: int32
+          minimum: 0
+        
+        frequency_penalty:
+          type: number
+          format: float
+          minimum: -2.0
+          maximum: 2.0
+          description: |
+            频率惩罚系数。如果值为正，会根据新 token 在文本中的出现频率对其进行惩罚，从而降低模型逐字重复的可能性。
+          default: 0
+        
+        presence_penalty:
+          type: number
+          format: float
+          minimum: -2.0
+          maximum: 2.0
+          description: |
+            带深度思考能力模型不支持该字段。
+            存在惩罚系数。如果值为正，会根据新 token 到目前为止是否出现在文本中对其进行惩罚，从而增加模型谈论新主题的可能性。取值范围为 [-2.0, 2.0]。
+
+        logit_bias:
+          type: object
+          additionalProperties:
+            type: integer
+            format: int32
+            minimum: -100
+            maximum: 100
+          description: 调整指定 token 在模型输出内容中出现的概率，使模型生成的内容更加符合特定的偏好。
+
+        stream:
+          type: boolean
+          default: false
+          description: 响应内容是否流式返回
+
+        stream_options:
+          type: object
+          description: 当stream为true时，可设置stream_options字段。
+          properties:
+            include_usage:
+              type: boolean
+              default: true
+
+        stop:
+          oneOf:
+            - type: string
+              example: "apple"
+            - type: array
+              items:
+                type: string
+              maxItems: 4  
+              example: ["apple", "banana"]
+
+        tools: # 必选
+          type: array
+          items:
+            $ref: '#/components/schemas/Tool'
+
+        tool_choice:
+          oneOf:
+            - type: string
+              enum: [none, auto, named]
+              description: |
+                当没有指定工具时，none 是默认值。如果存在工具，则 auto 是默认值。
+                none ：模型返回信息中不可含有待调用的工具。
+                required ：模型返回信息中必须含待调用的工具。选择此项时请确认存在适合的工具，以减少模型产生幻觉的情况。
+                auto ：模型自行判断返回信息是否有待调用的工具。
+            - $ref: '#/components/schemas/ToolChoice'
+
+        # =========================
+        # 🚀 Router增强字段
+        # =========================
+        candidate_models: # 模型名需要提前提供
+          type: array
+          items:
+            type: string
+          example: ['DeepSeek-V3', 'GLM-5.1']
+
+    # =========================
+    # 🔹 MaaS原结构
+    # =========================
+
+    RequestMessage:
+      oneOf:
+        - $ref: '#/components/schemas/SystemMessage'
+        - $ref: '#/components/schemas/UserMessage'
+        - $ref: '#/components/schemas/AssistantMessage'
+        - $ref: '#/components/schemas/ToolMessage'
+      
+
+    SystemMessage:
+      type: object
+      required:
+        - role
+        - content
+      properties:
+        role:
+          type: string
+          enum: [system]
+        content:
+          oneOf:
+            - type: string
+              example: "You are a helpful assistant. "
+            - type: array
+              items:
+                $ref: '#/components/schemas/MessageContent'
+    
+    MessageContent:
+      oneOf:
+        - $ref: '#/components/schemas/TextMessageContent'
+        - $ref: '#/components/schemas/ImageMessageContent'
+        - $ref: '#/components/schemas/VideoMessageContent'
+    
+    TextMessageContent:
+      type: object
+      required:
+        - type
+        - text
+      properties:
+        type:
+          type: string
+          enum: [text]
+        text:
+          type: string
+    
+    ImageMessageContent: # 先按照字节的对外API来整理，待补充。
+      type: object
+      required:
+        - type
+      properties:
+        type:
+          type: string
+          enum: [image_url]
+        image_url:
+          $ref: '#/components/schemas/ImageUrl'
+         
+    ImageUrl:
+      type: object
+      required:
+        - url
+      properties:
+        url :
+          type: string
+          example: "https://ark-project.tos-cn-beijing.volces.com/doc_image/ark_demo_img_1.png"
+          description: 支持传入图片链接或图片的Base64编码
+        detail :
+          type: string
+          enum: [low, high, xhigh]
+        image_pixel_limit:
+          $ref: "#/components/schemas/ImagePixelLimit"
+
+    ImagePixelLimit:
+      type: object
+      properties:
+        max_pixels:
+          type: integer
+          description: 3136 ≤ min_pixels ≤ max_pixels ≤ 4014080
+        minx_pixels:
+          type: integer
+          description: 3136 ≤ min_pixels ≤ max_pixels ≤ 4014080
+    
+    VideoMessageContent: # 415
+      type: object
+      required:
+        - type
+      properties:
+        type:
+          type: string
+          enum: [video_url]
+        video_url:
+          type: string
+    
+    VideoUrl:
+      type: object
+      required:
+        - url
+      properties:
+        url :
+          type: string
+          example: "https://ark-project.tos-cn-beijing.volces.com/doc_image/ark_demo_img_1.png"
+          description: |
+            支持传入视频链接或视频的Base64编码
+        fps:
+          type: number
+          format: float
+          description: 每秒钟从视频中抽取指定数量的图像
+
+    UserMessage:
+      type: object
+      required:
+        - role
+        - content
+      properties:
+        role:
+          type: string
+          enum: [user]
+        content:
+          oneOf:
+            - type: string
+              example: "Could you check the current wind speed in Shanghai and let me know if it's suitable for outdoor kayaking?"
+            - type: array
+              items:
+                $ref: '#/components/schemas/MessageContent'
+
+    AssistantMessage:
+      type: object
+      required:
+        - role
+        - content
+      properties:
+        role:
+          type: string
+          enum: [assistant]
+        content: 
+          type: string
+          example: "Today is May 28."
+        tool_calls:
+          type: array
+          items:
+            $ref: '#/components/schemas/ToolCallMessage'
+        prefix:
+          type: boolean
+          default: false
+    
+    ToolCallMessage:
+      type: object
+      required:
+        - id
+        - type
+        - function
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          enum: [function]
+        function:
+           $ref: '#/components/schemas/ToolCallMessage'
+
+    FunctionMessage:
+      type: object
+      required:
+        - name
+        - arguments
+      properties:
+        name:
+          type: string
+        arguments:
+          type: string
+          description: "{\"city\": \"上海\", \"info_type\": \"wind_speed\"}"
+
+    ToolMessage:
+      type: object
+      required:
+        - role
+        - content
+        - tool_call_id
+      properties:
+        role:
+          type: string
+          enum: [tool]
+        content:
+          type: string
+          description: 消息内容，一般为调用工具后的返回
+        tool_call_id:
+          type: string
+          description: 此消息所回应的工具调用ID
+
+    Tool:
+      type: object
+      required:
+        - type
+        - function
+      properties:
+        type:
+          type: string
+          enum: [function]
+        function:
+          $ref: "#/components/schemas/Function"
+
+    Function:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        parameters:
+          $ref: "#/components/schemas/FunctionParameter"
+    
+    FunctionParameter:
+      type: object
+      required:
+        - type
+        - properties
+      properties:
+        type:
+          type: string
+          enum: [object]
+        properties:
+          $ref: "#/components/schemas/Properties" 
+
+    Properties:
+      type: object
+      description: "一个完全动态的对象，每个字段的值都必须包含 type 属性"
+      # 所有的 Key 都是动态的
+      additionalProperties:
+        type: object
+        required:
+          - type  # 强制要求每个 Value 对象中必须包含 "type" 字段
+        properties:
+          type:
+            type: string
+            description: "字段的类型标识，例如 'string', 'number' 或自定义枚举"
+          description:
+            type: string
+        # 允许该对象内部除了 type 之外，还可以有其他任意不固定字段
+        additionalProperties: true
+      example:
+        city:
+          type: "location"
+          value: "北京"
+          description: "地点"
+        info_type:
+          type: "category"
+          value: "wind_speed"
+          level: 3
+
+    ToolChoice:
+      type: object
+      required:
+        - type
+        - name
+      properties:
+        type:
+          type: string
+          enum: [function]
+        name:
+          type: string
+          
+
+    # =========================
+    # 🔹 路由模型定义（精简）
+    # =========================
+    ModelRouterResponse:
+      type: object
+      description: success和fail都会返回一个model，success的话需要根据model来路由，fail的话maas可以自行决策
+      properties:
+        x_span_id:
+          type: string
+        session_id:
+          type: string
+        model_rankings: 
+          description: |
+            GLM-5,K2.5,M2.5,V3.2 变动后需要提前一周知会
+            # 需要线下提供具体大小写模型名，除非router服务挂了，不返回，不然一定会返回。
+          type: array
+          items: 
+            $ref: '#/components/schemas/ModelRank'
+        metadata:
+          type: object
+          description: 扩展字段,便于以后扩展
+          additionalProperties:
+            type: string
+          example: {"processing_time_ms": "35"}
+
+    ModelRank:
+      type: object
+      description: 模型质量打分
+      properties:
+        rank:
+          description: 排名，从 1 开始，1 为最优。
+          type: integer
+          minimum: 1
+          example: 1
+        model:
+          type: string
+          example: GLM-5.1
+        score: 
+          type: number
+          format: float
+          example: 0.8
+          description: 第一个版本返回的是1 1-1/n 1-2/n ...

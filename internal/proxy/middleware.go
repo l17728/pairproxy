@@ -42,6 +42,18 @@ func ClaimsFromContext(ctx context.Context) *auth.JWTClaims {
 // RequestIDMiddleware
 // ---------------------------------------------------------------------------
 
+// clientAddr 返回真实客户端地址：优先取 X-Forwarded-For 首项，其次 RemoteAddr。
+// 仅用于日志记录，不作为安全校验依据。
+func clientAddr(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		if idx := strings.IndexByte(xff, ','); idx > 0 {
+			return strings.TrimSpace(xff[:idx])
+		}
+		return strings.TrimSpace(xff)
+	}
+	return r.RemoteAddr
+}
+
 // RequestIDMiddleware 为每个请求生成 UUID 写入 context 和响应头 X-Request-ID。
 func RequestIDMiddleware(logger *zap.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -56,7 +68,7 @@ func RequestIDMiddleware(logger *zap.Logger, next http.Handler) http.Handler {
 			zap.String("request_id", reqID),
 			zap.String("method", r.Method),
 			zap.String("path", r.URL.Path),
-			zap.String("remote_addr", r.RemoteAddr),
+			zap.String("remote_addr", clientAddr(r)),
 		)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
@@ -66,10 +78,17 @@ func RequestIDMiddleware(logger *zap.Logger, next http.Handler) http.Handler {
 // AuthMiddleware（s-proxy 用）
 // ---------------------------------------------------------------------------
 
+// UserActiveChecker 在 JWT 验证通过后校验用户是否仍处于启用状态。
+// 由 *DBUserLister 实现；传 nil 则跳过检查（用于测试或不需要该功能的场景）。
+type UserActiveChecker interface {
+	IsUserActive(userID string) (bool, error)
+}
+
 // AuthMiddleware 验证请求头 X-PairProxy-Auth 或 Authorization: Bearer 中的 JWT，提取 claims 写入 context。
 // 优先级：X-PairProxy-Auth > Authorization: Bearer（向后兼容 cproxy）。
-// 验证失败返回 401，通过后继续处理。
-func AuthMiddleware(logger *zap.Logger, jwtMgr *auth.Manager, next http.Handler) http.Handler {
+// checker 非 nil 时，在 JWT 验证通过后额外查询 DB 确认用户未被禁用；
+// 若查询失败则 fail-open（只记录警告，不拦截请求），若用户已禁用则返回 403。
+func AuthMiddleware(logger *zap.Logger, jwtMgr *auth.Manager, checker UserActiveChecker, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reqID := RequestIDFromContext(r.Context())
 		token := r.Header.Get("X-PairProxy-Auth")
@@ -88,7 +107,7 @@ func AuthMiddleware(logger *zap.Logger, jwtMgr *auth.Manager, next http.Handler)
 				zap.String("request_id", reqID),
 				zap.String("path", r.URL.Path),
 				zap.String("method", r.Method),
-				zap.String("remote_addr", r.RemoteAddr),
+				zap.String("remote_addr", clientAddr(r)),
 			)
 			writeJSONError(w, http.StatusUnauthorized, "missing_auth_header", "X-PairProxy-Auth or Authorization: Bearer header is required")
 			return
@@ -98,11 +117,35 @@ func AuthMiddleware(logger *zap.Logger, jwtMgr *auth.Manager, next http.Handler)
 		if err != nil {
 			logger.Warn("invalid JWT",
 				zap.String("request_id", reqID),
+				zap.String("path", r.URL.Path),
+				zap.String("method", r.Method),
+				zap.String("remote_addr", clientAddr(r)),
 				zap.String("auth_source", authSource),
 				zap.Error(err),
 			)
 			writeJSONError(w, http.StatusUnauthorized, "invalid_token", err.Error())
 			return
+		}
+
+		// JWT 有效后再检查用户是否被禁用（JWT 本身不携带该状态）
+		if checker != nil {
+			active, checkErr := checker.IsUserActive(claims.UserID)
+			if checkErr != nil {
+				// fail-open：DB 查询失败不阻断请求，但记录警告
+				logger.Warn("failed to check user active status, allowing request",
+					zap.String("request_id", reqID),
+					zap.String("user_id", claims.UserID),
+					zap.Error(checkErr),
+				)
+			} else if !active {
+				logger.Warn("JWT auth rejected: user account is disabled",
+					zap.String("request_id", reqID),
+					zap.String("user_id", claims.UserID),
+					zap.String("username", claims.Username),
+				)
+				writeJSONError(w, http.StatusForbidden, "account_disabled", "this account has been disabled")
+				return
+			}
 		}
 
 		logger.Debug("JWT authenticated",

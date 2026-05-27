@@ -176,7 +176,7 @@ func TestChecker_PurgeRateLimiter_ClearsExpiredWindows(t *testing.T) {
 	checker := NewChecker(logger, userRepo, usageRepo, NewQuotaCache(time.Minute))
 
 	// rateLimiter 内部添加一些记录后 Purge
-	checker.rateLimiter.Allow("purge-user", 10)
+	checker.rateLimiter.AllowWindows("purge-user", []WindowLimit{{Window: time.Minute, Limit: 10}})
 	checker.PurgeRateLimiter()
 	// 无过期条目时 Purge 不崩溃即可
 }
@@ -194,7 +194,7 @@ func TestItoa_SpecialCases(t *testing.T) {
 		{-1, "-1"},
 		{-100, "-100"},
 		{999, "999"},
-		{int64(1<<62), "4611686018427387904"},
+		{int64(1 << 62), "4611686018427387904"},
 	}
 	for _, tc := range cases {
 		got := itoa(tc.input)
@@ -227,7 +227,7 @@ func TestMiddleware_RateLimitExceeded_Returns429(t *testing.T) {
 	checker := NewChecker(logger, userRepo, usageRepo, NewQuotaCache(time.Millisecond))
 
 	// 先消费掉唯一的配额
-	checker.rateLimiter.Allow("u-rpm", 1)
+	checker.rateLimiter.AllowWindows("u-rpm", []WindowLimit{{Window: time.Minute, Limit: 1}})
 
 	mw := NewMiddleware(logger, checker, func(r *http.Request) string {
 		return r.Header.Get("X-User-ID")

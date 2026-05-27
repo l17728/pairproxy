@@ -55,7 +55,7 @@ func TestTeeResponseWriter_New_by_kimi2_5(t *testing.T) {
 		Model:     "claude-3",
 	}
 
-	tw := NewTeeResponseWriter(rec, logger, writer, record, "anthropic", time.Now(), nil)
+	tw := NewTeeResponseWriter(rec, logger, writer, record, "anthropic", time.Now(), nil, nil, "")
 	if tw == nil {
 		t.Fatal("expected TeeResponseWriter, got nil")
 	}
@@ -77,7 +77,7 @@ func TestTeeResponseWriter_WriteHeader_by_kimi2_5(t *testing.T) {
 		UserID:    "user-1",
 	}
 
-	tw := NewTeeResponseWriter(rec, logger, writer, record, "anthropic", time.Now(), nil)
+	tw := NewTeeResponseWriter(rec, logger, writer, record, "anthropic", time.Now(), nil, nil, "")
 
 	tw.WriteHeader(http.StatusCreated)
 	if tw.StatusCode() != http.StatusCreated {
@@ -102,7 +102,7 @@ func TestTeeResponseWriter_Write_by_kimi2_5(t *testing.T) {
 		UserID:    "user-1",
 	}
 
-	tw := NewTeeResponseWriter(rec, logger, writer, record, "anthropic", time.Now(), nil)
+	tw := NewTeeResponseWriter(rec, logger, writer, record, "anthropic", time.Now(), nil, nil, "")
 
 	data := []byte("data: test\n\n")
 	n, err := tw.Write(data)
@@ -131,7 +131,7 @@ func TestTeeResponseWriter_NonStreaming_by_kimi2_5(t *testing.T) {
 		UserID:    "user-1",
 	}
 
-	tw := NewTeeResponseWriter(rec, logger, writer, record, "anthropic", time.Now(), nil)
+	tw := NewTeeResponseWriter(rec, logger, writer, record, "anthropic", time.Now(), nil, nil, "")
 
 	data := []byte(`{"message": "hello"}`)
 	tw.Write(data)
@@ -154,7 +154,7 @@ func TestTeeResponseWriter_StreamingDetection_by_kimi2_5(t *testing.T) {
 		UserID:    "user-1",
 	}
 
-	tw := NewTeeResponseWriter(rec, logger, writer, record, "anthropic", time.Now(), nil)
+	tw := NewTeeResponseWriter(rec, logger, writer, record, "anthropic", time.Now(), nil, nil, "")
 
 	tw.Write([]byte("data: hello\n\n"))
 
@@ -175,7 +175,7 @@ func TestTeeResponseWriter_Flush_by_kimi2_5(t *testing.T) {
 		UserID:    "user-1",
 	}
 
-	tw := NewTeeResponseWriter(rec, logger, writer, record, "anthropic", time.Now(), nil)
+	tw := NewTeeResponseWriter(rec, logger, writer, record, "anthropic", time.Now(), nil, nil, "")
 
 	tw.Flush()
 }
@@ -193,7 +193,7 @@ func TestTeeResponseWriter_TTFBMs_by_kimi2_5(t *testing.T) {
 	}
 
 	startTime := time.Now()
-	tw := NewTeeResponseWriter(rec, logger, writer, record, "anthropic", startTime, nil)
+	tw := NewTeeResponseWriter(rec, logger, writer, record, "anthropic", startTime, nil, nil, "")
 
 	if tw.TTFBMs() != 0 {
 		t.Errorf("expected TTFB 0 before write, got %d", tw.TTFBMs())
@@ -221,7 +221,7 @@ func TestTeeResponseWriter_UpdateModel_by_kimi2_5(t *testing.T) {
 		Model:     "initial-model",
 	}
 
-	tw := NewTeeResponseWriter(rec, logger, writer, record, "anthropic", time.Now(), nil)
+	tw := NewTeeResponseWriter(rec, logger, writer, record, "anthropic", time.Now(), nil, nil, "")
 
 	tw.UpdateModel("updated-model")
 
@@ -242,7 +242,7 @@ func TestTeeResponseWriter_StatusCode_by_kimi2_5(t *testing.T) {
 		UserID:    "user-1",
 	}
 
-	tw := NewTeeResponseWriter(rec, logger, writer, record, "anthropic", time.Now(), nil)
+	tw := NewTeeResponseWriter(rec, logger, writer, record, "anthropic", time.Now(), nil, nil, "")
 
 	if tw.StatusCode() != http.StatusOK {
 		t.Errorf("expected default status %d, got %d", http.StatusOK, tw.StatusCode())
@@ -267,7 +267,7 @@ func TestTeeResponseWriter_OpenAIProvider_by_kimi2_5(t *testing.T) {
 		UserID:    "user-1",
 	}
 
-	tw := NewTeeResponseWriter(rec, logger, writer, record, "openai", time.Now(), nil)
+	tw := NewTeeResponseWriter(rec, logger, writer, record, "anthropic", time.Now(), nil, nil, "")
 
 	if tw.parser == nil {
 		t.Error("expected parser to be set")
@@ -287,7 +287,7 @@ func TestTeeResponseWriter_OllamaProvider_by_kimi2_5(t *testing.T) {
 		UserID:    "user-1",
 	}
 
-	tw := NewTeeResponseWriter(rec, logger, writer, record, "ollama", time.Now(), nil)
+	tw := NewTeeResponseWriter(rec, logger, writer, record, "anthropic", time.Now(), nil, nil, "")
 
 	if tw.parser == nil {
 		t.Error("expected parser to be set")
@@ -306,7 +306,7 @@ func TestTeeResponseWriter_EmptyProvider_by_kimi2_5(t *testing.T) {
 		UserID:    "user-1",
 	}
 
-	tw := NewTeeResponseWriter(rec, logger, writer, record, "", time.Now(), nil)
+	tw := NewTeeResponseWriter(rec, logger, writer, record, "anthropic", time.Now(), nil, nil, "")
 
 	if tw.parser == nil {
 		t.Error("expected parser to be set even with empty provider")

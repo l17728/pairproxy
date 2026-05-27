@@ -587,6 +587,110 @@ func TestSSEParserFeed_NilAndEmpty(t *testing.T) {
 	parser.Feed([]byte{})
 }
 
+// ---------------------------------------------------------------------------
+// TestSSEParserErrorEvent：SSE 流内 error 事件触发 onComplete，HasError 为 true
+// ---------------------------------------------------------------------------
+
+func TestSSEParserErrorEvent_AfterMessageStart(t *testing.T) {
+	// 场景：已收到 message_start（有 inputTokens），然后上游发 error 事件（如 504）
+	sse := "event: message_start\n" +
+		`data: {"type":"message_start","message":{"usage":{"input_tokens":42,"output_tokens":0}}}` +
+		"\n\n" +
+		"event: error\n" +
+		`data: {"type":"error","error":{"type":"api_error","message":"504 Gateway Time-out."}}` +
+		"\n\n"
+
+	var gotInput, gotOutput int
+	var called bool
+	parser := NewAnthropicSSEParser(func(in, out int) {
+		gotInput = in
+		gotOutput = out
+		called = true
+	})
+
+	parser.Feed([]byte(sse))
+
+	if !called {
+		t.Fatal("onComplete should be called on SSE error event")
+	}
+	if !parser.HasError() {
+		t.Error("HasError() should be true after error event")
+	}
+	if gotInput != 42 {
+		t.Errorf("inputTokens = %d, want 42", gotInput)
+	}
+	if gotOutput != 0 {
+		t.Errorf("outputTokens = %d, want 0", gotOutput)
+	}
+	if parser.SSEErrorData() == "" {
+		t.Error("SSEErrorData() should not be empty after error event")
+	}
+}
+
+func TestSSEParserErrorEvent_BeforeMessageStart(t *testing.T) {
+	// 场景：错误在 message_start 之前发生（inputTokens=0）
+	sse := "event: error\n" +
+		`data: {"type":"error","error":{"type":"api_error","message":"504 Gateway Time-out."}}` +
+		"\n\n"
+
+	var called bool
+	parser := NewAnthropicSSEParser(func(in, out int) {
+		called = true
+	})
+
+	parser.Feed([]byte(sse))
+
+	if !called {
+		t.Fatal("onComplete should be called on SSE error event even without prior message_start")
+	}
+	if !parser.HasError() {
+		t.Error("HasError() should be true")
+	}
+	if parser.InputTokens() != 0 {
+		t.Errorf("inputTokens = %d, want 0", parser.InputTokens())
+	}
+	if parser.SSEErrorData() == "" {
+		t.Error("SSEErrorData() should contain error payload")
+	}
+}
+
+func TestSSEParserErrorEvent_NoFurtherFeed(t *testing.T) {
+	// error 事件后继续 Feed 不重复触发
+	sse := "event: error\n" +
+		`data: {"type":"error","error":{"type":"api_error","message":"overloaded"}}` +
+		"\n\n"
+	extra := "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+
+	callCount := 0
+	parser := NewAnthropicSSEParser(func(in, out int) {
+		callCount++
+	})
+
+	parser.Feed([]byte(sse))
+	parser.Feed([]byte(extra)) // 应被忽略
+
+	if callCount != 1 {
+		t.Errorf("callback called %d times, want 1", callCount)
+	}
+	if !parser.HasError() {
+		t.Error("HasError() should remain true")
+	}
+}
+
+func TestSSEParserNormalCompletion_HasErrorFalse(t *testing.T) {
+	// 正常完成时 HasError 必须为 false
+	sse := BuildAnthropicSSE(10, 5, nil)
+	parser := NewAnthropicSSEParser(func(in, out int) {})
+	parser.Feed([]byte(sse))
+
+	if parser.HasError() {
+		t.Error("HasError() must be false for normal message_stop completion")
+	}
+	if parser.SSEErrorData() != "" {
+		t.Error("SSEErrorData() must be empty for normal completion")
+	}
+}
+
 // splitLines 按换行符分割字符串（辅助函数）。
 func splitLines(s string) []string {
 	var lines []string

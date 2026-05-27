@@ -48,8 +48,8 @@ func (t *Tracker) Enable(username string) error {
 	if err := validateUsername(username); err != nil {
 		return err
 	}
-	// 确保对话目录存在
-	if err := os.MkdirAll(userConvDir(t.dir, username), 0o755); err != nil {
+	// 确保对话目录存在（0o777 允许不同用户写入，适配 CLI 以 root 创建、service 以其他用户写入的场景）
+	if err := os.MkdirAll(userConvDir(t.dir, username), 0o777); err != nil {
 		return err
 	}
 	// 创建标记文件（幂等：已存在不报错）

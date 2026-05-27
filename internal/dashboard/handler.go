@@ -8,7 +8,6 @@ import (
 	"html/template"
 	"io"
 	"net/http"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -35,13 +34,12 @@ type Handler struct {
 	groupRepo         *db.GroupRepo
 	usageRepo         *db.UsageRepo
 	auditRepo         *db.AuditRepo
-	tokenRepo         *db.RefreshTokenRepo           // 可选，token 吊销
+	tokenRepo         *db.RefreshTokenRepo // 可选，token 吊销
 	adminPasswordHash string
 	tokenTTL          time.Duration
 	llmBindingRepo    *db.LLMBindingRepo             // 可选，LLM 绑定管理
 	llmTargetRepo     *db.LLMTargetRepo              // 可选，LLM 目标管理
 	apiKeyRepo        *db.APIKeyRepo                 // 可选，API Key 管理
-	groupTargetSetRepo *db.GroupTargetSetRepo        // 可选，Group-Target Set 管理
 	llmHealthFn       func() []proxy.LLMTargetStatus // 可选，查询 LLM 健康状态
 	drainFn           func() error                   // 可选，进入排水模式
 	undrainFn         func() error                   // 可选，退出排水模式
@@ -64,9 +62,6 @@ func (h *Handler) SetLLMTargetRepo(repo *db.LLMTargetRepo) { h.llmTargetRepo = r
 
 // SetAPIKeyRepo 设置 APIKeyRepo（用于 API Key 管理）
 func (h *Handler) SetAPIKeyRepo(repo *db.APIKeyRepo) { h.apiKeyRepo = repo }
-
-// SetGroupTargetSetRepo 设置 GroupTargetSetRepo（用于 Group-Target Set 管理）
-func (h *Handler) SetGroupTargetSetRepo(repo *db.GroupTargetSetRepo) { h.groupTargetSetRepo = repo }
 
 // SetEventLog 设置内存事件日志（用于 /dashboard/alerts 页面）
 func (h *Handler) SetEventLog(log *eventlog.Log) { h.eventLog = log }
@@ -149,12 +144,6 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /dashboard/llm/targets", rw(http.HandlerFunc(h.handleLLMCreateTarget)))
 	mux.Handle("POST /dashboard/llm/targets/{id}/update", rw(http.HandlerFunc(h.handleLLMUpdateTarget)))
 	mux.Handle("POST /dashboard/llm/targets/{id}/delete", rw(http.HandlerFunc(h.handleLLMDeleteTarget)))
-	mux.Handle("POST /dashboard/llm/targetsets", rw(http.HandlerFunc(h.handleTargetSetCreate)))
-	mux.Handle("POST /dashboard/llm/targetsets/{id}/update", rw(http.HandlerFunc(h.handleTargetSetUpdate)))
-	mux.Handle("POST /dashboard/llm/targetsets/{id}/delete", rw(http.HandlerFunc(h.handleTargetSetDelete)))
-	mux.Handle("POST /dashboard/llm/targetsets/{id}/members", rw(http.HandlerFunc(h.handleTargetSetAddMember)))
-	mux.Handle("POST /dashboard/llm/targetsets/{id}/members/update", rw(http.HandlerFunc(h.handleTargetSetUpdateMember)))
-	mux.Handle("POST /dashboard/llm/targetsets/{id}/members/delete", rw(http.HandlerFunc(h.handleTargetSetRemoveMember)))
 	mux.Handle("POST /dashboard/alerts/resolve", rw(http.HandlerFunc(h.handleAlertResolve)))
 	mux.Handle("POST /dashboard/alerts/resolve-batch", rw(http.HandlerFunc(h.handleAlertResolveBatch)))
 	mux.Handle("POST /dashboard/drain/enter", rw(http.HandlerFunc(h.handleDrainEnter)))
@@ -441,8 +430,8 @@ func (h *Handler) handleUsersPage(w http.ResponseWriter, r *http.Request) {
 	groups, _ := h.groupRepo.List()
 	h.renderPage(w, "users.html", usersPageData{
 		baseData: h.newBase(r),
-		Users:  users,
-		Groups: groups,
+		Users:    users,
+		Groups:   groups,
 	})
 }
 
@@ -599,7 +588,7 @@ func (h *Handler) handleGroupsPage(w http.ResponseWriter, r *http.Request) {
 	groups, _ := h.groupRepo.List()
 	h.renderPage(w, "groups.html", groupsPageData{
 		baseData: h.newBase(r),
-		Groups: groups,
+		Groups:   groups,
 	})
 }
 
@@ -615,11 +604,14 @@ func (h *Handler) handleCreateGroup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	g := &db.Group{
-		Name:              name,
-		DailyTokenLimit:   parseOptionalInt64(r.FormValue("daily_limit")),
-		MonthlyTokenLimit: parseOptionalInt64(r.FormValue("monthly_limit")),
-		RequestsPerMinute: parseOptionalInt(r.FormValue("rpm")),
-		CreatedAt:         time.Now(),
+		Name:                 name,
+		DailyTokenLimit:      parseOptionalInt64(r.FormValue("daily_limit")),
+		MonthlyTokenLimit:    parseOptionalInt64(r.FormValue("monthly_limit")),
+		RequestsPerMinute:    parseOptionalInt(r.FormValue("rpm")),
+		RequestsPer15Minutes: parseOptionalInt(r.FormValue("rpm_15m")),
+		RequestsPer30Minutes: parseOptionalInt(r.FormValue("rpm_30m")),
+		RequestsPerHour:      parseOptionalInt(r.FormValue("rph")),
+		CreatedAt:            time.Now(),
 	}
 	if err := h.groupRepo.Create(g); err != nil {
 		h.logger.Error("dashboard: create group failed", zap.String("name", name), zap.Error(err))
@@ -644,9 +636,12 @@ func (h *Handler) handleSetQuota(w http.ResponseWriter, r *http.Request) {
 	daily := parseOptionalInt64(r.FormValue("daily_limit"))
 	monthly := parseOptionalInt64(r.FormValue("monthly_limit"))
 	rpm := parseOptionalInt(r.FormValue("rpm"))
+	rpm15m := parseOptionalInt(r.FormValue("rpm_15m"))
+	rpm30m := parseOptionalInt(r.FormValue("rpm_30m"))
+	rph := parseOptionalInt(r.FormValue("rph"))
 	maxTokens := parseOptionalInt64(r.FormValue("max_tokens"))
 	concurrent := parseOptionalInt(r.FormValue("concurrent"))
-	if err := h.groupRepo.SetQuota(id, daily, monthly, rpm, maxTokens, concurrent); err != nil {
+	if err := h.groupRepo.SetQuota(id, daily, monthly, rpm, maxTokens, concurrent, rpm15m, rpm30m, rph); err != nil {
 		http.Redirect(w, r, "/dashboard/groups?error=更新失败", http.StatusFound)
 		return
 	}
@@ -655,6 +650,9 @@ func (h *Handler) handleSetQuota(w http.ResponseWriter, r *http.Request) {
 		"daily_limit":   daily,
 		"monthly_limit": monthly,
 		"rpm":           rpm,
+		"rpm_15m":       rpm15m,
+		"rpm_30m":       rpm30m,
+		"rph":           rph,
 		"max_tokens":    maxTokens,
 		"concurrent":    concurrent,
 	}); jerr == nil {
@@ -692,11 +690,11 @@ func (h *Handler) handleDeleteGroup(w http.ResponseWriter, r *http.Request) {
 
 type logsPageData struct {
 	baseData
-	Logs            []db.UsageLog
-	FilterUserID    string
-	FilterUsername  string // 对应 FilterUserID 的用户名，用于筛选框回显
-	Limit           int
-	UserMap         map[string]string // id → username，用于模板显示用户名
+	Logs           []db.UsageLog
+	FilterUserID   string
+	FilterUsername string // 对应 FilterUserID 的用户名，用于筛选框回显
+	Limit          int
+	UserMap        map[string]string // id → username，用于模板显示用户名
 }
 
 func (h *Handler) handleLogsPage(w http.ResponseWriter, r *http.Request) {
@@ -803,8 +801,8 @@ func (h *Handler) handleAuditPage(w http.ResponseWriter, r *http.Request) {
 	logs, _ := h.auditRepo.ListRecent(limit)
 	h.renderPage(w, "audit.html", auditPageData{
 		baseData: h.newBase(r),
-		Logs:  logs,
-		Limit: limit,
+		Logs:     logs,
+		Limit:    limit,
 	})
 }
 
@@ -822,9 +820,9 @@ type topUserEntry struct {
 }
 
 type trendsResponse struct {
-	DailyTokens []db.DailyTokenRow `json:"daily_tokens"`
-	DailyCost   []db.DailyCostRow  `json:"daily_cost"`
-	TopUsers    []topUserEntry     `json:"top_users"`
+	DailyTokens        []db.DailyTokenRow `json:"daily_tokens"`
+	TopUsers           []topUserEntry     `json:"top_users"`             // Top 10 by token consumption
+	TopUsersByRequests []topUserEntry     `json:"top_users_by_requests"` // Top 10 by request count
 }
 
 func (h *Handler) handleTrendsAPI(w http.ResponseWriter, r *http.Request) {
@@ -838,33 +836,58 @@ func (h *Handler) handleTrendsAPI(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now()
-	from := now.AddDate(0, 0, -days).Truncate(24 * time.Hour)
+	// granularity: days==1 → 15分钟, days<=3 → 小时, 其余 → 天
+	var granularity string
+	var from time.Time
+	switch {
+	case days == 1:
+		granularity = "quarter"
+		from = now.Add(-24 * time.Hour)
+	case days <= 3:
+		granularity = "hour"
+		from = now.Add(-time.Duration(days) * 24 * time.Hour)
+	default:
+		granularity = "day"
+		from = now.AddDate(0, 0, -days).Truncate(24 * time.Hour)
+	}
 	to := now
 
-	// 查询按天聚合的 token 用量
-	dailyTokens, err := h.usageRepo.DailyTokens(from, to, "")
+	// 查询聚合的 token 用量（粒度由 granularity 控制）
+	dailyTokens, err := h.usageRepo.DailyTokens(from, to, "", granularity)
 	if err != nil {
 		h.logger.Error("failed to get daily tokens", zap.Error(err))
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 
-	// 查询按天聚合的费用
-	dailyCost, err := h.usageRepo.DailyCost(from, to, "")
-	if err != nil {
-		h.logger.Error("failed to get daily cost", zap.Error(err))
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
+	// 解析 top_users 时间范围：优先使用 top_users_hours（小时粒度），
+	// 未设置时回退到 top_users_days（天粒度，默认 7 天）。
+	var topUsersFrom time.Time
+	if hoursStr := r.URL.Query().Get("top_users_hours"); hoursStr != "" {
+		if hours, err := strconv.Atoi(hoursStr); err == nil && hours > 0 && hours <= 8760 {
+			topUsersFrom = now.Add(-time.Duration(hours) * time.Hour)
+		}
+	}
+	if topUsersFrom.IsZero() {
+		topUsersDaysStr := r.URL.Query().Get("top_users_days")
+		topUsersDays := 1
+		if topUsersDaysStr != "" {
+			if parsed, err := strconv.Atoi(topUsersDaysStr); err == nil && parsed > 0 && parsed <= 365 {
+				topUsersDays = parsed
+			}
+		}
+		topUsersFrom = now.AddDate(0, 0, -topUsersDays).Truncate(24 * time.Hour)
 	}
 
-	// 查询 Top 5 用户，附加用户名
-	rawTopUsers, err := h.usageRepo.UserStats(from, to, 5)
+	userMap := h.buildUserMap()
+
+	// 查询 Top 10 用户（按 token 用量降序）
+	rawTopUsers, err := h.usageRepo.UserStats(topUsersFrom, to, 10)
 	if err != nil {
-		h.logger.Error("failed to get top users", zap.Error(err))
+		h.logger.Error("failed to get top users by tokens", zap.Error(err))
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	userMap := h.buildUserMap()
 	topUsers := make([]topUserEntry, len(rawTopUsers))
 	for i, u := range rawTopUsers {
 		name := u.UserID
@@ -880,11 +903,33 @@ func (h *Handler) handleTrendsAPI(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 查询 Top 10 用户（按请求数降序）
+	rawTopByReq, err := h.usageRepo.UserStatsByRequests(topUsersFrom, to, 10)
+	if err != nil {
+		h.logger.Error("failed to get top users by requests", zap.Error(err))
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	topUsersByRequests := make([]topUserEntry, len(rawTopByReq))
+	for i, u := range rawTopByReq {
+		name := u.UserID
+		if n, ok := userMap[u.UserID]; ok && n != "" {
+			name = n
+		}
+		topUsersByRequests[i] = topUserEntry{
+			UserID:       u.UserID,
+			Username:     name,
+			TotalInput:   u.TotalInput,
+			TotalOutput:  u.TotalOutput,
+			RequestCount: u.RequestCount,
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(trendsResponse{
-		DailyTokens: dailyTokens,
-		DailyCost:   dailyCost,
-		TopUsers:    topUsers,
+		DailyTokens:        dailyTokens,
+		TopUsers:           topUsers,
+		TopUsersByRequests: topUsersByRequests,
 	}); err != nil {
 		h.logger.Error("failed to encode trends response", zap.Error(err))
 	}
@@ -907,13 +952,13 @@ func (h *Handler) handleMyUsagePage(w http.ResponseWriter, r *http.Request) {
 type userStatsResponse struct {
 	UserID       string `json:"user_id"`
 	Username     string `json:"username"`
-	GroupID      string `json:"group_id"`   // 空字符串表示无分组
+	GroupID      string `json:"group_id"` // 空字符串表示无分组
 	GroupName    string `json:"group_name"`
 	TotalInput   int64  `json:"total_input"`
 	TotalOutput  int64  `json:"total_output"`
 	TotalTokens  int64  `json:"total_tokens"`
-	AvgDaily     int64  `json:"avg_daily"`    // 总 Tokens / 实际使用天数
-	AvgMonthly   int64  `json:"avg_monthly"`  // 总 Tokens / 使用月数
+	AvgDaily     int64  `json:"avg_daily"`   // 总 Tokens / 实际使用天数
+	AvgMonthly   int64  `json:"avg_monthly"` // 总 Tokens / 使用月数
 	DaysActive   int    `json:"days_active"`
 	MonthsActive int    `json:"months_active"`
 	FirstUsedAt  string `json:"first_used_at"` // YYYY-MM-DD；无记录时为空字符串
@@ -923,10 +968,10 @@ type userStatsResponse struct {
 
 // userStatsPageResponse 带分页信息的用户统计响应体
 type userStatsPageResponse struct {
-	Total      int                `json:"total"`
-	Page       int                `json:"page"`
-	PageSize   int                `json:"page_size"`
-	TotalPages int                `json:"total_pages"`
+	Total      int                 `json:"total"`
+	Page       int                 `json:"page"`
+	PageSize   int                 `json:"page_size"`
+	TotalPages int                 `json:"total_pages"`
 	Users      []userStatsResponse `json:"users"`
 }
 
@@ -1193,7 +1238,7 @@ type dashImportResult struct {
 // importPageData 是批量导入页面的模板数据。
 type importPageData struct {
 	baseData
-	Content string           // 回填原始文本，方便修改重试
+	Content string // 回填原始文本，方便修改重试
 	Result  dashImportResult
 }
 
@@ -1429,10 +1474,10 @@ func (h *Handler) handleAlertsPage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := map[string]interface{}{
-		"Flash":       r.URL.Query().Get("flash"),
-		"Error":       r.URL.Query().Get("error"),
+		"Flash":        r.URL.Query().Get("flash"),
+		"Error":        r.URL.Query().Get("error"),
 		"IsWorkerNode": h.isWorkerNode,
-		"ActiveTab":   activeTab,
+		"ActiveTab":    activeTab,
 	}
 	h.renderPage(w, "alerts.html", data)
 }
@@ -1514,267 +1559,6 @@ func (h *Handler) handleEventsAPI(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_ = json.NewEncoder(w).Encode(eventsResponse{Events: events, Total: len(events)})
-}
-
-// ---------------------------------------------------------------------------
-// Group-Target Set Handlers (v2.20)
-// ---------------------------------------------------------------------------
-
-// handleTargetSetCreate 创建新的 target set
-func (h *Handler) handleTargetSetCreate(w http.ResponseWriter, r *http.Request) {
-	if h.groupTargetSetRepo == nil {
-		http.Redirect(w, r, "/dashboard/llm?error=target+set+feature+not+enabled", http.StatusSeeOther)
-		return
-	}
-
-	if err := r.ParseForm(); err != nil {
-		http.Redirect(w, r, "/dashboard/llm?error=invalid+form", http.StatusSeeOther)
-		return
-	}
-
-	id := strings.TrimSpace(r.FormValue("id"))
-	name := strings.TrimSpace(r.FormValue("name"))
-	groupID := strings.TrimSpace(r.FormValue("group_id"))
-	strategy := strings.TrimSpace(r.FormValue("strategy"))
-
-	if id == "" || name == "" {
-		http.Redirect(w, r, "/dashboard/llm?tab=targetsets&error=id+name+required", http.StatusSeeOther)
-		return
-	}
-
-	// Validate ID format: alphanumeric, dash, underscore only
-	if !regexp.MustCompile(`^[a-zA-Z0-9_-]+$`).MatchString(id) {
-		http.Redirect(w, r, "/dashboard/llm?tab=targetsets&error=invalid+id+format", http.StatusSeeOther)
-		return
-	}
-
-	// Handle optional group_id: empty = default (global) target set
-	var groupIDPtr *string
-	isDefault := false
-	if groupID == "" {
-		groupIDPtr = nil
-		isDefault = true
-	} else {
-		groupIDPtr = &groupID
-		isDefault = false
-	}
-
-	set := &db.GroupTargetSet{
-		ID:        id,
-		Name:      name,
-		GroupID:   groupIDPtr,
-		Strategy:  strategy,
-		IsDefault: isDefault,
-	}
-
-	if err := h.groupTargetSetRepo.Create(set); err != nil {
-		h.logger.Error("failed to create target set", zap.Error(err))
-		http.Redirect(w, r, "/dashboard/llm?tab=targetsets&error=failed+to+create+target+set", http.StatusSeeOther)
-		return
-	}
-
-	detail := map[string]string{"id": id, "name": name, "groupID": groupID}
-	detailBytes, _ := json.Marshal(detail)
-	if aerr := h.auditRepo.Create("admin", "targetset.create", id, string(detailBytes)); aerr != nil {
-		h.logger.Warn("audit write failed", zap.Error(aerr))
-	}
-	http.Redirect(w, r, "/dashboard/llm?tab=targetsets&flash=target+set+created", http.StatusSeeOther)
-}
-
-// handleTargetSetUpdate 更新 target set 信息
-func (h *Handler) handleTargetSetUpdate(w http.ResponseWriter, r *http.Request) {
-	if h.groupTargetSetRepo == nil {
-		http.Redirect(w, r, "/dashboard/llm?error=target+set+feature+not+enabled", http.StatusSeeOther)
-		return
-	}
-
-	if err := r.ParseForm(); err != nil {
-		http.Redirect(w, r, "/dashboard/llm?error=invalid+form", http.StatusSeeOther)
-		return
-	}
-
-	id := r.PathValue("id")
-	if id == "" {
-		http.Redirect(w, r, "/dashboard/llm?tab=targetsets&error=invalid+id", http.StatusSeeOther)
-		return
-	}
-
-	set, err := h.groupTargetSetRepo.GetByID(id)
-	if err != nil || set == nil {
-		http.Redirect(w, r, "/dashboard/llm?tab=targetsets&error=target+set+not+found", http.StatusSeeOther)
-		return
-	}
-
-	if name := strings.TrimSpace(r.FormValue("name")); name != "" {
-		set.Name = name
-	}
-	if groupID := strings.TrimSpace(r.FormValue("group_id")); groupID != "" {
-		set.GroupID = &groupID
-	}
-	if strategy := strings.TrimSpace(r.FormValue("strategy")); strategy != "" {
-		set.Strategy = strategy
-	}
-
-	if err := h.groupTargetSetRepo.Update(set); err != nil {
-		h.logger.Error("failed to update target set", zap.String("id", id), zap.Error(err))
-		http.Redirect(w, r, "/dashboard/llm?tab=targetsets&error=failed+to+update+target+set", http.StatusSeeOther)
-		return
-	}
-
-	if aerr := h.auditRepo.Create("admin", "targetset.update", id, ""); aerr != nil {
-		h.logger.Warn("audit write failed", zap.Error(aerr))
-	}
-	http.Redirect(w, r, "/dashboard/llm?tab=targetsets&flash=target+set+updated", http.StatusSeeOther)
-}
-
-// handleTargetSetDelete 删除 target set
-func (h *Handler) handleTargetSetDelete(w http.ResponseWriter, r *http.Request) {
-	if h.groupTargetSetRepo == nil {
-		http.Redirect(w, r, "/dashboard/llm?error=target+set+feature+not+enabled", http.StatusSeeOther)
-		return
-	}
-
-	id := r.PathValue("id")
-	if id == "" {
-		http.Redirect(w, r, "/dashboard/llm?tab=targetsets&error=invalid+id", http.StatusSeeOther)
-		return
-	}
-
-	if err := h.groupTargetSetRepo.Delete(id); err != nil {
-		h.logger.Error("failed to delete target set", zap.String("id", id), zap.Error(err))
-		http.Redirect(w, r, "/dashboard/llm?tab=targetsets&error=failed+to+delete+target+set", http.StatusSeeOther)
-		return
-	}
-
-	if aerr := h.auditRepo.Create("admin", "targetset.delete", id, ""); aerr != nil {
-		h.logger.Warn("audit write failed", zap.Error(aerr))
-	}
-	http.Redirect(w, r, "/dashboard/llm?tab=targetsets&flash=target+set+deleted", http.StatusSeeOther)
-}
-
-// handleTargetSetAddMember 添加成员到 target set
-func (h *Handler) handleTargetSetAddMember(w http.ResponseWriter, r *http.Request) {
-	if h.groupTargetSetRepo == nil {
-		http.Redirect(w, r, "/dashboard/llm?error=target+set+feature+not+enabled", http.StatusSeeOther)
-		return
-	}
-
-	if err := r.ParseForm(); err != nil {
-		http.Redirect(w, r, "/dashboard/llm?error=invalid+form", http.StatusSeeOther)
-		return
-	}
-
-	id := r.PathValue("id")
-	if id == "" {
-		http.Redirect(w, r, "/dashboard/llm?tab=targetsets&error=invalid+id", http.StatusSeeOther)
-		return
-	}
-
-	targetURL := strings.TrimSpace(r.FormValue("target_url"))
-	if targetURL == "" {
-		http.Redirect(w, r, "/dashboard/llm?tab=targetsets&selected="+id+"&error=target_url+required", http.StatusSeeOther)
-		return
-	}
-
-	weight := 1
-	if w := r.FormValue("weight"); w != "" {
-		if parsed, err := strconv.Atoi(w); err == nil && parsed > 0 {
-			weight = parsed
-		}
-	}
-
-	member := &db.GroupTargetSetMember{
-		TargetURL: targetURL,
-		Weight:    weight,
-		IsActive:  true,
-	}
-
-	if err := h.groupTargetSetRepo.AddMember(id, member); err != nil {
-		h.logger.Error("failed to add member", zap.String("setID", id), zap.String("targetURL", targetURL), zap.Error(err))
-		http.Redirect(w, r, "/dashboard/llm?tab=targetsets&selected="+id+"&error=failed+to+add+member", http.StatusSeeOther)
-		return
-	}
-
-	if aerr := h.auditRepo.Create("admin", "targetset.add_member", id, targetURL); aerr != nil {
-		h.logger.Warn("audit write failed", zap.Error(aerr))
-	}
-	http.Redirect(w, r, "/dashboard/llm?tab=targetsets&selected="+id+"&flash=member+added", http.StatusSeeOther)
-}
-
-// handleTargetSetUpdateMember 更新 target set 成员权重
-func (h *Handler) handleTargetSetUpdateMember(w http.ResponseWriter, r *http.Request) {
-	if h.groupTargetSetRepo == nil {
-		http.Redirect(w, r, "/dashboard/llm?error=target+set+feature+not+enabled", http.StatusSeeOther)
-		return
-	}
-
-	if err := r.ParseForm(); err != nil {
-		http.Redirect(w, r, "/dashboard/llm?error=invalid+form", http.StatusSeeOther)
-		return
-	}
-
-	id := r.PathValue("id")
-	memberID := strings.TrimSpace(r.FormValue("target_url"))
-	if id == "" || memberID == "" {
-		http.Redirect(w, r, "/dashboard/llm?tab=targetsets&error=invalid+id", http.StatusSeeOther)
-		return
-	}
-
-	weight := 1
-	if w := r.FormValue("weight"); w != "" {
-		if parsed, err := strconv.Atoi(w); err == nil && parsed > 0 {
-			weight = parsed
-		}
-	}
-
-	priority := 0
-	if p := r.FormValue("priority"); p != "" {
-		if parsed, err := strconv.Atoi(p); err == nil {
-			priority = parsed
-		}
-	}
-
-	if err := h.groupTargetSetRepo.UpdateMember(id, memberID, weight, priority); err != nil {
-		h.logger.Error("failed to update member", zap.String("setID", id), zap.String("memberID", memberID), zap.Error(err))
-		http.Redirect(w, r, "/dashboard/llm?tab=targetsets&selected="+id+"&error=failed+to+update+member", http.StatusSeeOther)
-		return
-	}
-
-	if aerr := h.auditRepo.Create("admin", "targetset.update_member", id, memberID); aerr != nil {
-		h.logger.Warn("audit write failed", zap.Error(aerr))
-	}
-	http.Redirect(w, r, "/dashboard/llm?tab=targetsets&selected="+id+"&flash=member+updated", http.StatusSeeOther)
-}
-
-// handleTargetSetRemoveMember 从 target set 删除成员
-func (h *Handler) handleTargetSetRemoveMember(w http.ResponseWriter, r *http.Request) {
-	if h.groupTargetSetRepo == nil {
-		http.Redirect(w, r, "/dashboard/llm?error=target+set+feature+not+enabled", http.StatusSeeOther)
-		return
-	}
-
-	if err := r.ParseForm(); err != nil {
-		http.Redirect(w, r, "/dashboard/llm?error=invalid+form", http.StatusSeeOther)
-		return
-	}
-
-	id := r.PathValue("id")
-	memberID := strings.TrimSpace(r.FormValue("target_url"))
-	if id == "" || memberID == "" {
-		http.Redirect(w, r, "/dashboard/llm?tab=targetsets&error=invalid+id", http.StatusSeeOther)
-		return
-	}
-
-	if err := h.groupTargetSetRepo.RemoveMember(id, memberID); err != nil {
-		h.logger.Error("failed to remove member", zap.String("setID", id), zap.String("memberID", memberID), zap.Error(err))
-		http.Redirect(w, r, "/dashboard/llm?tab=targetsets&selected="+id+"&error=failed+to+remove+member", http.StatusSeeOther)
-		return
-	}
-
-	if aerr := h.auditRepo.Create("admin", "targetset.remove_member", id, memberID); aerr != nil {
-		h.logger.Warn("audit write failed", zap.Error(aerr))
-	}
-	http.Redirect(w, r, "/dashboard/llm?tab=targetsets&selected="+id+"&flash=member+removed", http.StatusSeeOther)
 }
 
 // ---------------------------------------------------------------------------

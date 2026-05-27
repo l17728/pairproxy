@@ -8,6 +8,7 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest"
 
+	"github.com/l17728/pairproxy/internal/config"
 	"github.com/l17728/pairproxy/internal/db"
 )
 
@@ -169,7 +170,7 @@ func TestAuditCLI_DBError_LogsWarn(t *testing.T) {
 
 func TestBuildDebugFileLogger_ValidPath(t *testing.T) {
 	// Windows 无法在测试后删除被 logger 持有的文件，使用 stderr 路径避免文件锁
-	logger, err := buildDebugFileLogger("stderr")
+	logger, err := buildDebugFileLogger("stderr", config.LogRotateConfig{})
 	if err != nil {
 		t.Fatalf("buildDebugFileLogger('stderr'): %v", err)
 	}

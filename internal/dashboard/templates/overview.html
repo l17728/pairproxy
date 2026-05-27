@@ -160,7 +160,9 @@
     <div class="flex items-center justify-between mb-4">
       <h3 class="text-sm font-semibold text-gray-700">Token 用量趋势</h3>
       <select id="tokenDaysSelect" class="text-xs border border-gray-300 rounded px-2 py-1">
-        <option value="7">最近 7 天</option>
+        <option value="1">最近 1 天</option>
+        <option value="3">最近 3 天</option>
+        <option value="7" selected>最近 7 天</option>
         <option value="30">最近 30 天</option>
         <option value="90">最近 90 天</option>
       </select>
@@ -170,63 +172,116 @@
     </div>
   </div>
 
-  <!-- 费用趋势 -->
+  <!-- 请求趋势 -->
   <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
     <div class="flex items-center justify-between mb-4">
-      <h3 class="text-sm font-semibold text-gray-700">费用趋势 (USD)</h3>
-      <select id="costDaysSelect" class="text-xs border border-gray-300 rounded px-2 py-1">
-        <option value="7">最近 7 天</option>
-        <option value="30">最近 30 天</option>
-        <option value="90">最近 90 天</option>
-      </select>
+      <h3 class="text-sm font-semibold text-gray-700">请求趋势</h3>
+      <span class="text-xs text-gray-400">与左侧时间范围同步</span>
     </div>
     <div style="position: relative; height: 200px;">
-      <canvas id="costTrendChart"></canvas>
+      <canvas id="requestTrendChart"></canvas>
     </div>
   </div>
 </div>
 
-<!-- Top 用户 -->
-<div class="mt-6 bg-white rounded-xl shadow-sm border border-gray-100 p-6">
-  <h3 class="text-sm font-semibold text-gray-700 mb-4">Top 5 用户（最近 7 天）</h3>
-  <div style="position: relative; height: 120px;">
-    <canvas id="topUsersChart"></canvas>
+<!-- Top 用户（两图共用时间选择器） -->
+<div class="mt-6 grid grid-cols-1 lg:grid-cols-2 gap-4">
+  <!-- Top 10 by Token -->
+  <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+    <div class="flex items-center justify-between mb-4">
+      <h3 class="text-sm font-semibold text-gray-700">Top 10 用户（Token 用量）</h3>
+      <select id="topUsersDaysSelect" class="text-xs border border-gray-200 rounded px-2 py-1 text-gray-600 focus:outline-none focus:ring-1 focus:ring-indigo-300">
+        <option value="1h">最近 1 小时</option>
+        <option value="1d" selected>最近 1 天</option>
+        <option value="3d">最近 3 天</option>
+        <option value="7d">最近 7 天</option>
+      </select>
+    </div>
+    <div style="position: relative; height: 240px;">
+      <canvas id="topUsersChart"></canvas>
+    </div>
+    <div id="topUsersTable" class="mt-3 text-xs text-gray-600 select-text overflow-auto max-h-48"></div>
+  </div>
+  <!-- Top 10 by Request Count -->
+  <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+    <div class="flex items-center justify-between mb-4">
+      <h3 class="text-sm font-semibold text-gray-700">Top 10 用户（请求数）</h3>
+      <span class="text-xs text-gray-400">与左侧时间范围同步</span>
+    </div>
+    <div style="position: relative; height: 240px;">
+      <canvas id="topUsersByRequestsChart"></canvas>
+    </div>
+    <div id="topUsersByRequestsTable" class="mt-3 text-xs text-gray-600 select-text overflow-auto max-h-48"></div>
   </div>
 </div>
 
 <script>
-let tokenChart, costChart, topUsersChart;
+let tokenChart, requestChart, topUsersChart, topUsersByRequestsChart;
 
-// 加载趋势数据
+// 将选择器的值（"1h"/"1d"/"3d"/"7d"）转换为 API 查询参数
+function topUsersParam() {
+  const val = document.getElementById('topUsersDaysSelect').value;
+  if (val === '1h') return 'top_users_hours=1';
+  const days = parseInt(val) || 7;
+  return `top_users_days=${days}`;
+}
+
+// 加载趋势数据（token/request 图表）
 async function loadTrends(days) {
   try {
-    const res = await fetch(`/api/dashboard/trends?days=${days}`);
+    const res = await fetch(`/api/dashboard/trends?days=${days}&${topUsersParam()}`);
     const data = await res.json();
 
     // 更新 Token 趋势图
-    updateTokenChart(data.daily_tokens);
+    updateTokenChart(data.daily_tokens, days);
 
-    // 更新费用趋势图
-    updateCostChart(data.daily_cost);
+    // 更新请求趋势图
+    updateRequestChart(data.daily_tokens, days);
 
-    // 更新 Top 用户（仅 7 天时更新）
-    if (days === 7) {
-      updateTopUsersChart(data.top_users);
-    }
+    // 更新 Top 用户（两图）
+    updateTopUsersChart(data.top_users);
+    updateTopUsersByRequestsChart(data.top_users_by_requests);
   } catch (err) {
     console.error('Failed to load trends:', err);
   }
 }
 
+// 仅加载 Top 用户数据（时间范围独立于 token/request 图表）
+async function loadTopUsers() {
+  try {
+    const days = parseInt(document.getElementById('tokenDaysSelect').value) || 7;
+    const res = await fetch(`/api/dashboard/trends?days=${days}&${topUsersParam()}`);
+    const data = await res.json();
+    updateTopUsersChart(data.top_users);
+    updateTopUsersByRequestsChart(data.top_users_by_requests);
+  } catch (err) {
+    console.error('Failed to load top users:', err);
+  }
+}
+
+// 根据天数决定标签格式：
+//   days==1  → 15分钟粒度，格式 "YYYY-MM-DD HH:MM:00"，显示 "HH:MM"
+//   days<=3  → 小时粒度，格式 "YYYY-MM-DD HH:00"，显示 "MM-DD HH:00"
+//   其余     → 天粒度，格式 "YYYY-MM-DD"，显示 "MM-DD"
+function trendLabel(date, days) {
+  if (days === 1) {
+    return date.substring(11, 16); // "HH:MM"
+  }
+  if (days <= 3) {
+    return date.substring(5, 16); // "MM-DD HH:00"
+  }
+  return date.substring(5, 10); // "MM-DD"
+}
+
 // Token 趋势图（柱状图）
-function updateTokenChart(data) {
+function updateTokenChart(data, days) {
   const ctx = document.getElementById('tokenTrendChart');
   if (tokenChart) tokenChart.destroy();
 
   tokenChart = new Chart(ctx, {
     type: 'bar',
     data: {
-      labels: data.map(d => d.date.substring(5)), // MM-DD
+      labels: data.map(d => trendLabel(d.date, days)),
       datasets: [{
         label: '输入 Token',
         data: data.map(d => d.input_tokens),
@@ -255,20 +310,20 @@ function updateTokenChart(data) {
   });
 }
 
-// 费用趋势图（折线图）
-function updateCostChart(data) {
-  const ctx = document.getElementById('costTrendChart');
-  if (costChart) costChart.destroy();
+// 请求趋势图（折线图）
+function updateRequestChart(data, days) {
+  const ctx = document.getElementById('requestTrendChart');
+  if (requestChart) requestChart.destroy();
 
-  costChart = new Chart(ctx, {
+  requestChart = new Chart(ctx, {
     type: 'line',
     data: {
-      labels: data.map(d => d.date.substring(5)),
+      labels: data.map(d => trendLabel(d.date, days)),
       datasets: [{
-        label: '费用 (USD)',
-        data: data.map(d => d.cost_usd),
-        borderColor: 'rgb(251, 191, 36)',
-        backgroundColor: 'rgba(251, 191, 36, 0.1)',
+        label: '请求数',
+        data: data.map(d => d.request_count),
+        borderColor: 'rgb(99, 102, 241)',
+        backgroundColor: 'rgba(99, 102, 241, 0.1)',
         tension: 0.3,
         fill: true
       }]
@@ -286,7 +341,29 @@ function updateCostChart(data) {
   });
 }
 
-// Top 用户图（横向柱状图）
+// 渲染可复制的用户排名表格
+function renderUserTable(tableId, data, valueLabel, valueFn) {
+  const el = document.getElementById(tableId);
+  if (!el) return;
+  if (!data || data.length === 0) { el.innerHTML = ''; return; }
+  const rows = data.map((d, i) =>
+    `<tr>
+      <td class="pr-2 text-gray-400 select-text">${i + 1}</td>
+      <td class="pr-4 font-mono select-text">${d.username}</td>
+      <td class="text-right text-gray-500 select-text">${valueFn(d).toLocaleString()}</td>
+    </tr>`
+  ).join('');
+  el.innerHTML = `<table class="w-full border-separate" style="border-spacing:0 2px">
+    <thead><tr class="text-gray-400">
+      <th class="text-left pr-2">#</th>
+      <th class="text-left pr-4">用户名</th>
+      <th class="text-right">${valueLabel}</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+// Top 10 用户图 — 按 Token 用量（横向柱状图）
 function updateTopUsersChart(data) {
   const ctx = document.getElementById('topUsersChart');
   if (topUsersChart) topUsersChart.destroy();
@@ -315,20 +392,54 @@ function updateTopUsersChart(data) {
       }
     }
   });
+
+  renderUserTable('topUsersTable', data, 'Tokens', d => d.total_input + d.total_output);
 }
 
-// 时间范围选择器
+// Top 10 用户图 — 按请求数（横向柱状图）
+function updateTopUsersByRequestsChart(data) {
+  const ctx = document.getElementById('topUsersByRequestsChart');
+  if (topUsersByRequestsChart) topUsersByRequestsChart.destroy();
+
+  topUsersByRequestsChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: data.map(d => d.username),
+      datasets: [{
+        label: '请求数',
+        data: data.map(d => d.request_count),
+        backgroundColor: 'rgba(251, 146, 60, 0.6)',
+        borderColor: 'rgb(251, 146, 60)',
+        borderWidth: 1
+      }]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        x: { beginAtZero: true }
+      },
+      plugins: {
+        legend: { display: false }
+      }
+    }
+  });
+
+  renderUserTable('topUsersByRequestsTable', data, '请求数', d => d.request_count);
+}
+
+// 时间范围选择器（token/request 图表同步）
 document.getElementById('tokenDaysSelect').addEventListener('change', (e) => {
   loadTrends(parseInt(e.target.value));
-  document.getElementById('costDaysSelect').value = e.target.value;
 });
 
-document.getElementById('costDaysSelect').addEventListener('change', (e) => {
-  loadTrends(parseInt(e.target.value));
-  document.getElementById('tokenDaysSelect').value = e.target.value;
+// Top 用户时间范围选择器（独立）
+document.getElementById('topUsersDaysSelect').addEventListener('change', () => {
+  loadTopUsers();
 });
 
-// 页面加载时初始化
+// 页面加载时初始化（默认 7 天）
 loadTrends(7);
 
 // 加载快速操作面板数据 (v2.20)

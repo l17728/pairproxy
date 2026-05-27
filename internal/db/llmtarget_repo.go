@@ -109,9 +109,13 @@ func (r *LLMTargetRepo) MaxUpdatedAt() (time.Time, error) {
 // MarkUnsynced 将指定 target 的 is_synced 设为 false。
 // 在任意写操作（Create/Update/Enable/Disable）成功后调用，
 // 表示该 target 的 DB 状态尚未被运行时加载到内存。
+//
+// 注意：必须使用 UpdateColumn 而非 Update，避免 GORM 自动修改 updated_at。
+// updated_at 被 peer 模式轮询（MaxUpdatedAt）用作变更检测信号，
+// 若 is_synced 写入同时更新 updated_at，会导致节点间无限触发 SyncLLMTargets。
 func (r *LLMTargetRepo) MarkUnsynced(id string) error {
 	if err := r.db.Model(&LLMTarget{}).Where("id = ?", id).
-		Update("is_synced", false).Error; err != nil {
+		UpdateColumn("is_synced", false).Error; err != nil {
 		r.logger.Warn("failed to mark target unsynced",
 			zap.String("id", id), zap.Error(err))
 		return fmt.Errorf("mark unsynced: %w", err)
@@ -122,9 +126,11 @@ func (r *LLMTargetRepo) MarkUnsynced(id string) error {
 // MarkSyncedBefore 将 updated_at <= t 的所有 target 的 is_synced 设为 true。
 // 在 SyncLLMTargets 完成后调用，t 为同步开始前的时间戳，
 // 确保同步期间发生的新写操作不会被误标记为已同步。
+//
+// 注意：必须使用 UpdateColumn 而非 Update，理由同 MarkUnsynced。
 func (r *LLMTargetRepo) MarkSyncedBefore(t time.Time) error {
 	if err := r.db.Model(&LLMTarget{}).Where("updated_at <= ?", t).
-		Update("is_synced", true).Error; err != nil {
+		UpdateColumn("is_synced", true).Error; err != nil {
 		r.logger.Warn("failed to mark targets synced", zap.Error(err))
 		return fmt.Errorf("mark synced before: %w", err)
 	}

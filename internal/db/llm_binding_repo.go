@@ -23,12 +23,15 @@ func NewLLMBindingRepo(db *gorm.DB, logger *zap.Logger) *LLMBindingRepo {
 	}
 }
 
-// Set 创建或替换绑定。
-// 同一 userID 或 groupID 的旧绑定会先被删除，再创建新绑定。
-// userID 和 groupID 至少有一个非 nil。
+// Set 创建或替换**用户级**绑定（1:1 语义）。
+// 同一 userID 的旧绑定会先被删除，再创建新绑定，保证用户级绑定始终至多一条。
+// userID 必须非 nil；分组级多绑定请使用 AddGroupBinding。
 func (r *LLMBindingRepo) Set(targetID string, userID, groupID *string) error {
 	if userID == nil && groupID == nil {
 		return fmt.Errorf("llm_binding: userID and groupID cannot both be nil")
+	}
+	if userID == nil {
+		return fmt.Errorf("llm_binding: Set() is for user-level bindings only; use AddGroupBinding for group bindings")
 	}
 
 	// 查 target URL 冗余写入（便于直接读库）；找不到时回退用 targetID 本身（URL-as-ID 场景）
@@ -95,14 +98,15 @@ func (r *LLMBindingRepo) FindForUser(userID, groupID string) (targetID string, f
 		}
 	}
 
-	// 2. 再查分组级绑定
+	// 2. 再查分组级绑定（单条：兼容旧路径；多条：由调用方通过 FindAllForGroup 处理智能路由）
 	if groupID != "" {
 		var bindings []LLMBinding
-		if dbErr := r.db.Where("group_id = ?", groupID).Find(&bindings).Error; dbErr != nil {
+		if dbErr := r.db.Where("group_id = ?", groupID).Order("created_at ASC").Find(&bindings).Error; dbErr != nil {
 			return "", false, fmt.Errorf("find group llm binding: %w", dbErr)
 		}
 		if len(bindings) > 1 {
-			r.logger.Error("data integrity violation: multiple group bindings found",
+			// 分组多绑定属于合法状态，调用方应改用 FindAllForGroup 走智能路由分支
+			r.logger.Debug("group has multiple bindings; caller should use FindAllForGroup for smart routing",
 				zap.String("group_id", groupID),
 				zap.Int("count", len(bindings)),
 			)
@@ -133,6 +137,99 @@ func (r *LLMBindingRepo) Delete(id string) error {
 	}
 	r.logger.Info("llm binding deleted", zap.String("id", id))
 	return nil
+}
+
+// AddGroupBinding 为分组追加一条 LLM target 绑定（1:N 语义）。
+// 约束：同一分组内所有已绑定 target 的 provider 必须与新 target 一致，否则返回错误。
+// 同一 (group_id, target_id) 重复调用是幂等的（已绑定则直接返回 nil）。
+func (r *LLMBindingRepo) AddGroupBinding(targetID, groupID string) error {
+	if targetID == "" || groupID == "" {
+		return fmt.Errorf("llm_binding: targetID and groupID must not be empty")
+	}
+
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		// 查新 target 的 provider
+		var newTarget LLMTarget
+		if err := tx.Where("id = ?", targetID).First(&newTarget).Error; err != nil {
+			return fmt.Errorf("llm_binding: target %q not found: %w", targetID, err)
+		}
+
+		// 检查幂等：已存在相同绑定则跳过
+		var existing []LLMBinding
+		if err := tx.Where("group_id = ?", groupID).Find(&existing).Error; err != nil {
+			return fmt.Errorf("llm_binding: query existing group bindings: %w", err)
+		}
+		for _, b := range existing {
+			if b.TargetID == targetID {
+				r.logger.Debug("group binding already exists, skipping",
+					zap.String("group_id", groupID),
+					zap.String("target_id", targetID),
+				)
+				return nil
+			}
+		}
+
+		// provider 一致性校验
+		if len(existing) > 0 {
+			var firstTarget LLMTarget
+			if err := tx.Where("id = ?", existing[0].TargetID).First(&firstTarget).Error; err == nil {
+				if firstTarget.Provider != newTarget.Provider {
+					return fmt.Errorf(
+						"llm_binding: provider conflict — group %q already has provider %q, cannot add target with provider %q",
+						groupID, firstTarget.Provider, newTarget.Provider,
+					)
+				}
+			}
+		}
+
+		// 追加新绑定
+		b := &LLMBinding{
+			ID:        uuid.NewString(),
+			TargetID:  targetID,
+			TargetURL: newTarget.URL,
+			GroupID:   &groupID,
+			CreatedAt: time.Now(),
+		}
+		if err := tx.Create(b).Error; err != nil {
+			return fmt.Errorf("create group llm binding: %w", err)
+		}
+
+		r.logger.Info("group llm binding added",
+			zap.String("target_id", targetID),
+			zap.String("group_id", groupID),
+			zap.String("provider", newTarget.Provider),
+		)
+		return nil
+	})
+}
+
+// RemoveGroupBinding 按绑定主键删除单条分组绑定。
+func (r *LLMBindingRepo) RemoveGroupBinding(bindingID string) error {
+	if bindingID == "" {
+		return fmt.Errorf("llm_binding: bindingID must not be empty")
+	}
+	if err := r.db.Delete(&LLMBinding{}, "id = ?", bindingID).Error; err != nil {
+		return fmt.Errorf("remove group llm binding %q: %w", bindingID, err)
+	}
+	r.logger.Info("group llm binding removed", zap.String("binding_id", bindingID))
+	return nil
+}
+
+// FindAllForGroup 返回指定分组的全部 LLM target ID 列表（按创建时间升序）。
+// 用于分组多绑定场景的智能路由。
+func (r *LLMBindingRepo) FindAllForGroup(groupID string) ([]string, error) {
+	if groupID == "" {
+		return nil, nil
+	}
+	var bindings []LLMBinding
+	if err := r.db.Where("group_id = ?", groupID).Order("created_at ASC").Find(&bindings).Error; err != nil {
+		return nil, fmt.Errorf("find group llm bindings: %w", err)
+	}
+	targetIDs := make([]string, 0, len(bindings))
+	for _, b := range bindings {
+		targetIDs = append(targetIDs, b.TargetID)
+	}
+	return targetIDs, nil
 }
 
 // EvenDistribute 将 userIDs 中**尚无用户级绑定**的用户轮询分配到 targetIDs。

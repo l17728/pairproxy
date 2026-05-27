@@ -24,7 +24,7 @@ func TestAdminQuotaStatus(t *testing.T) {
 	if err := groupRepo.Create(grp); err != nil {
 		t.Fatalf("Create group: %v", err)
 	}
-	if err := groupRepo.SetQuota(grp.ID, &daily, nil, nil, nil, nil); err != nil {
+	if err := groupRepo.SetQuota(grp.ID, &daily, nil, nil, nil, nil, nil, nil, nil); err != nil {
 		t.Fatalf("SetQuota: %v", err)
 	}
 

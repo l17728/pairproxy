@@ -33,7 +33,6 @@ import (
 	"github.com/l17728/pairproxy/internal/lb"
 	"github.com/l17728/pairproxy/internal/metrics"
 	"github.com/l17728/pairproxy/internal/quota"
-	"github.com/l17728/pairproxy/internal/router"
 	"github.com/l17728/pairproxy/internal/tap"
 	"github.com/l17728/pairproxy/internal/track"
 	"github.com/l17728/pairproxy/internal/version"
@@ -77,14 +76,12 @@ type SProxy struct {
 	targets        []LLMTarget
 	idx            atomic.Uint32 // 轮询计数器（无 LLM 均衡器时使用）
 	transport      http.RoundTripper
-	clusterMgr     *cluster.Manager                                // 可选，nil 表示单节点模式（不注入路由头）
-	sourceNode     string                                          // 来源节点标识（用于 usage_logs）
-	quotaChecker   *quota.Checker                                  // 可选，nil 表示不检查配额
-	startTime      time.Time                                       // 进程启动时间（供 /health 返回 uptime）
-	activeRequests atomic.Int64                                    // 当前正在处理的代理请求数
-	sqlDB          *sql.DB                                         // 可选，用于 /health 检查 DB 可达性
-	apiKeyResolver func(userID, groupID string) (apiKey string, found bool) // 可选，动态 API Key 解析
-
+	clusterMgr     *cluster.Manager // 可选，nil 表示单节点模式（不注入路由头）
+	sourceNode     string           // 来源节点标识（用于 usage_logs）
+	quotaChecker   *quota.Checker   // 可选，nil 表示不检查配额
+	startTime      time.Time        // 进程启动时间（供 /health 返回 uptime）
+	activeRequests atomic.Int64     // 当前正在处理的代理请求数
+	sqlDB          *sql.DB          // 可选，用于 /health 检查 DB 可达性
 	// 排水模式控制
 	draining     atomic.Bool // 排水模式标志
 	drainReason  string      // 排水原因（用于日志和状态查询）
@@ -97,16 +94,26 @@ type SProxy struct {
 	maxRetries      int                                         // RetryTransport 最大重试次数
 	retryOnStatus   []int                                       // 额外触发 try-next 的 HTTP 状态码（如 [429]）
 
-	debugLogger    atomic.Pointer[zap.Logger]    // 可选，非 nil 时将转发内容写入独立 debug 文件
-	notifier       *alert.Notifier               // 可选，非 nil 时发送 high_load/load_recovered 告警
-	convTracker    atomic.Pointer[track.Tracker] // 可选，非 nil 时记录指定用户对话内容
-	corpusWriter   atomic.Pointer[corpus.Writer] // 可选，非 nil 时采集训练语料
-	semanticRouter *router.SemanticRouter        // 可选，非 nil 时对无绑定请求做语义路由
+	debugLogger       atomic.Pointer[zap.Logger] // 可选，非 nil 时将转发内容写入独立 debug 文件
+	modelRouterLogger atomic.Pointer[zap.Logger] // 可选，非 nil 时将 model_router 调用写入独立文件
+	notifier     *alert.Notifier               // 可选，非 nil 时发送 high_load/load_recovered 告警
+	convTracker  atomic.Pointer[track.Tracker] // 可选，非 nil 时记录指定用户对话内容
+	corpusWriter atomic.Pointer[corpus.Writer] // 可选，非 nil 时采集训练语料
 
 	// 配置和数据库（用于 config target sync）
-	cfg           *config.SProxyFullConfig     // 可选，用于同步配置文件中的 LLM targets
-	db            *gorm.DB                     // 可选，用于同步配置文件中的 LLM targets
-	keyDecryptFn  func(string) (string, error) // 可选，当配置了 key_encryption_key 时用于解密 AES key
+	cfg          *config.SProxyFullConfig     // 可选，用于同步配置文件中的 LLM targets
+	db           *gorm.DB                     // 可选，用于同步配置文件中的 LLM targets
+	keyDecryptFn func(string) (string, error) // 可选，当配置了 key_encryption_key 时用于解密 AES key
+
+	// 分组多绑定智能路由（v3.1.0+）
+	// groupMultiBindingFinder: 查询分组的全部 target ID 列表（来自 DB）
+	// modelRouterSelector: 带缓存和多模态感知的模型路由选择器
+	groupMultiBindingFinder func(groupID string) ([]string, error)
+	modelRouterSelector     *ModelRouterSelector
+
+	// userActiveChecker 用于 JWT 认证路径的逐请求用户状态校验。
+	// JWT 本身不携带 is_active 状态；不设置此字段时禁用用户的 JWT 在过期前仍可使用。
+	userActiveChecker UserActiveChecker
 }
 
 // NewSProxy 创建 SProxy。
@@ -173,13 +180,6 @@ func (sp *SProxy) SetDB(gormDB interface{ DB() (*sql.DB, error) }) {
 	}
 }
 
-// SetAPIKeyResolver 设置动态 API Key 解析器（可选）。
-// fn 根据 userID 和 groupID 返回解密后的 API Key；found=false 时回退到配置文件中的静态 Key。
-// groupID 直接来自 JWT claims，无需再查询 UserRepo。
-func (sp *SProxy) SetAPIKeyResolver(fn func(userID, groupID string) (string, bool)) {
-	sp.apiKeyResolver = fn
-}
-
 // SetKeyDecryptFn 设置 AES 密钥解密函数（BUG-4 修复）。
 // 当配置了 admin.key_encryption_key 时，resolveAPIKey 优先使用此函数解密 AES 密文；
 // 未设置时退回到 obfuscateKey（兼容 config-sync 路径）。
@@ -201,6 +201,26 @@ func (sp *SProxy) SetBindingResolver(fn func(userID, groupID string) (string, bo
 	sp.bindingResolver = fn
 }
 
+// SetGroupMultiBindingFinder 设置分组多绑定查找器（v3.1.0+）。
+// fn 返回指定分组的全部 LLM target ID 列表；配合 SetModelRouterClient 使用。
+// 仅当分组有 ≥2 个绑定时，才触发 Model Router 智能选取流程。
+func (sp *SProxy) SetGroupMultiBindingFinder(fn func(groupID string) ([]string, error)) {
+	sp.groupMultiBindingFinder = fn
+}
+
+// SetModelRouterSelector 设置带缓存和多模态感知的模型路由选择器（v3.2.0+）。
+// 仅当分组有多绑定时（≥2 个 target）才被调用，选取最优模型对应的 target。
+func (sp *SProxy) SetModelRouterSelector(s *ModelRouterSelector) {
+	sp.modelRouterSelector = s
+}
+
+// SetUserActiveChecker 设置 JWT 认证路径的用户状态校验器。
+// 设置后每次 JWT 认证成功时均会查询 DB 确认用户未被禁用，
+// 确保管理员禁用用户后立即生效，不再等待 JWT 自然过期。
+func (sp *SProxy) SetUserActiveChecker(c UserActiveChecker) {
+	sp.userActiveChecker = c
+}
+
 // SetMaxRetries 设置 RetryTransport 的最大重试次数（默认 2）。
 func (sp *SProxy) SetMaxRetries(n int) {
 	sp.maxRetries = n
@@ -217,16 +237,25 @@ func (sp *SProxy) SetTransport(t http.RoundTripper) {
 	sp.transport = t
 }
 
+// SetRequestTimeout 配置转发到 LLM 时等待响应头的超时时间。
+// d == 0 时使用默认值 300s；d < 0 时不设置超时（保持无限等待）。
+// 该超时仅作用于等待响应头阶段；流式响应体的传输不受此限制。
+func (sp *SProxy) SetRequestTimeout(d time.Duration) {
+	if d < 0 {
+		return // 明确禁用超时，保持 http.DefaultTransport
+	}
+	if d == 0 {
+		d = 300 * time.Second
+	}
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.ResponseHeaderTimeout = d
+	sp.transport = t
+}
+
 // SetDebugLogger 设置 debug 文件日志器。
 // 非 nil 时，每个请求的转发内容（请求体、响应体、SSE chunks）均会写入该 logger。
 func (sp *SProxy) SetDebugLogger(l *zap.Logger) {
 	sp.debugLogger.Store(l)
-}
-
-// SetSemanticRouter 设置语义路由器（可选）。
-// 非 nil 时，对无显式 LLM 绑定的请求（LB 路径）进行语义分类，缩窄候选 target 池。
-func (sp *SProxy) SetSemanticRouter(r *router.SemanticRouter) {
-	sp.semanticRouter = r
 }
 
 // SyncAndSetDebugLogger 先 Sync 旧 logger（flush 缓冲区），再原子切换为新 logger。
@@ -236,6 +265,20 @@ func (sp *SProxy) SyncAndSetDebugLogger(l *zap.Logger) {
 		_ = old.Sync()
 	}
 	sp.debugLogger.Store(l)
+}
+
+// SetModelRouterLogger 设置 model_router 独立日志器。
+func (sp *SProxy) SetModelRouterLogger(l *zap.Logger) {
+	sp.modelRouterLogger.Store(l)
+}
+
+// SyncAndSetModelRouterLogger 先 Sync 旧 logger，再原子切换为新 logger。
+// 供 SIGHUP 热重载时调用；传入 nil 表示关闭 model_router 日志。
+func (sp *SProxy) SyncAndSetModelRouterLogger(l *zap.Logger) {
+	if old := sp.modelRouterLogger.Load(); old != nil {
+		_ = old.Sync()
+	}
+	sp.modelRouterLogger.Store(l)
 }
 
 // SetConvTracker 设置用户对话内容跟踪器。
@@ -454,7 +497,7 @@ func (sp *SProxy) loadAllTargets(repo *db.LLMTargetRepo) ([]config.LLMTarget, er
 			URL:             dt.URL,
 			APIKey:          apiKey,
 			Provider:        dt.Provider,
-			Name:             dt.Name,
+			Name:            dt.Name,
 			Weight:          dt.Weight,
 			HealthCheckPath: dt.HealthCheckPath,
 			ModelMapping:    modelMapping,
@@ -965,7 +1008,7 @@ func (sp *SProxy) Handler() http.Handler {
 		afterAuth.ServeHTTP(w, r)
 	})
 
-	withAuth := AuthMiddleware(sp.logger, sp.jwtMgr, withCounter)
+	withAuth := AuthMiddleware(sp.logger, sp.jwtMgr, sp.userActiveChecker, withCounter)
 	withReqID := RequestIDMiddleware(sp.logger, withAuth)
 	return RecoveryMiddleware(sp.logger, withReqID)
 }
@@ -1052,15 +1095,27 @@ func (sp *SProxy) HealthHandler() http.HandlerFunc {
 //  1. 用户/分组绑定（bindingResolver）→ 若绑定 target 健康且未尝试过
 //  2. 加权随机负载均衡（llmBalancer）→ 过滤已尝试 + 不健康 + provider 不匹配
 //  3. 回退简单轮询（无均衡器时）
-func (sp *SProxy) pickLLMTarget(path, userID, groupID, requestedModel string, tried []string, candidateFilter []string) (*lb.LLMTargetInfo, error) {
+//
+// pickLLMTarget 选取本次请求的 LLM target。
+//
+// boundOverride: 若非空，跳过 bindingResolver，直接将此 targetID 视为绑定结果（用于分组多绑定 Router 预选）。
+func (sp *SProxy) pickLLMTarget(path, userID, groupID, requestedModel string, tried []string, boundOverride string) (*lb.LLMTargetInfo, error) {
 	triedSet := make(map[string]bool, len(tried))
 	for _, u := range tried {
 		triedSet[u] = true
 	}
 
 	// 1. 用户/分组绑定优先（当 bindingResolver 已设置时必须有绑定，否则拒绝）
-	if sp.bindingResolver != nil {
-		boundID, found := sp.bindingResolver(userID, groupID)
+	if sp.bindingResolver != nil || boundOverride != "" {
+		var boundID string
+		var found bool
+		if boundOverride != "" {
+			// Model Router 预选结果，直接使用
+			boundID = boundOverride
+			found = true
+		} else {
+			boundID, found = sp.bindingResolver(userID, groupID)
+		}
 		if !found {
 			// 无绑定 → 直接拒绝，不 fall through 到负载均衡
 			sp.logger.Warn("request rejected: no LLM binding configured for user/group",
@@ -1136,20 +1191,9 @@ func (sp *SProxy) pickLLMTarget(path, userID, groupID, requestedModel string, tr
 		return nil, ErrBoundTargetUnavailable
 	}
 
-	// 构建语义候选集（过滤 candidateFilter）
-	filterSet := make(map[string]bool, len(candidateFilter))
-	for _, u := range candidateFilter {
-		filterSet[u] = true
-	}
-	if len(filterSet) > 0 {
-		sp.logger.Debug("pickLLMTarget: semantic candidateFilter active",
-			zap.Int("filter_size", len(filterSet)),
-		)
-	}
-
-	// 2. 加权随机均衡（支持 tried 过滤 + provider 过滤 + candidateFilter）
+	// 2. 加权随机均衡（支持 tried 过滤 + provider 过滤）
 	if sp.llmBalancer != nil {
-		return sp.weightedPickExcluding(path, requestedModel, triedSet, filterSet)
+		return sp.weightedPickExcluding(path, requestedModel, triedSet)
 	}
 
 	// 3. 回退：简单轮询（未配置均衡器时）
@@ -1157,7 +1201,6 @@ func (sp *SProxy) pickLLMTarget(path, userID, groupID, requestedModel string, tr
 	if len(candidates) == 0 {
 		candidates = sp.targets
 	}
-	// 过滤已尝试目标 + candidateFilter（若非空则只保留在 filter 内的）
 	var available []LLMTarget
 	for _, t := range candidates {
 		tid := t.ID
@@ -1165,9 +1208,6 @@ func (sp *SProxy) pickLLMTarget(path, userID, groupID, requestedModel string, tr
 			tid = t.URL
 		}
 		if triedSet[tid] {
-			continue
-		}
-		if len(filterSet) > 0 && !filterSet[tid] {
 			continue
 		}
 		available = append(available, t)
@@ -1186,19 +1226,15 @@ func (sp *SProxy) pickLLMTarget(path, userID, groupID, requestedModel string, tr
 
 // weightedPickExcluding 从 llmBalancer 中选取健康 target，排除 tried，并应用 provider 过滤、语义候选集过滤和模型过滤。
 // 执行顺序：provider 过滤 → 模型过滤（fail-open）→ 加权随机
-func (sp *SProxy) weightedPickExcluding(path, requestedModel string, tried map[string]bool, candidateFilter map[string]bool) (*lb.LLMTargetInfo, error) {
+func (sp *SProxy) weightedPickExcluding(path, requestedModel string, tried map[string]bool) (*lb.LLMTargetInfo, error) {
 	all := sp.llmBalancer.Targets()
 	preferred := preferredProvidersByPath(path)
 
-	// 步骤 1: provider + tried + candidateFilter 过滤（基础过滤）
+	// 步骤 1: provider + tried 过滤（基础过滤）
 	filter := func(targets []lb.Target, providerFilter map[string]bool) []lb.Target {
 		var out []lb.Target
 		for _, t := range targets {
 			if !t.Healthy || tried[t.ID] {
-				continue
-			}
-			// 语义路由候选集过滤（非空时只保留在 candidateFilter 内的 target）
-			if len(candidateFilter) > 0 && !candidateFilter[t.ID] {
 				continue
 			}
 			if providerFilter != nil {
@@ -1297,6 +1333,29 @@ func (sp *SProxy) llmTargetInfoForURL(targetURL string) *lb.LLMTargetInfo {
 	return &lb.LLMTargetInfo{URL: targetURL}
 }
 
+// llmBalancerTargetsAsLBTargets 将 llmBalancer 的 Target 列表转换为 model_router_client
+// 所需的内部 lbTarget 切片（避免 model_router_client.go 直接导入 lb 包）。
+func (sp *SProxy) llmBalancerTargetsAsLBTargets() []lbTarget {
+	if sp.llmBalancer == nil {
+		return nil
+	}
+	// 先建 id→provider 索引，整体 O(n) 而非 O(n²)
+	providerByID := make(map[string]string, len(sp.targets))
+	for _, t := range sp.targets {
+		providerByID[t.ID] = t.Provider
+	}
+	all := sp.llmBalancer.Targets()
+	result := make([]lbTarget, 0, len(all))
+	for _, t := range all {
+		result = append(result, lbTarget{
+			id:              t.ID,
+			supportedModels: t.SupportedModels,
+			provider:        providerByID[t.ID],
+		})
+	}
+	return result
+}
+
 // providerForID 根据 UUID 查找对应 target 的 Provider。
 func (sp *SProxy) providerForID(targetID string) string {
 	for _, t := range sp.targets {
@@ -1348,6 +1407,13 @@ func (sp *SProxy) candidatesByPath(path string) []LLMTarget {
 	return out
 }
 
+// isLLMCompletionPath 判断请求路径是否为 LLM 补全接口（需要路由的请求类型）。
+// 匹配 /v1/messages（Anthropic）和任意版本前缀的 chat/completions（OpenAI / Ollama）。
+func isLLMCompletionPath(path string) bool {
+	return strings.HasPrefix(path, "/v1/messages") ||
+		strings.Contains(path, "chat/completions")
+}
+
 // preferredProvidersByPath 根据 API 路径返回期望的 provider 集合。
 func preferredProvidersByPath(path string) map[string]bool {
 	switch {
@@ -1368,9 +1434,11 @@ func (sp *SProxy) buildRetryTransport(userID, groupID, effectivePath, requestedM
 		return sp.transport
 	}
 	maxRetries := sp.maxRetries
-	if maxRetries <= 0 {
-		maxRetries = 2
+	if maxRetries == 0 {
+		maxRetries = 2 // 未配置时的默认值
 	}
+	// maxRetries < 0：禁用重试；RetryTransport.MaxRetries=-1 时首次响应即返回，不切换 target。
+	// OnSuccess/OnFailure 回调仍会触发（保留被动熔断计数）。
 	return &lb.RetryTransport{
 		Inner:         sp.transport,
 		MaxRetries:    maxRetries,
@@ -1381,7 +1449,7 @@ func (sp *SProxy) buildRetryTransport(userID, groupID, effectivePath, requestedM
 			// "/v1/messages" (Anthropic targets); for all other cases it equals r.URL.Path
 			// (same as what RetryTransport would pass). RetryTransport's `path` arg is the
 			// original request path before Director rewrite — we don't want that here.
-			return sp.pickLLMTarget(effectivePath, userID, groupID, requestedModel, tried, nil)
+			return sp.pickLLMTarget(effectivePath, userID, groupID, requestedModel, tried, "")
 		},
 		OnSuccess: func(targetURL string) {
 			if sp.llmHC != nil {
@@ -1503,8 +1571,9 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 		defer release()
 	}
 
-	// 每次请求捕获一次 debug logger 快照，保证单请求内行为一致（SIGHUP 切换时不会半途改变）。
+	// 每次请求捕获一次 logger 快照，保证单请求内行为一致（SIGHUP 切换时不会半途改变）。
 	dl := sp.debugLogger.Load()
+	mrl := sp.modelRouterLogger.Load() // model_router 独立日志（nil = 禁用）
 
 	// debug 日志：← client request（body 未被上面读取时，在此补读）
 	if dl != nil {
@@ -1525,29 +1594,6 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 
-	// 语义路由：仅对无绑定用户（bindingResolver==nil）的 LB 路径生效
-	var semanticCandidates []string
-	if sp.semanticRouter != nil && sp.bindingResolver == nil && len(bodyBytes) > 0 {
-		if msgs := extractMessagesFromBody(bodyBytes); len(msgs) > 0 {
-			semanticCandidates = sp.semanticRouter.Route(r.Context(), msgs)
-			if len(semanticCandidates) > 0 {
-				sp.logger.Info("semantic router: candidate pool narrowed",
-					zap.String("request_id", reqID),
-					zap.Int("candidates", len(semanticCandidates)),
-				)
-			}
-		} else {
-			sp.logger.Debug("semantic router: skipped, no messages extracted from body",
-				zap.String("request_id", reqID),
-			)
-		}
-	} else if sp.semanticRouter != nil && sp.bindingResolver != nil {
-		sp.logger.Debug("semantic router: skipped, binding resolver active",
-			zap.String("request_id", reqID),
-			zap.String("user_id", claims.UserID),
-		)
-	}
-
 	// 提取客户端请求的模型名（用于模型感知路由 F2 + auto 模式 F3）
 	// 注意：此提取在 pickLLMTarget 之前完成，以便路由层按模型过滤
 	requestedModel := extractModel(r)
@@ -1561,7 +1607,88 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 
-	firstInfo, pickErr := sp.pickLLMTarget(r.URL.Path, claims.UserID, claims.GroupID, requestedModel, nil, semanticCandidates)
+	// 提取请求中的真实 session ID，供 Model Router 和上游转发共用。
+	// 自动生成的 "auto-session-" 前缀 ID 不向上游透传。
+	var forwardSessionID string
+	{
+		sid := extractSessionID(r, bodyBytes)
+		if !strings.HasPrefix(sid, "auto") {
+			forwardSessionID = sid
+		}
+	}
+
+	// 分组多绑定智能路由（v3.1.0+）：
+	// 若分组绑定了 ≥2 个 LLM target 且用户无个人绑定，调用 Model Router 预选 target。
+	// 失败时 passthrough（routerBoundOverride=""），pickLLMTarget 回退到 bindingResolver 的首条分组绑定。
+	var routerBoundOverride string
+	// preConvertedBody：AtoO 预转换结果缓存。
+	// 当组 provider 为 openai/ollama 且请求为 Anthropic 格式时，在调用 model_router 前提前完成
+	// 一次 Anthropic→OpenAI 转换，Router 收到合法的 OpenAI 格式 body；
+	// 转换结果在 line ~1770 直接复用（仅补 model mapping），避免对同一 body 重复全量转换。
+	var preConvertedBody []byte
+	// model_router 路由元数据，写入 usageRecord
+	var (
+		routerSessionID    string
+		enteredModelRouter bool
+		routerResultStatus int
+		routerResult       string
+		cacheHitScene      int
+	)
+	if sp.groupMultiBindingFinder != nil && sp.modelRouterSelector != nil &&
+		sp.bindingResolver != nil && claims.GroupID != "" &&
+		isLLMCompletionPath(r.URL.Path) {
+
+		// 检查用户是否有个人绑定（有则跳过 Router，直接用个人绑定）
+		_, userHasBinding := sp.bindingResolver(claims.UserID, "")
+		if !userHasBinding {
+			groupTargetIDs, gErr := sp.groupMultiBindingFinder(claims.GroupID)
+			if gErr == nil && len(groupTargetIDs) >= 2 {
+				enteredModelRouter = true
+
+				// 展开候选模型列表
+				balTargets := sp.llmBalancerTargetsAsLBTargets()
+				candidateModels := expandCandidateModels(balTargets, groupTargetIDs)
+				sessionID := extractSessionID(r, bodyBytes)
+				routerSessionID = forwardSessionID
+
+				// 若组 provider 要求 AtoO，提前转换一次并缓存结果（转换后的 body 同时用于 Router 和转发）。
+				// nil modelMapping：model name 在选定 target 后再通过 applyModelToOpenAIBody 更新，代价极小。
+				routerBody := bodyBytes
+				if groupProvider := groupProviderFromTargets(balTargets, groupTargetIDs); groupProvider != "" {
+					if detectConversionDirection(r.URL.Path, groupProvider) == conversionAtoO {
+						if converted, _, convErr := convertAnthropicToOpenAIRequest(bodyBytes, sp.logger, reqID, nil); convErr == nil {
+							preConvertedBody = converted
+							routerBody = converted
+						}
+					}
+				}
+
+				result, rErr := sp.modelRouterSelector.SelectModel(
+					r.Context(), reqID, claims.UserID, sessionID, routerBody, requestedModel, candidateModels, mrl,
+				)
+				if rErr != nil {
+					routerResultStatus = 2
+					sp.logger.Warn("model_router: routing failed, falling back to first group binding",
+						zap.String("request_id", reqID),
+						zap.String("group_id", claims.GroupID),
+						zap.Error(rErr),
+					)
+				} else if result.Model != "" {
+					routerResultStatus = result.RouterResultStatus
+					routerResult = result.RouterRawResponse
+					cacheHitScene = result.CacheHitScene
+					routerBoundOverride = resolveModelToTarget(result.Model, balTargets, groupTargetIDs)
+					sp.logger.Info("model_router: pre-selected target",
+						zap.String("request_id", reqID),
+						zap.String("selected_model", result.Model),
+						zap.String("target_id", routerBoundOverride),
+					)
+				}
+			}
+		}
+	}
+
+	firstInfo, pickErr := sp.pickLLMTarget(r.URL.Path, claims.UserID, claims.GroupID, requestedModel, nil, routerBoundOverride)
 	if pickErr != nil {
 		switch {
 		case errors.Is(pickErr, ErrNoLLMBinding):
@@ -1649,7 +1776,7 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 		effectivePath = "/v1/messages"
 		// Re-pick using effectivePath so preferredProvidersByPath["/v1/messages"] matches
 		// Anthropic targets correctly (spec §"Target Routing Fix for OtoA").
-		if repicked, pickErr := sp.pickLLMTarget(effectivePath, claims.UserID, claims.GroupID, requestedModel, nil, nil); pickErr == nil {
+		if repicked, pickErr := sp.pickLLMTarget(effectivePath, claims.UserID, claims.GroupID, requestedModel, nil, ""); pickErr == nil {
 			firstInfo = repicked
 			targetProvider = sp.providerForURL(firstInfo.URL)
 			// Update targetURL so the Director closure (captured at line ~1164) uses the right host.
@@ -1683,7 +1810,21 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 		// 转换请求 body
 		if len(bodyBytes) > 0 {
 			modelMapping := sp.modelMappingForURL(firstInfo.URL)
-			converted, newPath, convErr := convertAnthropicToOpenAIRequest(bodyBytes, sp.logger, reqID, modelMapping)
+
+			var (
+				converted []byte
+				newPath   string
+				convErr   error
+			)
+			if preConvertedBody != nil {
+				// model_router 路径：直接复用预转换结果，仅补 model mapping（轻量字段更新）
+				converted = applyModelToOpenAIBody(preConvertedBody, requestedModel, modelMapping)
+				newPath = "/chat/completions"
+			} else {
+				// 常规路径：完整转换（含 model mapping）
+				converted, newPath, convErr = convertAnthropicToOpenAIRequest(bodyBytes, sp.logger, reqID, modelMapping)
+			}
+
 			if convErr == nil {
 				bodyBytes = converted
 				convertedPath = newPath
@@ -1808,13 +1949,20 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 	//   AtoO 场景为 Anthropic 模型名（非 mapped 名）；OtoA 场景为 OpenAI 模型名（如 "gpt-4o"）
 	model := requestedModel
 	usageRecord := db.UsageRecord{
-		RequestID:   reqID,
-		UserID:      claims.UserID,
-		Model:       model,
-		ActualModel: recordedActualModel,
-		UpstreamURL: firstInfo.URL,
-		SourceNode:  sp.sourceNode,
-		CreatedAt:   time.Now().UTC(),
+		RequestID:          reqID,
+		UserID:             claims.UserID,
+		Model:              model,
+		ActualModel:        recordedActualModel,
+		UpstreamURL:        firstInfo.URL,
+		SourceNode:         sp.sourceNode,
+		ClientIP:           extractClientIP(r),
+		SessionID:          routerSessionID,
+		EnteredModelRouter: enteredModelRouter,
+		RouterResultStatus: routerResultStatus,
+		RouterResult:       routerResult,
+		CacheHitScene:      cacheHitScene,
+		RequestPath:        r.URL.Path,
+		CreatedAt:          time.Now().UTC(),
 	}
 	if usageRecord.Model != "" {
 		span.SetAttributes(attribute.String("model", usageRecord.Model))
@@ -1833,7 +1981,7 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 			bodyBytes,
 			targetProvider,
 		)
-		sp.logger.Debug("conversation tracking active",
+		sp.logger.Info("conversation tracking active",
 			zap.String("request_id", reqID),
 			zap.String("username", claims.Username),
 		)
@@ -1908,7 +2056,7 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 
-	tw := tap.NewTeeResponseWriter(finalWriter, sp.logger, sp.writer, usageRecord, targetProvider, startTime, onChunk)
+	tw := tap.NewTeeResponseWriter(finalWriter, sp.logger, sp.writer, usageRecord, targetProvider, startTime, onChunk, bodyBytes, r.URL.Path)
 
 	// 构建 transport（配置均衡器时使用 RetryTransport；否则使用基础 transport）
 	transport := sp.buildRetryTransport(claims.UserID, claims.GroupID, effectivePath, requestedModel)
@@ -1919,13 +2067,14 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 			req.URL.Host = targetURL.Host
 			req.Host = targetURL.Host
 
-			// 协议转换：修改请求路径
-			// convertedPath 是不含版本前缀的路径后缀（如 /chat/completions）。
-			// 若 target URL 带有自定义 base path（如 /v2、/openai/v1），则拼接在前面；
-			// 若无 base path（标准 OpenAI 端点），则补全为 /v1/chat/completions。
+			// 请求路径重写：处理两种场景
+			// 1. 协议转换（AtoO/OtoA）：convertedPath 是不含版本前缀的路径后缀（如 /chat/completions）。
+			//    若 target 有 base path，拼接在前；否则补全 /v1 前缀。
+			// 2. 透传（conversionNone）：client 路径含 /v1 前缀（如 /v1/chat/completions）。
+			//    若 target 有 base path，需将 /v1 替换为 basePath，否则原样透传。
+			originalPath := req.URL.Path
+			basePath := strings.TrimRight(targetURL.Path, "/")
 			if convDir != conversionNone && convertedPath != "" {
-				originalPath := req.URL.Path
-				basePath := strings.TrimRight(targetURL.Path, "/")
 				if basePath == "" {
 					req.URL.Path = "/v1" + convertedPath
 				} else {
@@ -1934,7 +2083,24 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 				sp.logger.Debug("request path converted for protocol conversion",
 					zap.String("request_id", reqID),
 					zap.String("original_path", originalPath),
-					zap.String("converted_path", convertedPath),
+					zap.String("new_path", req.URL.Path),
+					zap.String("target", firstInfo.URL),
+				)
+			} else if convDir == conversionNone && basePath != "" {
+				// 透传但 target 有自定义 base path：剥离客户端路径的 /v1 前缀，替换为 basePath。
+				// 例：client=/v1/chat/completions, basePath=/api/paas/v4
+				//   → /api/paas/v4/chat/completions
+				suffix := strings.TrimPrefix(req.URL.Path, "/v1")
+				if suffix == req.URL.Path {
+					// 路径不以 /v1 开头（罕见），直接拼接
+					req.URL.Path = basePath + req.URL.Path
+				} else {
+					req.URL.Path = basePath + suffix
+				}
+				sp.logger.Debug("request path rewritten for custom base path (passthrough)",
+					zap.String("request_id", reqID),
+					zap.String("original_path", originalPath),
+					zap.String("new_path", req.URL.Path),
 					zap.String("target", firstInfo.URL),
 				)
 			}
@@ -1946,16 +2112,13 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 			// 清理直连模式的 Anthropic 认证头（防止泄露给上游）
 			req.Header.Del("x-api-key")
 			apiKey := firstInfo.APIKey
-			if sp.apiKeyResolver != nil {
-				if k, ok := sp.apiKeyResolver(claims.UserID, claims.GroupID); ok {
-					apiKey = k
-					sp.logger.Debug("using dynamic api key for user",
-						zap.String("user_id", claims.UserID),
-					)
-				}
-			}
 			req.Header.Set("Authorization", "Bearer "+apiKey)
 			req.Header.Del("X-Forwarded-For")
+
+			// 将真实 session ID 透传给上游（自动生成的不透传）
+			if forwardSessionID != "" {
+				req.Header.Set("X-Session-ID", forwardSessionID)
+			}
 
 			sp.logger.Debug("proxying request to LLM",
 				zap.String("request_id", reqID),
@@ -1991,6 +2154,15 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 				zap.Bool("streaming", isStreaming),
 				zap.Int64("duration_ms", durationMs),
 			)
+			if resp.StatusCode >= 400 {
+				sp.logger.Warn("LLM target returned error",
+					zap.String("request_id", reqID),
+					zap.String("user_id", claims.UserID),
+					zap.String("target", firstInfo.URL),
+					zap.Int("status", resp.StatusCode),
+					zap.Int64("duration_ms", durationMs),
+				)
+			}
 
 			if dl != nil {
 				dl.Debug("← LLM response",
@@ -2013,7 +2185,6 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 						zap.Error(readErr),
 					)
 				}
-
 				// 协议転換：非流式響応処理
 				if readErr == nil && len(body) > 0 {
 					switch convDir {
@@ -2155,10 +2326,11 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 				zap.Int64("duration_ms", durationMs),
 				zap.Error(err),
 			)
-			// 记录失败请求（token 数为 0）
+			// 记录失败请求（token 数为 0，ErrorBody 存传输层错误信息）
 			errRecord := usageRecord
 			errRecord.StatusCode = http.StatusBadGateway
 			errRecord.DurationMs = durationMs
+			errRecord.ErrorBody = err.Error()
 			sp.writer.Record(errRecord)
 
 			writeJSONError(w, http.StatusBadGateway, "upstream_error", "upstream request failed")
@@ -2169,6 +2341,17 @@ func (sp *SProxy) serveProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	proxy.ServeHTTP(tw, r)
+
+	// streaming 中断兜底：若上游在 message_stop 之前断开连接（或提前关闭流），
+	// onComplete 回调不会触发，导致已解析的 input_tokens 丢失。
+	// FlushPartialTokens 检测该场景并将部分 token 写入 UsageWriter。
+	tw.FlushPartialTokens(tw.StatusCode(), time.Since(startTime).Milliseconds())
+
+	// 对话跟踪：流式响应完成后兜底 Flush（幂等，已由 FeedChunk 触发者不重复写入）。
+	// 防止上游流未发出 message_stop / [DONE] 时记录丢失。
+	if captureSession != nil {
+		captureSession.Flush()
+	}
 
 	// 请求完成后立即失效该用户的配额缓存。
 	// 此时用量记录已写入 UsageWriter channel（异步，5s 内刷入 DB）。
@@ -2215,17 +2398,6 @@ func extractModelFromBody(body []byte) string {
 		return req.Model
 	}
 	return ""
-}
-
-// extractMessagesFromBody 从请求 body 中提取 messages 字段，用于语义路由分类。
-func extractMessagesFromBody(body []byte) []corpus.Message {
-	var req struct {
-		Messages []corpus.Message `json:"messages"`
-	}
-	if err := json.Unmarshal(body, &req); err == nil {
-		return req.Messages
-	}
-	return nil
 }
 
 // ServeDirect 处理直连模式（API Key 认证）的代理请求。

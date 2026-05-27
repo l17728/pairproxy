@@ -134,7 +134,6 @@ func TestTrendsAPIE2E(t *testing.T) {
 		}
 		var result struct {
 			DailyTokens []db.DailyTokenRow `json:"daily_tokens"`
-			DailyCost   []db.DailyCostRow  `json:"daily_cost"`
 			TopUsers    []topUserEntry     `json:"top_users"`
 		}
 
@@ -145,11 +144,6 @@ func TestTrendsAPIE2E(t *testing.T) {
 		// Verify daily tokens data
 		if len(result.DailyTokens) == 0 {
 			t.Error("expected daily tokens data, got empty")
-		}
-
-		// Verify daily cost data
-		if len(result.DailyCost) == 0 {
-			t.Error("expected daily cost data, got empty")
 		}
 
 		// Verify top users data
@@ -202,7 +196,6 @@ func TestTrendsAPIE2E(t *testing.T) {
 		}
 		var result struct {
 			DailyTokens []db.DailyTokenRow `json:"daily_tokens"`
-			DailyCost   []db.DailyCostRow  `json:"daily_cost"`
 			TopUsers    []topUserEntry     `json:"top_users"`
 		}
 

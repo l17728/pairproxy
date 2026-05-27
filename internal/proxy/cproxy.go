@@ -101,7 +101,7 @@ func NewCProxy(
 			MaxIdleConnsPerHost:   10,
 			ForceAttemptHTTP2:     false, // s-proxy 不需要 HTTP/2
 		},
-		cacheDir:   cacheDir,
+		cacheDir: cacheDir,
 	}
 
 	// 尝试从本地缓存恢复路由表版本
@@ -590,6 +590,7 @@ func (cp *CProxy) pollRoutingTable(ctx context.Context) {
 		zap.Int64("version", cp.routingVersion.Load()),
 	)
 }
+
 // 使用互斥锁防止并发刷新（仅一个 goroutine 实际发出请求，其余等待后复用结果）。
 // HTTP 请求使用 5s context 超时（P2-4）。
 func (cp *CProxy) tryRefresh(ctx context.Context, tf *auth.TokenFile) (*auth.TokenFile, error) {
@@ -748,4 +749,3 @@ func (cp *CProxy) ApplyRoutingTable(rt *cluster.RoutingTable) {
 func (cp *CProxy) RoutingVersion() int64 {
 	return cp.routingVersion.Load()
 }
-

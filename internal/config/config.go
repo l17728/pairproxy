@@ -16,28 +16,28 @@ type CProxyConfig struct {
 
 // TelemetryConfig OpenTelemetry 分布式追踪配置
 type TelemetryConfig struct {
-	Enabled      bool    `yaml:"enabled"`        // 默认 false
-	OTLPEndpoint string  `yaml:"otlp_endpoint"`  // 如 "http://jaeger:4318"
-	OTLPProtocol string  `yaml:"otlp_protocol"`  // "grpc"（默认）| "http" | "stdout"
-	ServiceName  string  `yaml:"service_name"`   // 显示在追踪后端中的服务名
-	SamplingRate float64 `yaml:"sampling_rate"`  // 0.0~1.0，默认 1.0（全量采样）
+	Enabled      bool    `yaml:"enabled"`       // 默认 false
+	OTLPEndpoint string  `yaml:"otlp_endpoint"` // 如 "http://jaeger:4318"
+	OTLPProtocol string  `yaml:"otlp_protocol"` // "grpc"（默认）| "http" | "stdout"
+	ServiceName  string  `yaml:"service_name"`  // 显示在追踪后端中的服务名
+	SamplingRate float64 `yaml:"sampling_rate"` // 0.0~1.0，默认 1.0（全量采样）
 }
 
 // SProxyFullConfig s-proxy 完整配置
 type SProxyFullConfig struct {
-	Listen    ListenConfig    `yaml:"listen"`
-	LLM       LLMConfig       `yaml:"llm"`
-	Database  DatabaseConfig  `yaml:"database"`
-	Auth      SProxyAuth      `yaml:"auth"`
-	Admin     AdminConfig     `yaml:"admin"`
-	Cluster   ClusterConfig   `yaml:"cluster"`
-	Dashboard DashboardConfig `yaml:"dashboard"`
-	Pricing   PricingConfig   `yaml:"pricing"`
-	Telemetry TelemetryConfig `yaml:"telemetry"`
-	Corpus         CorpusConfig         `yaml:"corpus"`
-	Track          TrackConfig          `yaml:"track"`
-	SemanticRouter SemanticRouterConfig `yaml:"semantic_router"`
-	Log            LogConfig            `yaml:"log"`
+	Listen      ListenConfig      `yaml:"listen"`
+	LLM         LLMConfig         `yaml:"llm"`
+	Database    DatabaseConfig    `yaml:"database"`
+	Auth        SProxyAuth        `yaml:"auth"`
+	Admin       AdminConfig       `yaml:"admin"`
+	Cluster     ClusterConfig     `yaml:"cluster"`
+	Dashboard   DashboardConfig   `yaml:"dashboard"`
+	Pricing     PricingConfig     `yaml:"pricing"`
+	Telemetry   TelemetryConfig   `yaml:"telemetry"`
+	Corpus      CorpusConfig      `yaml:"corpus"`
+	Track       TrackConfig       `yaml:"track"`
+	ModelRouter ModelRouterConfig `yaml:"model_router"`
+	Log         LogConfig         `yaml:"log"`
 }
 
 // CorpusConfig 训练语料采集配置（用于模型蒸馏）
@@ -60,20 +60,23 @@ type TrackConfig struct {
 	Dir string `yaml:"dir"`
 }
 
-// SemanticRouterConfig 语义路由模块配置
-type SemanticRouterConfig struct {
-	Enabled           bool                  `yaml:"enabled"`            // 默认 false
-	ClassifierTimeout time.Duration         `yaml:"classifier_timeout"` // 分类器超时，默认 3s
-	ClassifierModel   string                `yaml:"classifier_model"`   // 分类器模型名，默认 "claude-haiku-3-5"
-	Routes            []SemanticRouteConfig `yaml:"routes"`             // YAML 默认规则（DB 规则优先）
+// ModelRouterConfig 分组多绑定场景下的 MaaS 模型路由器配置（v3.1.0+）。
+// 仅当分组绑定了 2 个或以上 LLM target 时生效；用户级绑定始终直接使用绑定目标。
+type ModelRouterConfig struct {
+	Enabled         bool          `yaml:"enabled"`           // 默认 false
+	URL             string        `yaml:"url"`               // 路由器端点，如 "https://api.router.com/v1/models/router"
+	Timeout         time.Duration `yaml:"timeout"`           // 调用 Router HTTP API 的超时，默认 3s
+	SessionHistoryN int           `yaml:"session_history_n"` // 每个 session 保留的最近模型历史条数，默认 5
+	Redis           RedisConfig   `yaml:"redis"`             // Redis 缓存配置；Addr 为空时禁用缓存
 }
 
-// SemanticRouteConfig 单条语义路由规则（来自 YAML）
-type SemanticRouteConfig struct {
-	Name        string   `yaml:"name"`
-	Description string   `yaml:"description"`
-	TargetURLs  []string `yaml:"target_urls"`
-	Priority    int      `yaml:"priority"`
+// RedisConfig model_router session 缓存所用的 Redis 连接配置。
+// Addr 为空时不启用缓存，每次请求均调用 Router API。
+type RedisConfig struct {
+	Addr     string        `yaml:"addr"`     // "host:port"，如 "localhost:6379"；空 = 禁用缓存
+	Password string        `yaml:"password"` // 支持 ${ENV_VAR}
+	DB       int           `yaml:"db"`       // Redis 库编号，默认 0
+	TTL      time.Duration `yaml:"ttl"`      // session key 有效期，默认 24h
 }
 
 // PricingConfig 模型定价配置（用于估算费用）
@@ -125,10 +128,10 @@ type SProxySect struct {
 	RequestTimeout      time.Duration `yaml:"request_timeout"`       // 默认 300s
 
 	// 健康检查增强（改进项3）
-	HealthCheckTimeout         time.Duration `yaml:"health_check_timeout"`          // 单次检查超时，默认 3s
-	HealthCheckFailureThreshold int          `yaml:"health_check_failure_threshold"` // 连续失败阈值，默认 3
-	HealthCheckRecoveryDelay   time.Duration `yaml:"health_check_recovery_delay"`   // 熔断后自动恢复延迟，默认 60s
-	PassiveFailureThreshold    int           `yaml:"passive_failure_threshold"`     // 被动熔断阈值，默认 3
+	HealthCheckTimeout          time.Duration `yaml:"health_check_timeout"`           // 单次检查超时，默认 3s
+	HealthCheckFailureThreshold int           `yaml:"health_check_failure_threshold"` // 连续失败阈值，默认 3
+	HealthCheckRecoveryDelay    time.Duration `yaml:"health_check_recovery_delay"`    // 熔断后自动恢复延迟，默认 60s
+	PassiveFailureThreshold     int           `yaml:"passive_failure_threshold"`      // 被动熔断阈值，默认 3
 
 	// 路由表主动发现（改进项4）
 	SharedSecret        string        `yaml:"shared_secret"`         // 集群内部 API 密钥（路由轮询用）
@@ -148,27 +151,28 @@ type CProxyAuth struct {
 // LLMConfig s-proxy 上游 LLM 配置
 type LLMConfig struct {
 	LBStrategy     string        `yaml:"lb_strategy"`      // "round_robin"
-	RequestTimeout time.Duration `yaml:"request_timeout"`  // 默认 300s
-	MaxRetries     int           `yaml:"max_retries"`      // 上游失败时最大重试次数（不含首次），默认 2；0=不重试
+	RequestTimeout Duration      `yaml:"request_timeout"`  // 等待 LLM 响应头的超时（不含流式响应体），默认 300s；-1=禁用；支持裸整数（秒）
+	MaxRetries     int           `yaml:"max_retries"`      // 上游失败时最大重试次数（不含首次），默认 2（0=默认）；-1=禁用重试
 	RecoveryDelay  time.Duration `yaml:"recovery_delay"`   // 熔断后自动恢复延迟，默认 60s；0=禁用自动恢复
-	RetryOnStatus  []int         `yaml:"retry_on_status"` // 触发 try-next 的额外 HTTP 状态码（如 [429]），默认空=仅重试5xx/连接错误
+	FailThreshold  int           `yaml:"fail_threshold"`   // 被动熔断连续失败阈值，默认 3；达到后将节点移出调度池
+	RetryOnStatus  []int         `yaml:"retry_on_status"`  // 触发 try-next 的额外 HTTP 状态码（如 [429]），默认空=仅重试5xx/连接错误
 	Targets        []LLMTarget   `yaml:"targets"`
 }
 
 // LLMTarget 单个 LLM 上游节点
 type LLMTarget struct {
-	ID              string            `yaml:"-"`                 // 运行时 UUID（来自 DB，不在 YAML 中）
-	URL             string            `yaml:"url"`               // e.g. "https://api.anthropic.com"
-	APIKey          string            `yaml:"api_key"`           // 支持 ${ENV_VAR} 替换
-	Weight          int               `yaml:"weight"`            // 默认 1
-	Provider        string            `yaml:"provider"`          // "anthropic"（默认）| "openai" | "ollama"
-	Name            string            `yaml:"name"`              // 可选显示名称（空则使用 URL）
-	HealthCheckPath string            `yaml:"health_check_path"` // 主动健康检查路径，空=仅被动检查
-	ModelMapping    map[string]string `yaml:"model_mapping,omitempty"` // Anthropic 模型名 → Ollama/OpenAI 模型名映射；"*" 匹配所有未命中的模型
+	ID              string            `yaml:"-"`                          // 运行时 UUID（来自 DB，不在 YAML 中）
+	URL             string            `yaml:"url"`                        // e.g. "https://api.anthropic.com"
+	APIKey          string            `yaml:"api_key"`                    // 支持 ${ENV_VAR} 替换
+	Weight          int               `yaml:"weight"`                     // 默认 1
+	Provider        string            `yaml:"provider"`                   // "anthropic"（默认）| "openai" | "ollama"
+	Name            string            `yaml:"name"`                       // 可选显示名称（空则使用 URL）
+	HealthCheckPath string            `yaml:"health_check_path"`          // 主动健康检查路径，空=仅被动检查
+	ModelMapping    map[string]string `yaml:"model_mapping,omitempty"`    // Anthropic 模型名 → Ollama/OpenAI 模型名映射；"*" 匹配所有未命中的模型
 	SupportedModels []string          `yaml:"supported_models,omitempty"` // 该 target 支持的模型名列表（支持通配符，空表示支持所有）
-	AutoModel       string            `yaml:"auto_model,omitempty"` // auto 模式下使用的模型名（空表示降级或透传）
+	AutoModel       string            `yaml:"auto_model,omitempty"`       // auto 模式下使用的模型名（空表示降级或透传）
 	// 运行时标志（不序列化）
-	APIKeyError     bool              `yaml:"-"` // true = API Key 解析失败；SyncLLMTargets 会将该 target 强制标记为不健康
+	APIKeyError bool `yaml:"-"` // true = API Key 解析失败；SyncLLMTargets 会将该 target 强制标记为不健康
 }
 
 // DatabaseConfig 数据库配置（支持 SQLite 和 PostgreSQL）
@@ -226,8 +230,8 @@ type SProxyAuth struct {
 
 // AdminConfig s-proxy 管理员配置
 type AdminConfig struct {
-	PasswordHash      string `yaml:"password_hash"`       // bcrypt hash，支持 ${ENV_VAR}
-	KeyEncryptionKey  string `yaml:"key_encryption_key"`  // AES-256-GCM 密钥（用于加密 API Key），支持 ${ENV_VAR}
+	PasswordHash     string `yaml:"password_hash"`      // bcrypt hash，支持 ${ENV_VAR}
+	KeyEncryptionKey string `yaml:"key_encryption_key"` // AES-256-GCM 密钥（用于加密 API Key），支持 ${ENV_VAR}
 }
 
 // WebhookTarget 单个 Webhook 告警目标
@@ -239,7 +243,7 @@ type WebhookTarget struct {
 
 // UsageBufferConfig worker 用量缓冲配置（改进项2）
 type UsageBufferConfig struct {
-	Enabled            bool `yaml:"enabled"`              // 默认 true
+	Enabled            bool `yaml:"enabled"`               // 默认 true
 	MaxRecordsPerBatch int  `yaml:"max_records_per_batch"` // 每批最多上报条数，默认 1000
 }
 
@@ -263,10 +267,20 @@ type DashboardConfig struct {
 	Enabled bool `yaml:"enabled"` // 默认 true（primary 节点）
 }
 
+// LogRotateConfig 日志轮转配置（debug_file / model_router_file 共用）
+type LogRotateConfig struct {
+	MaxSizeMB  int  `yaml:"max_size_mb"`  // 单文件最大 MB，超出后轮转；默认 100
+	MaxBackups int  `yaml:"max_backups"`  // 保留归档文件数；默认 7
+	MaxAgeDays int  `yaml:"max_age_days"` // 归档保留天数；默认 30
+	Compress   bool `yaml:"compress"`     // 归档是否 gzip 压缩；默认 true
+}
+
 // LogConfig 日志配置
 type LogConfig struct {
-	Level    string `yaml:"level"`      // "debug" | "info" | "warn" | "error"，默认 "info"
-	DebugFile string `yaml:"debug_file"` // debug 日志文件路径，默认 "debug.log"
+	Level           string          `yaml:"level"`             // "debug" | "info" | "warn" | "error"，默认 "info"
+	DebugFile       string          `yaml:"debug_file"`        // 转发内容 debug 日志文件路径（留空则禁用）
+	ModelRouterFile string          `yaml:"model_router_file"` // model_router 调用日志文件路径（留空则禁用）
+	Rotate          LogRotateConfig `yaml:"rotate"`            // 日志轮转参数（两个文件共用）
 }
 
 // Addr 返回监听地址字符串，如 "127.0.0.1:8080"

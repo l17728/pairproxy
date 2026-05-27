@@ -16,9 +16,9 @@ import (
 )
 
 const (
-	defaultSyncInterval    = 30 * time.Second
-	configSnapshotPath     = "/api/internal/config-snapshot"
-	configSyncHTTPTimeout  = 15 * time.Second
+	defaultSyncInterval   = 30 * time.Second
+	configSnapshotPath    = "/api/internal/config-snapshot"
+	configSyncHTTPTimeout = 15 * time.Second
 )
 
 // ConfigSyncerConfig 配置同步器的启动配置。
@@ -213,7 +213,8 @@ func (s *ConfigSyncer) upsertSnapshot(snap ConfigSnapshot) error {
 				Columns: []clause.Column{{Name: "id"}},
 				DoUpdates: clause.AssignmentColumns([]string{
 					"name", "daily_token_limit", "monthly_token_limit",
-					"requests_per_minute", "max_tokens_per_request", "concurrent_requests",
+					"requests_per_minute", "requests_per_15_minutes", "requests_per_30_minutes", "requests_per_hour",
+					"max_tokens_per_request", "concurrent_requests",
 				}),
 			}).CreateInBatches(snap.Groups, 200).Error; err != nil {
 				return fmt.Errorf("upsert groups: %w", err)

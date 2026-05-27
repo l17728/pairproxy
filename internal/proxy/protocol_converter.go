@@ -40,8 +40,10 @@ const (
 )
 
 // detectConversionDirection 根据请求路径和目标 provider 判断协议转换方向。
+// 注意：仅匹配 /v1/messages 本身（含 query string），/v1/messages/count_tokens 等子路径不触发 AtoO，
+// 因为 OpenAI/Ollama 侧没有对等端点，强制转换只会产生错误请求。
 func detectConversionDirection(requestPath, targetProvider string) conversionDirection {
-	if strings.HasPrefix(requestPath, "/v1/messages") &&
+	if (requestPath == "/v1/messages" || strings.HasPrefix(requestPath, "/v1/messages?")) &&
 		(targetProvider == "openai" || targetProvider == "ollama") {
 		return conversionAtoO
 	}
@@ -696,10 +698,10 @@ type OpenAIToAnthropicStreamConverter struct {
 	textBlockOpen bool
 
 	// 工具调用块状态
-	toolBuffers    map[int]*toolCallBuffer
+	toolBuffers     map[int]*toolCallBuffer
 	toolBlockIdxMap map[int]int
-	toolOrder      []int
-	openToolBlocks map[int]bool
+	toolOrder       []int
+	openToolBlocks  map[int]bool
 
 	// 流末信息（在收到 [DONE] 时使用）
 	finishReason     string
@@ -710,7 +712,7 @@ type OpenAIToAnthropicStreamConverter struct {
 	done bool
 
 	// nonStreaming passthrough
-	firstWrite  bool
+	firstWrite   bool
 	nonStreaming bool
 }
 
@@ -1443,6 +1445,31 @@ func convertOpenAIAssistantMessage(msg map[string]interface{}) map[string]interf
 	return map[string]interface{}{"role": "assistant", "content": blocks}
 }
 
+// applyModelToOpenAIBody 在已转换的 OpenAI body 中更新 model 字段（含 mapping）。
+// 用于 model_router 预转换路径：body 已由 convertAnthropicToOpenAIRequest（nil mapping）转换，
+// 选定 target 后只需补一次轻量的 model mapping 更新，无需重新全量转换。
+// 若 mapping 为空或 requestedModel 为空，直接返回 body 不做任何操作。
+// 若 mapping 后 model 名未发生变化，同样直接返回，避免无意义的 marshal。
+func applyModelToOpenAIBody(body []byte, requestedModel string, mapping map[string]string) []byte {
+	if len(mapping) == 0 || requestedModel == "" {
+		return body
+	}
+	mapped := mapModelName(requestedModel, mapping)
+	if mapped == requestedModel {
+		return body // mapping 无变化，直接复用
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body // 解析失败，fail-open 返回原 body
+	}
+	m["model"] = mapped
+	result, err := json.Marshal(m)
+	if err != nil {
+		return body // marshal 失败，fail-open 返回原 body
+	}
+	return result
+}
+
 // convertAnthropicToOpenAIResponseReverse 将 Anthropic Messages API 响应转换为 OpenAI Chat Completions 格式。
 // requestedModel 为原始 OpenAI 请求的 model 名，非空时用于填充响应的 model 字段。
 func convertAnthropicToOpenAIResponseReverse(body []byte, logger *zap.Logger, reqID string, requestedModel string) ([]byte, error) {
@@ -1654,7 +1681,7 @@ type AnthropicToOpenAIStreamConverter struct {
 	// nonStreaming 为 true 时表示首次 Write 判断为非 SSE 数据。
 	// 为 true 时后续 Write 直接透传。
 	firstWrite   bool
-	nonStreaming  bool
+	nonStreaming bool
 }
 
 // NewAnthropicToOpenAIStreamConverter 创建 AnthropicToOpenAIStreamConverter。

@@ -219,13 +219,16 @@ func Migrate(logger *zap.Logger, db *gorm.DB) error {
 	logger = logger.Named("migrate")
 	logger.Info("running database migrations")
 
-	// 数据迁移前置：llm_bindings.target_id 和 group_target_set_members.target_id
-	// 在旧版本中不存在（旧版使用 target_url 字段）。
+	// 数据迁移前置：llm_bindings.target_id 在旧版本中不存在（旧版使用 target_url 字段）。
 	// AutoMigrate 向已有行的表添加 NOT NULL 列时会直接报错，必须先以 nullable 形式预建列，
 	// AutoMigrate 发现列已存在时会跳过，不再尝试施加 NOT NULL 约束。
-	// 回填逻辑（migrateBindingTargetID / migrateGroupTargetSetMemberTargetID）在后面执行。
+	// 回填逻辑（migrateBindingTargetID）在后面执行。
 	preMigrateNullableColumn(logger, db, "llm_bindings", "target_id")
-	preMigrateNullableColumn(logger, db, "group_target_set_members", "target_id")
+
+	// v3.1.0 迁移：将 idx_llmb_group_target 从单列 UNIQUE(group_id) 改为复合
+	// UNIQUE(group_id, target_id)，以支持分组 1:N 绑定。
+	// AutoMigrate 不会更改已有索引，因此必须先手动删除旧索引，再由 AutoMigrate 重建。
+	dropOldGroupBindingIndex(logger, db)
 
 	// 数据清理：users.external_id 旧版为 string（空字符串默认），新版为 *string（NULL 默认）。
 	// AutoMigrate 将列改为 nullable 但不会把 "" 转成 NULL，导致
@@ -253,14 +256,10 @@ func Migrate(logger *zap.Logger, db *gorm.DB) error {
 		&UsageLog{},
 		&Peer{},
 		&AuditLog{},         // P2-3: 管理操作审计日志
-		&APIKey{},           // F-5: 多 API Key 管理
-		&APIKeyAssignment{}, // F-5: API Key 分配
-		&LLMBinding{},       // LLM 绑定管理
+		&APIKey{},       // F-5: 多 API Key 管理
+		&LLMBinding{},   // LLM 绑定管理
 		&LLMTarget{},        // LLM 目标动态管理
-		&SemanticRoute{},    // 语义路由规则
-		&GroupTargetSet{},   // Group-Target Set 绑定
-		&GroupTargetSetMember{}, // Target Set 成员
-		&TargetAlert{},      // Target 告警事件
+		&ModelInfo{},        // 模型信息表（model_router 路由决策用）
 	}
 
 	for _, model := range models {
@@ -310,14 +309,8 @@ func Migrate(logger *zap.Logger, db *gorm.DB) error {
 		logger.Warn("llm_bindings target_id migration failed (non-fatal)", zap.Error(err))
 	}
 
-	// 数据迁移：group_target_set_members TargetURL → TargetID
-	if err := migrateGroupTargetSetMemberTargetID(logger, db); err != nil {
-		logger.Warn("group_target_set_members target_id migration failed (non-fatal)", zap.Error(err))
-	}
-
 	// 回填完成后补 NOT NULL 约束（预建列时为 nullable，数据填充后恢复意图约束）
 	postMigrateSetNotNull(logger, db, "llm_bindings", "target_id")
-	postMigrateSetNotNull(logger, db, "group_target_set_members", "target_id")
 
 	logger.Info("database migrations completed")
 	return nil
@@ -434,62 +427,6 @@ func migrateBindingTargetID(logger *zap.Logger, db *gorm.DB) error {
 	return nil
 }
 
-// migrateGroupTargetSetMemberTargetID 将 group_target_set_members 中的 target_url 迁移到 target_id。
-func migrateGroupTargetSetMemberTargetID(logger *zap.Logger, db *gorm.DB) error {
-	// 检查旧列 target_url 是否存在
-	var hasTargetURL bool
-	switch DriverName(db) {
-	case "sqlite":
-		var cols []struct{ Name string }
-		if err := db.Raw("PRAGMA table_info(group_target_set_members)").Scan(&cols).Error; err != nil {
-			return fmt.Errorf("check group_target_set_members columns: %w", err)
-		}
-		for _, c := range cols {
-			if c.Name == "target_url" {
-				hasTargetURL = true
-				break
-			}
-		}
-	case "postgres":
-		var count int64
-		q := `SELECT COUNT(*) FROM information_schema.columns
-			WHERE table_name='group_target_set_members' AND column_name='target_url'`
-		if err := db.Raw(q).Scan(&count).Error; err != nil {
-			return fmt.Errorf("check group_target_set_members columns (pg): %w", err)
-		}
-		hasTargetURL = count > 0
-	}
-	if !hasTargetURL {
-		logger.Debug("group_target_set_members: no target_url column, migration skipped")
-		return nil
-	}
-
-	updateSQL := `UPDATE group_target_set_members
-		SET target_id = (SELECT id FROM llm_targets WHERE url = group_target_set_members.target_url LIMIT 1)
-		WHERE (target_id IS NULL OR target_id = '') AND target_url != ''`
-	if DriverName(db) == "postgres" {
-		updateSQL = `UPDATE group_target_set_members
-		SET target_id = lt.id
-		FROM llm_targets lt
-		WHERE lt.url = group_target_set_members.target_url
-		  AND (group_target_set_members.target_id IS NULL OR group_target_set_members.target_id = '')`
-	}
-	if err := db.Exec(updateSQL).Error; err != nil {
-		return fmt.Errorf("populate group_target_set_members.target_id: %w", err)
-	}
-
-	deleteSQL := `DELETE FROM group_target_set_members WHERE target_id IS NULL OR target_id = ''`
-	if res := db.Exec(deleteSQL); res.Error != nil {
-		return fmt.Errorf("delete orphan group_target_set_members: %w", res.Error)
-	} else if res.RowsAffected > 0 {
-		logger.Warn("deleted orphan group_target_set_members (no matching target)",
-			zap.Int64("count", res.RowsAffected),
-		)
-	}
-
-	logger.Info("group_target_set_members target_id migration completed")
-	return nil
-}
 
 // deduplicateLLMTargetsByURL 合并同 URL 的多条 llm_targets 记录。
 // 对每组同 URL 的记录，保留 created_at 最早的一条（保持原有绑定稳定），
@@ -552,6 +489,19 @@ func deduplicateLLMTargetsByURL(logger *zap.Logger, db *gorm.DB) error {
 			zap.Strings("removed_ids", removeIDs))
 	}
 	return nil
+}
+
+// dropOldGroupBindingIndex 删除旧的单列 UNIQUE(group_id) 索引 idx_llmb_group_target。
+// v3.1.0 将其升级为复合 UNIQUE(group_id, target_id)，以支持分组 1:N 绑定。
+// AutoMigrate 不会自动替换已有同名索引，因此必须在 AutoMigrate 前手动删除。
+func dropOldGroupBindingIndex(logger *zap.Logger, db *gorm.DB) {
+	// 若表不存在（全新安装）或索引已删除，DROP 会静默跳过（IF EXISTS）
+	sql := `DROP INDEX IF EXISTS idx_llmb_group_target`
+	if err := db.Exec(sql).Error; err != nil {
+		logger.Debug("drop old group binding index (non-fatal)", zap.Error(err))
+	} else {
+		logger.Debug("dropped old single-column group binding index idx_llmb_group_target (will be recreated as composite)")
+	}
 }
 
 // dropLLMTargetCompositeIndex 删除废弃的 (url, api_key_id) 复合索引。

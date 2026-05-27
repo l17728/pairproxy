@@ -87,8 +87,11 @@ func TestCoverage_RoundTrip_5xx_NoPickNext(t *testing.T) {
 	if resp != nil {
 		resp.Body.Close()
 	}
-	if err == nil {
-		t.Fatal("expected error for 5xx with no PickNext, got nil")
+	if err != nil {
+		t.Fatalf("expected 5xx response to be transparently returned, got error: %v", err)
+	}
+	if resp == nil || resp.StatusCode != 503 {
+		t.Fatalf("expected status 503, got %v", resp)
 	}
 }
 
@@ -335,8 +338,11 @@ func TestCoverage_RoundTrip_All5xx_Exhausted(t *testing.T) {
 	if resp != nil {
 		resp.Body.Close()
 	}
-	if err == nil {
-		t.Fatal("expected error when all targets exhausted with 5xx")
+	if err != nil {
+		t.Fatalf("expected last 5xx response to be transparently returned, got error: %v", err)
+	}
+	if resp == nil || resp.StatusCode != 502 {
+		t.Fatalf("expected status 502 from last exhausted target, got %v", resp)
 	}
 }
 

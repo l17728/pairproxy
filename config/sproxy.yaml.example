@@ -40,7 +40,9 @@ llm:
   # 可选：round_robin（默认）| random | weighted
   lb_strategy: "round_robin"
 
-  # request_timeout: 转发给 LLM 的请求超时（含流式响应）
+  # request_timeout: 等待 LLM 响应头的超时（不含流式响应体传输时间）
+  # 默认 300s；-1=禁用超时（谨慎使用，可能导致连接永久挂起）
+  # 支持：带单位字符串（300s、10m、1h）或裸整数（按秒，如 600）；-1 禁用
   request_timeout: 300s
 
   # targets: 上游 LLM 节点列表
@@ -88,6 +90,21 @@ llm:
   #   vLLM / sglang        → 自动发现 GET /health（无需配置 key）
   #   Ollama               → 自动发现 GET /health
   # ─────────────────────────────────────────────────────────────────────────
+
+  # max_retries: 上游返回 5xx / 连接错误时切换 target 重试的次数（不含首次，默认 2）
+  # 0 = 使用默认值 2；-1 = 禁用重试（首次失败直接报错，不切换 target）
+  # max_retries: 2
+
+  # fail_threshold: 被动熔断的连续失败阈值（默认 3）
+  # 上游连续返回 5xx / 连接错误达到该次数后，将节点移出调度池。
+  # 调大可容忍更多偶发错误；调小可更快隔离故障节点。
+  # fail_threshold: 3
+
+  # recovery_delay: 节点被熔断后，多久自动尝试恢复（默认 60s；0=禁用自动恢复）
+  # 有主动健康检查配置时：等待后发起探活，探活成功才重新加入池。
+  # 无主动健康检查时：等待后直接放行（半开模式），靠下一次真实请求验证。
+  # recovery_delay: 60s
+
   targets:
     - url: "https://api.anthropic.com"
       api_key: "${ANTHROPIC_API_KEY_1}"   # 从环境变量读取，不要明文写 key
@@ -374,8 +391,20 @@ log:
   # debug_file: 双向转发内容 debug 日志文件路径（可选，默认不启用）
   # 启用后，每条请求的四个方向（← 客户端请求、→ LLM 请求、← LLM 响应、← LLM chunk）
   # 均以 DEBUG 级别写入该文件，敏感 header 自动过滤，body 截断至 64 KB。
-  # 支持 SIGHUP 热重载：修改此行后发送 kill -HUP <pid> 立即生效，无需重启。
+  # 支持 SIGHUP 热重载；与 model_router_file 相互独立，可单独启用。
   # debug_file: "/var/log/pairproxy/debug.log"
+
+  # model_router_file: model_router API 调用日志文件路径（可选，默认不启用）
+  # 记录每次调用 MaaS Router API 的完整 HTTP 请求（方法、URL、headers、body）。
+  # 支持 SIGHUP 热重载；与 debug_file 相互独立，可单独启用。
+  # model_router_file: "/var/log/pairproxy/model_router.log"
+
+  # rotate: 日志轮转配置（debug_file / model_router_file 共用，两者均适用）
+  # rotate:
+  #   max_size_mb: 100    # 单文件超过此大小后轮转（MB），默认 100
+  #   max_backups: 7      # 保留最近 N 个归档文件，默认 7
+  #   max_age_days: 30    # 归档文件最多保留天数，默认 30
+  #   compress: true      # 归档是否 gzip 压缩，默认 true
 
 
 # ------------------------------------------------------------------------------
@@ -383,8 +412,29 @@ log:
 # ------------------------------------------------------------------------------
 # track:
 #   dir: "./track"
-#   # 对话跟踪数据的根目录。
-#   # SQLite 模式：默认为 <database.path 所在目录>/track，无需配置。
-#   # Peer/PostgreSQL 模式：database.path 为空，默认退化为 ./track（相对于进程工作目录）。
-#   # 建议在 peer 模式下显式设置绝对路径，避免因工作目录不同导致路径不一致：
+#   # 对话跟踪数据的根目录，与数据库路径无关，独立配置。
+#   # 默认值：./track（相对于 sproxy 进程工作目录）。
+#   # Peer/PostgreSQL 模式下，若需要 admin 命令对所有节点生效、所有节点的对话记录
+#   # 汇聚到同一目录，必须将所有节点的 track.dir 配置为相同的共享存储绝对路径
+#   # （例如 NFS 挂载点），在任意节点执行 admin track 命令即可对所有节点生效：
 #   #   dir: "/data/pairproxy/track"
+
+
+# ------------------------------------------------------------------------------
+# model_router — 分组多绑定场景的 MaaS 模型路由器（v3.1.0+）
+# ------------------------------------------------------------------------------
+# 当一个用户组绑定了 2 个或以上 LLM target，且用户无个人绑定时，
+# sproxy 会调用此路由器接口，根据对话内容自动选取最优模型（及对应 target）。
+# 用户级绑定（1:1）不受影响，始终直接使用绑定目标。
+# 若路由器调用失败（超时/错误），fallback 到分组的第一条绑定（按创建时间升序）。
+#
+# model_router:
+#   enabled: false
+#   url: "https://api.your-router.com/v1/models/router"
+#   timeout: 3s           # 调用 Router HTTP API 的超时，默认 3s
+#   session_history_n: 5  # 每个 session 保留的最近模型历史条数，默认 5；达到上限后直接复用最近模型
+#   redis:
+#     addr: "localhost:6379"   # 为空时禁用缓存，每次请求均调用 Router API
+#     password: ""             # 支持 ${ENV_VAR}
+#     db: 0
+#     ttl: 24h                 # session 历史 key 的有效期，默认 24h

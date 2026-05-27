@@ -411,7 +411,7 @@ admin:
 		var buf bytes.Buffer
 		fmt.Fprintf(&buf, "Listen:             %s\n", cfg.Listen.Addr())
 		fmt.Fprintf(&buf, "S-Proxy primary:    %s\n", cfg.Cluster.SelfAddr)
-		fmt.Fprintf(&buf, "Health check:       every %s\n", cfg.LLM.RequestTimeout)
+		fmt.Fprintf(&buf, "Health check:       every %s\n", cfg.LLM.RequestTimeout.D())
 		fmt.Fprintf(&buf, "Log level:          %s\n", cfg.Log.Level)
 
 		output := buf.String()

@@ -33,13 +33,13 @@ func (e *ExceededError) Error() string {
 //  2. 每月 token 配额（缓存优先）
 //  3. 每分钟请求次数（内存滑动窗口）
 type Checker struct {
-	logger             *zap.Logger
-	userRepo           *db.UserRepo
-	usageRepo          *db.UsageRepo
-	cache              *QuotaCache
-	rateLimiter        *RateLimiter        // 可选，nil 时跳过速率限制检查
-	notifier           *alert.Notifier     // 可选，nil 时不发告警
-	concurrentCounter  *ConcurrentCounter  // 并发请求计数器
+	logger            *zap.Logger
+	userRepo          *db.UserRepo
+	usageRepo         *db.UsageRepo
+	cache             *QuotaCache
+	rateLimiter       *RateLimiter       // 可选，nil 时跳过速率限制检查
+	notifier          *alert.Notifier    // 可选，nil 时不发告警
+	concurrentCounter *ConcurrentCounter // 并发请求计数器
 }
 
 // NewChecker 创建 Checker。
@@ -68,9 +68,8 @@ func (c *Checker) SetNotifier(n *alert.Notifier) {
 // 返回 nil 表示未超限；返回 *ExceededError 表示超限。
 // 其他错误为内部错误（应放行请求，避免误杀）。
 func (c *Checker) Check(ctx context.Context, userID string) error {
-	_, span := otel.Tracer("pairproxy.quota").Start(ctx, "pairproxy.quota.check",
-		// attribute.String("user_id", userID) 放在结果后设置
-	)
+	_, span := otel.Tracer("pairproxy.quota").Start(ctx, "pairproxy.quota.check")// attribute.String("user_id", userID) 放在结果后设置
+
 	defer span.End()
 	span.SetAttributes(attribute.String("user_id", userID))
 
@@ -102,7 +101,9 @@ func (c *Checker) Check(ctx context.Context, userID string) error {
 	}
 
 	group := user.Group
-	if group.DailyTokenLimit == nil && group.MonthlyTokenLimit == nil && group.RequestsPerMinute == nil {
+	if group.DailyTokenLimit == nil && group.MonthlyTokenLimit == nil &&
+		group.RequestsPerMinute == nil && group.RequestsPer15Minutes == nil &&
+		group.RequestsPer30Minutes == nil && group.RequestsPerHour == nil {
 		c.logger.Debug("quota check: no limits set, unlimited",
 			zap.String("user_id", userID),
 			zap.String("group", group.Name),
@@ -111,27 +112,41 @@ func (c *Checker) Check(ctx context.Context, userID string) error {
 		return nil
 	}
 
-	// 1. 优先检查 RPM（不依赖 DB，不受 DB 错误影响）
-	// RPM 必须先于 token 配额检查，否则当 DB 故障 fail-open 时 RPM 也会被跳过。
-	if group.RequestsPerMinute != nil && c.rateLimiter != nil {
-		rpm := *group.RequestsPerMinute
-		if rpm > 0 {
-			if allowed, count := c.rateLimiter.Allow(userID, rpm); !allowed {
-				resetAt := c.rateLimiter.ResetAt(userID)
+	// 1. 优先检查频率限制（不依赖 DB，不受 DB 错误影响）
+	// 必须先于 token 配额检查，否则当 DB 故障 fail-open 时频率限制也会被跳过。
+	if c.rateLimiter != nil {
+		var limits []WindowLimit
+		if group.RequestsPerMinute != nil && *group.RequestsPerMinute > 0 {
+			limits = append(limits, WindowLimit{Window: time.Minute, Limit: *group.RequestsPerMinute})
+		}
+		if group.RequestsPer15Minutes != nil && *group.RequestsPer15Minutes > 0 {
+			limits = append(limits, WindowLimit{Window: 15 * time.Minute, Limit: *group.RequestsPer15Minutes})
+		}
+		if group.RequestsPer30Minutes != nil && *group.RequestsPer30Minutes > 0 {
+			limits = append(limits, WindowLimit{Window: 30 * time.Minute, Limit: *group.RequestsPer30Minutes})
+		}
+		if group.RequestsPerHour != nil && *group.RequestsPerHour > 0 {
+			limits = append(limits, WindowLimit{Window: time.Hour, Limit: *group.RequestsPerHour})
+		}
+		if len(limits) > 0 {
+			if allowed, exceeded, count, resetAt := c.rateLimiter.AllowWindows(userID, limits); !allowed {
+				kind := rateLimitKind(exceeded.Window)
 				c.logger.Warn("request rate limit exceeded",
 					zap.String("user_id", userID),
+					zap.Duration("window", exceeded.Window),
 					zap.Int("count", count),
-					zap.Int("limit", rpm),
+					zap.Int("limit", exceeded.Limit),
 				)
 				c.notify(alert.EventRateLimited, "request rate limit exceeded", userID, map[string]string{
-					"count": fmt.Sprintf("%d", count),
-					"limit": fmt.Sprintf("%d", rpm),
+					"count":  fmt.Sprintf("%d", count),
+					"limit":  fmt.Sprintf("%d", exceeded.Limit),
+					"window": exceeded.Window.String(),
 				})
-				span.SetAttributes(attribute.String("result", "exceeded"), attribute.String("kind", "rate_limit"))
+				span.SetAttributes(attribute.String("result", "exceeded"), attribute.String("kind", kind))
 				return &ExceededError{
-					Kind:    "rate_limit",
+					Kind:    kind,
 					Current: int64(count),
-					Limit:   int64(rpm),
+					Limit:   int64(exceeded.Limit),
 					ResetAt: resetAt,
 				}
 			}
@@ -294,7 +309,23 @@ func (c *Checker) InvalidateCache(userID string) {
 // PurgeRateLimiter 清理速率限制器中的过期窗口（供后台定时器调用）。
 func (c *Checker) PurgeRateLimiter() {
 	if c.rateLimiter != nil {
-		c.rateLimiter.Purge()
+		c.rateLimiter.Purge(time.Hour) // 保留最长窗口（1小时）内的时间戳
+	}
+}
+
+// rateLimitKind 将窗口时长映射为 ExceededError.Kind 字符串。
+func rateLimitKind(window time.Duration) string {
+	switch window {
+	case time.Minute:
+		return "rate_limit_1m"
+	case 15 * time.Minute:
+		return "rate_limit_15m"
+	case 30 * time.Minute:
+		return "rate_limit_30m"
+	case time.Hour:
+		return "rate_limit_1h"
+	default:
+		return "rate_limit"
 	}
 }
 

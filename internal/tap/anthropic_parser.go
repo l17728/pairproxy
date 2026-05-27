@@ -42,6 +42,8 @@ type AnthropicSSEParser struct {
 	outputTokens int
 	done         bool // 已触发回调
 	onComplete   OnCompleteFunc
+	hasError     bool   // SSE 流中收到 error 事件
+	errorData    string // SSE error 事件的原始 data payload
 }
 
 // NewAnthropicSSEParser 创建解析器，注册完成回调。
@@ -96,6 +98,12 @@ func (p *AnthropicSSEParser) InputTokens() int { return p.inputTokens }
 
 // OutputTokens 返回已解析的输出 token 数量。
 func (p *AnthropicSSEParser) OutputTokens() int { return p.outputTokens }
+
+// HasError 返回 true 表示 SSE 流中收到了 error 事件。
+func (p *AnthropicSSEParser) HasError() bool { return p.hasError }
+
+// SSEErrorData 返回 SSE error 事件的原始 data payload。
+func (p *AnthropicSSEParser) SSEErrorData() string { return p.errorData }
 
 // processLine 处理单行 SSE 内容。
 func (p *AnthropicSSEParser) processLine(line []byte) {
@@ -170,6 +178,22 @@ func (p *AnthropicSSEParser) parseSSEData(payload []byte) {
 
 	case "message_stop":
 		// 流结束，触发回调
+		p.done = true
+		if p.onComplete != nil {
+			p.onComplete(p.inputTokens, p.outputTokens)
+		}
+
+	case "error":
+		// SSE 流内的错误事件（如 Anthropic 返回 504/529 时）。
+		// 触发 onComplete 以确保请求被记录，由 tee_writer 按 HasError() 修正状态码。
+		p.hasError = true
+		const maxErrorData = 1024
+		raw := string(payload)
+		if len(raw) > maxErrorData {
+			p.errorData = raw[:maxErrorData]
+		} else {
+			p.errorData = raw
+		}
 		p.done = true
 		if p.onComplete != nil {
 			p.onComplete(p.inputTokens, p.outputTokens)

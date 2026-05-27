@@ -261,7 +261,7 @@ func TestLLMConfig(t *testing.T) {
 	t.Run("llm_config_validation", func(t *testing.T) {
 		cfg := LLMConfig{
 			LBStrategy:     "round_robin",
-			RequestTimeout: 300 * time.Second,
+			RequestTimeout: Duration(300 * time.Second),
 			MaxRetries:     2,
 			RecoveryDelay:  60 * time.Second,
 			Targets: []LLMTarget{

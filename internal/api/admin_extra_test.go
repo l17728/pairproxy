@@ -205,24 +205,6 @@ func TestAdminCreateGroup_DuplicateName(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// TestAdminAssignAPIKey — 未配置时返回 501
-// ---------------------------------------------------------------------------
-
-func TestAdminAssignAPIKey_NotConfigured(t *testing.T) {
-	_, jwtMgr, mux := setupAdminTest(t, "")
-	tok := adminToken(t, jwtMgr)
-
-	req := httptest.NewRequest(http.MethodPost, "/api/admin/api-keys/key-id/assign", strings.NewReader(`{"user_id":"u1"}`))
-	req.Header.Set("Authorization", "Bearer "+tok)
-	rr := httptest.NewRecorder()
-	mux.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusNotImplemented {
-		t.Errorf("expected 501 when apiKeyRepo not configured, got %d", rr.Code)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // TestAdminRevokeAPIKey — 未配置时返回 501
 // ---------------------------------------------------------------------------
 

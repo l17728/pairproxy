@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/spf13/cobra"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.uber.org/zap"
@@ -28,22 +29,22 @@ import (
 	"github.com/l17728/pairproxy/internal/alert"
 	"github.com/l17728/pairproxy/internal/api"
 	"github.com/l17728/pairproxy/internal/auth"
-	"github.com/l17728/pairproxy/internal/keygen"
 	"github.com/l17728/pairproxy/internal/cluster"
 	"github.com/l17728/pairproxy/internal/config"
 	"github.com/l17728/pairproxy/internal/corpus"
 	"github.com/l17728/pairproxy/internal/dashboard"
 	"github.com/l17728/pairproxy/internal/db"
 	"github.com/l17728/pairproxy/internal/eventlog"
+	"github.com/l17728/pairproxy/internal/keygen"
 	"github.com/l17728/pairproxy/internal/lb"
 	"github.com/l17728/pairproxy/internal/metrics"
 	pptel "github.com/l17728/pairproxy/internal/otel"
 	"github.com/l17728/pairproxy/internal/preflight"
 	"github.com/l17728/pairproxy/internal/proxy"
 	"github.com/l17728/pairproxy/internal/quota"
-	"github.com/l17728/pairproxy/internal/router"
 	"github.com/l17728/pairproxy/internal/track"
 	"github.com/l17728/pairproxy/internal/version"
+	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 func main() {
@@ -227,8 +228,8 @@ func runStart(cmd *cobra.Command, args []string) error {
 		sourceNode = cfg.Cluster.SelfAddr
 	}
 
-	isPrimary  := cfg.Cluster.Role == "primary" || cfg.Cluster.Role == ""
-	isWorker   := cfg.Cluster.Role == "worker"
+	isPrimary := cfg.Cluster.Role == "primary" || cfg.Cluster.Role == ""
+	isWorker := cfg.Cluster.Role == "worker"
 	isPeerMode := cfg.Cluster.Role == "peer"
 
 	if isPrimary {
@@ -305,7 +306,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 			SelfAddr:     cfg.Cluster.SelfAddr,
 			SelfWeight:   cfg.Cluster.SelfWeight,
 			Interval:     reportInterval,
-			SharedSecret: cfg.Cluster.SharedSecret, // P0-4: 集群内部 API 认证密钥
+			SharedSecret: cfg.Cluster.SharedSecret,                   // P0-4: 集群内部 API 认证密钥
 			MaxBatch:     cfg.Cluster.UsageBuffer.MaxRecordsPerBatch, // 改进项2
 		}, usageRepo)
 		reporter.Start(ctx)
@@ -345,7 +346,9 @@ func runStart(cmd *cobra.Command, args []string) error {
 	if clusterMgr != nil {
 		sp, err = proxy.NewSProxyWithCluster(logger, jwtMgr, writer, llmTargets, clusterMgr, sourceNode)
 	} else {
-		sp, err = proxy.NewSProxy(logger, jwtMgr, writer, llmTargets)
+		// peer 模式下 clusterMgr 为 nil，但 sourceNode 仍需正确传入，
+		// 否则 usage_logs.source_node 始终为 "local"，无法区分各节点来源。
+		sp, err = proxy.NewSProxyWithCluster(logger, jwtMgr, writer, llmTargets, nil, sourceNode)
 	}
 	if err != nil {
 		return fmt.Errorf("create sproxy: %w", err)
@@ -412,8 +415,12 @@ func runStart(cmd *cobra.Command, args []string) error {
 		}
 
 		llmBalancer := lb.NewWeightedRandom(lbLLMTargets)
+		failThreshold := cfg.LLM.FailThreshold
+		if failThreshold <= 0 {
+			failThreshold = 3
+		}
 		hcOpts := []lb.HealthCheckerOption{
-			lb.WithFailThreshold(3),
+			lb.WithFailThreshold(failThreshold),
 			lb.WithInterval(30 * time.Second),
 		}
 		if cfg.LLM.RecoveryDelay > 0 {
@@ -432,6 +439,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 		sp.SetLLMHealthChecker(llmBalancer, llmHC)
 		sp.SetMaxRetries(cfg.LLM.MaxRetries)
 		sp.SetRetryOnStatus(cfg.LLM.RetryOnStatus)
+		sp.SetRequestTimeout(cfg.LLM.RequestTimeout.D())
 
 		// sp.targets 在 newSProxy 时来自 config（ID 均为 ""）。
 		// SyncLLMTargets 从 DB 重新加载，将 sp.targets 更新为带 UUID 的版本，
@@ -582,10 +590,11 @@ func runStart(cmd *cobra.Command, args []string) error {
 		cfg.Admin.PasswordHash, adminTokenTTL,
 	)
 
-	// F-5: 多 API Key 管理（需要 key_encryption_key 配置）
-	var apiKeyRepo *db.APIKeyRepo
+	// F-5: 多 API Key 管理
+	// apiKeyRepo 无条件创建，供 dashboard 下拉菜单读取 API Key 列表（List 不涉及加解密）。
+	// 加解密函数仅在配置了 key_encryption_key 时注入（用于 admin API 创建/解密 key）。
+	apiKeyRepo := db.NewAPIKeyRepo(database, logger)
 	if cfg.Admin.KeyEncryptionKey != "" {
-		apiKeyRepo = db.NewAPIKeyRepo(database, logger)
 		encryptFn := func(plain string) (string, error) {
 			return auth.Encrypt(plain, cfg.Admin.KeyEncryptionKey)
 		}
@@ -595,23 +604,6 @@ func runStart(cmd *cobra.Command, args []string) error {
 		adminHandler.SetAPIKeyRepo(apiKeyRepo, encryptFn)
 		// BUG-4 修复：配置了 key_encryption_key 时，resolveAPIKey 使用 AES 解密（而非 obfuscateKey）
 		sp.SetKeyDecryptFn(decryptFn)
-		// 在 Director 中动态查找并使用 DB 里的 API Key
-		// BUG-2 修复：groupID 直接来自 JWT claims，无需再查询 UserRepo（消除每请求一次额外 DB 查询）
-		sp.SetAPIKeyResolver(func(userID, groupID string) (string, bool) {
-			key, err := apiKeyRepo.FindForUser(userID, groupID)
-			if err != nil || key == nil {
-				return "", false
-			}
-			plain, err := decryptFn(key.EncryptedValue)
-			if err != nil {
-				logger.Warn("failed to decrypt api key",
-					zap.String("key_name", key.Name),
-					zap.Error(err),
-				)
-				return "", false
-			}
-			return plain, true
-		})
 		logger.Info("F-5: dynamic api key management enabled")
 	}
 
@@ -625,6 +617,71 @@ func runStart(cmd *cobra.Command, args []string) error {
 		}
 		return targetURL, found
 	})
+	// 分组多绑定查找器：用于分组 1:N 智能路由（v3.1.0+）
+	sp.SetGroupMultiBindingFinder(func(groupID string) ([]string, error) {
+		return llmBindingRepo.FindAllForGroup(groupID)
+	})
+	// MaaS Model Router 选择器（可选；仅当 model_router.enabled=true 时启用）
+	if cfg.ModelRouter.Enabled && cfg.ModelRouter.URL != "" {
+		routerClient := proxy.NewModelRouterClient(cfg.ModelRouter, logger)
+		modelInfoRepo := db.NewModelInfoRepo(database)
+
+		// 将 db.ModelInfoRepo 适配为 proxy.ModelSelectorQuerier（main 层桥接，避免 proxy→db 循环依赖）
+		toNames := func(infos []db.ModelInfo) []string {
+			names := make([]string, 0, len(infos))
+			for _, info := range infos {
+				names = append(names, info.ModelName)
+			}
+			return names
+		}
+		querier := proxy.ModelSelectorQuerierFunc(
+			func() ([]string, error) {
+				infos, err := modelInfoRepo.ListMultimodal()
+				if err != nil {
+					return nil, err
+				}
+				return toNames(infos), nil
+			},
+			func() ([]string, error) {
+				infos, err := modelInfoRepo.ListNonMultimodal()
+				if err != nil {
+					return nil, err
+				}
+				return toNames(infos), nil
+			},
+			modelInfoRepo.GetScaleByName,
+		)
+
+		// Redis 客户端（addr 为空时禁用缓存）
+		// 诊断日志：无论是否配置均打印解析结果，方便排查配置未生效问题
+		logger.Info("model router Redis config parsed",
+			zap.String("addr", cfg.ModelRouter.Redis.Addr),
+			zap.Int("db", cfg.ModelRouter.Redis.DB),
+			zap.Duration("ttl", cfg.ModelRouter.Redis.TTL),
+			zap.Int("session_history_n", cfg.ModelRouter.SessionHistoryN),
+		)
+		var rdb *redis.Client
+		if cfg.ModelRouter.Redis.Addr != "" {
+			rdb = redis.NewClient(&redis.Options{
+				Addr:     cfg.ModelRouter.Redis.Addr,
+				Password: cfg.ModelRouter.Redis.Password,
+				DB:       cfg.ModelRouter.Redis.DB,
+			})
+			logger.Info("model router Redis cache enabled",
+				zap.String("addr", cfg.ModelRouter.Redis.Addr),
+				zap.Duration("ttl", cfg.ModelRouter.Redis.TTL),
+			)
+		} else {
+			logger.Warn("model router Redis addr is empty, cache disabled; check model_router.redis.addr in config")
+		}
+
+		selector := proxy.NewModelRouterSelector(routerClient, rdb, querier, cfg.ModelRouter, logger)
+		sp.SetModelRouterSelector(selector)
+		logger.Info("model router selector configured",
+			zap.String("url", cfg.ModelRouter.URL),
+			zap.Int("session_history_n", cfg.ModelRouter.SessionHistoryN),
+		)
+	}
 	adminHandler.SetLLMBindingRepo(llmBindingRepo)
 	adminHandler.SetLLMHealthFn(sp.LLMTargetStatuses)
 	adminHandler.SetTokenRepo(tokenRepo)
@@ -683,7 +740,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 	// debug 文件日志：转发内容双向记录（log.debug_file 配置时启用）
 	if cfg.Log.DebugFile != "" {
-		debugLogger, dbgErr := buildDebugFileLogger(cfg.Log.DebugFile)
+		debugLogger, dbgErr := buildDebugFileLogger(cfg.Log.DebugFile, cfg.Log.Rotate)
 		if dbgErr != nil {
 			logger.Warn("failed to init debug file logger, debug logging disabled",
 				zap.String("path", cfg.Log.DebugFile),
@@ -692,6 +749,20 @@ func runStart(cmd *cobra.Command, args []string) error {
 		} else {
 			sp.SetDebugLogger(debugLogger)
 			logger.Info("debug file logging enabled", zap.String("path", cfg.Log.DebugFile))
+		}
+	}
+
+	// model_router 文件日志：Router API 调用记录（log.model_router_file 配置时启用）
+	if cfg.Log.ModelRouterFile != "" {
+		mrl, mrlErr := buildModelRouterLogger(cfg.Log.ModelRouterFile, cfg.Log.Rotate)
+		if mrlErr != nil {
+			logger.Warn("failed to init model_router file logger, model_router logging disabled",
+				zap.String("path", cfg.Log.ModelRouterFile),
+				zap.Error(mrlErr),
+			)
+		} else {
+			sp.SetModelRouterLogger(mrl)
+			logger.Info("model_router file logging enabled", zap.String("path", cfg.Log.ModelRouterFile))
 		}
 	}
 
@@ -772,129 +843,10 @@ func runStart(cmd *cobra.Command, args []string) error {
 	llmTargetHandler.RegisterRoutes(mux, adminHandler.RequireAdmin, adminHandler.RequireWritableNode)
 	logger.Info("LLM target API registered at /api/admin/llm/targets")
 
-	// 语义路由管理 REST API
-	semanticRouteRepo := db.NewSemanticRouteRepo(database, logger)
-	var semanticRtr *router.SemanticRouter
-	if cfg.SemanticRouter.Enabled {
-		// 从 DB 加载规则（DB 规则优先于 YAML）
-		dbRoutes, dbErr := semanticRouteRepo.ListAll()
-		if dbErr != nil {
-			logger.Warn("failed to load semantic routes from DB", zap.Error(dbErr))
-		}
-
-		// 合并 YAML 配置规则（DB 同名规则优先，跳过 YAML 同名条目）
-		dbNames := make(map[string]bool, len(dbRoutes))
-		for _, r := range dbRoutes {
-			dbNames[r.Name] = true
-		}
-		var rules []router.RouteRule
-		for _, r := range dbRoutes {
-			if !r.IsActive {
-				continue
-			}
-			rules = append(rules, router.RouteRule{
-				ID:          r.ID,
-				Name:        r.Name,
-				Description: r.Description,
-				TargetURLs:  r.TargetURLs(),
-				Priority:    r.Priority,
-				IsActive:    r.IsActive,
-			})
-		}
-		for _, cr := range cfg.SemanticRouter.Routes {
-			if dbNames[cr.Name] {
-				continue // DB 规则优先
-			}
-			rules = append(rules, router.RouteRule{
-				Name:        cr.Name,
-				Description: cr.Description,
-				TargetURLs:  cr.TargetURLs,
-				Priority:    cr.Priority,
-				IsActive:    true,
-			})
-		}
-
-		classifierTarget := proxy.NewSProxyClassifierTarget(sp, logger)
-		semanticRtr = router.NewSemanticRouter(
-			logger, rules, classifierTarget,
-			cfg.SemanticRouter.ClassifierTimeout,
-			cfg.SemanticRouter.ClassifierModel,
-		)
-		sp.SetSemanticRouter(semanticRtr)
-		logger.Info("semantic router enabled",
-			zap.Int("rules", len(rules)),
-			zap.Duration("classifier_timeout", cfg.SemanticRouter.ClassifierTimeout),
-			zap.String("classifier_model", cfg.SemanticRouter.ClassifierModel),
-		)
-	}
-
-	semanticRouteHandler := api.NewAdminSemanticRouteHandler(
-		logger, jwtMgr, semanticRouteRepo, auditRepo,
-		semanticRtr, cfg.Admin.PasswordHash, adminTokenTTL,
-	)
-	semanticRouteHandler.RegisterRoutes(mux, adminHandler.RequireAdmin, adminHandler.RequireWritableNode)
-	logger.Info("semantic route API registered at /api/admin/semantic-routes")
-
 	// 用户自助服务 API（F-10 WebUI 增强）
 	userHandler := api.NewUserHandler(logger, jwtMgr, userRepo, groupRepo, usageRepo)
 	userHandler.RegisterRoutes(mux)
 	logger.Info("user self-service API registered at /api/user/")
-
-	// Group-Target Set 管理 REST API
-	groupTargetSetRepo := db.NewGroupTargetSetRepo(database, logger)
-	targetAlertRepo := db.NewTargetAlertRepo(database, logger)
-
-	adminTargetSetHandler := api.NewAdminTargetSetHandler(groupTargetSetRepo, logger)
-	adminAlertHandler := api.NewAdminAlertHandler(targetAlertRepo, logger)
-
-	// 初始化 TargetAlertManager
-	alertConfig := alert.TargetAlertConfig{
-		Enabled: true,
-		Triggers: map[string]alert.TriggerConfig{
-			"http_error": {
-				Type:           "http_error",
-				StatusCodes:    []int{429, 500, 502, 503, 504},
-				Severity:       "error",
-				MinOccurrences: 3,
-				Window:         5 * time.Minute,
-			},
-		},
-		Recovery: alert.RecoveryConfig{
-			ConsecutiveSuccesses: 2,
-			Window:               5 * time.Minute,
-		},
-		Dashboard: alert.DashboardConfig{
-			MaxActiveAlerts: 100,
-			Retention:       7 * 24 * time.Hour,
-			AutoRefresh:     true,
-		},
-	}
-	alertManager := alert.NewTargetAlertManager(targetAlertRepo, alertConfig, logger)
-	alertManager.Start(context.Background())
-
-	// 初始化 TargetHealthMonitor
-	healthCheckConfig := alert.HealthCheckConfig{
-		Interval:         30 * time.Second,
-		Timeout:          5 * time.Second,
-		FailureThreshold: 3,
-		SuccessThreshold: 2,
-		Path:             "/health",
-	}
-	healthMonitor := alert.NewTargetHealthMonitor(groupTargetSetRepo, alertManager, healthCheckConfig, logger, alert.WithLLMTargetRepo(llmTargetRepo))
-	healthMonitor.Start(context.Background())
-
-	// 创建 SSE Alert Handler
-	sseAlertHandler := api.NewSSEAlertHandler(alertManager, logger)
-
-	// 注册 Group-Target Set 和 Alert 管理端点
-	mux.Handle("GET /api/admin/targetsets", adminHandler.RequireAdmin(http.HandlerFunc(adminTargetSetHandler.ListTargetSets)))
-	mux.Handle("POST /api/admin/targetsets", adminHandler.RequireAdmin(http.HandlerFunc(adminTargetSetHandler.CreateTargetSet)))
-	mux.Handle("GET /api/admin/alerts/active", adminHandler.RequireAdmin(http.HandlerFunc(adminAlertHandler.ListActiveAlerts)))
-	mux.Handle("GET /api/admin/alerts/history", adminHandler.RequireAdmin(http.HandlerFunc(adminAlertHandler.ListAlertHistory)))
-	mux.Handle("POST /api/admin/alerts/resolve", adminHandler.RequireAdmin(http.HandlerFunc(adminAlertHandler.ResolveAlert)))
-	mux.Handle("GET /api/admin/alerts/stats", adminHandler.RequireAdmin(http.HandlerFunc(adminAlertHandler.GetAlertStats)))
-	mux.Handle("GET /api/admin/alerts/stream", adminHandler.RequireAdmin(http.HandlerFunc(sseAlertHandler.StreamAlerts)))
-	logger.Info("Group-Target Set and Alert management API registered at /api/admin/")
 
 	// 集群内部 API（仅 primary）
 	if peerRegistry != nil {
@@ -982,10 +934,10 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 	// Phase 6: Prometheus metrics 端点
 	metricsHandler := metrics.NewHandler(logger, usageRepo, userRepo)
-	metricsHandler.SetDBPath(cfg.Database.Path)           // P2-2: 数据库文件大小指标
-	metricsHandler.SetQuotaCacheStats(quotaCache)         // P2-2: 配额缓存命中/未命中指标
+	metricsHandler.SetDBPath(cfg.Database.Path)   // P2-2: 数据库文件大小指标
+	metricsHandler.SetQuotaCacheStats(quotaCache) // P2-2: 配额缓存命中/未命中指标
 	if reporter != nil {
-		metricsHandler.SetReporterStats(reporter)         // P2-2: worker 心跳延迟/失败指标
+		metricsHandler.SetReporterStats(reporter) // P2-2: worker 心跳延迟/失败指标
 	}
 	metricsHandler.RegisterRoutes(mux)
 	logger.Info("metrics endpoint registered at GET /metrics")
@@ -1016,6 +968,8 @@ func runStart(cmd *cobra.Command, args []string) error {
 		legacyKeygenSecret = []byte(cfg.Auth.KeygenSecret)
 	}
 	dbUserLister := proxy.NewDBUserLister(userRepo)
+	// JWT 认证路径需要逐请求校验 is_active，确保禁用用户立即失效（不等 JWT 自然过期）
+	sp.SetUserActiveChecker(dbUserLister)
 	directHandler := proxy.NewDirectProxyHandler(logger, sp, dbUserLister, apiKeyCache, legacyKeygenSecret, quotaChecker)
 	openAIDirectHandler := directHandler.HandlerOpenAI()
 	anthropicDirectHandler := directHandler.HandlerAnthropic()
@@ -1068,7 +1022,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	logger.Info("hybrid route registered", zap.String("path", "/v1/"), zap.String("modes", "cproxy+direct"))
 
 	// Key 生成 WebUI（用户自助服务）
-	adminHandler.SetKeyCache(apiKeyCache)     // 密码重置后立即踢出旧 API Key 缓存
+	adminHandler.SetKeyCache(apiKeyCache) // 密码重置后立即踢出旧 API Key 缓存
 	keygenAPIHandler := api.NewKeygenHandler(logger, userRepo, jwtMgr)
 	keygenAPIHandler.SetKeyCache(apiKeyCache) // 改密后立即踢出旧 Key 缓存
 	keygenAPIHandler.SetUsageRepo(usageRepo)  // 用量中心数据接口
@@ -1101,8 +1055,9 @@ func runStart(cmd *cobra.Command, args []string) error {
 	}
 
 	// SIGHUP 热重载（Unix/Linux only；Windows 上为 no-op）
-	// 重新加载：log.level 动态切换；debug_file 开关切换；其他字段（端口、DB 路径）需重启生效。
-	currentDebugFile := cfg.Log.DebugFile // 仅在 SIGHUP goroutine 中读写，无需加锁
+	// 重新加载：log.level 动态切换；debug_file / model_router_file 开关切换；其他字段需重启生效。
+	currentDebugFile := cfg.Log.DebugFile       // 仅在 SIGHUP goroutine 中读写，无需加锁
+	currentModelRouterFile := cfg.Log.ModelRouterFile
 	sighupCh := make(chan os.Signal, 1)
 	notifySIGHUP(sighupCh)
 	go func() {
@@ -1132,25 +1087,42 @@ func runStart(cmd *cobra.Command, args []string) error {
 			}
 			// 动态切换 debug 文件日志（log.debug_file 变更时立即生效）
 			newDebugFile := newCfg.Log.DebugFile
-			debugFileChanged := newDebugFile != currentDebugFile
-			if debugFileChanged {
+			if newDebugFile != currentDebugFile {
 				if newDebugFile != "" {
-					newDL, dlErr := buildDebugFileLogger(newDebugFile)
+					newDL, dlErr := buildDebugFileLogger(newDebugFile, newCfg.Log.Rotate)
 					if dlErr != nil {
 						logger.Warn("failed to init debug file logger via SIGHUP",
 							zap.String("path", newDebugFile), zap.Error(dlErr))
 					} else {
-						sp.SyncAndSetDebugLogger(newDL) // flush 旧 logger，原子切换为新 logger
-						logger.Info("debug file logging enabled via SIGHUP",
-							zap.String("path", newDebugFile))
+						sp.SyncAndSetDebugLogger(newDL)
+						logger.Info("debug file logging enabled via SIGHUP", zap.String("path", newDebugFile))
 					}
 				} else {
-					sp.SyncAndSetDebugLogger(nil) // flush 旧 logger，关闭 debug 日志
+					sp.SyncAndSetDebugLogger(nil)
 					logger.Info("debug file logging disabled via SIGHUP")
 				}
 				currentDebugFile = newDebugFile
 			}
-			if !levelChanged && !debugFileChanged {
+
+			// 动态切换 model_router 文件日志（log.model_router_file 变更时立即生效）
+			newModelRouterFile := newCfg.Log.ModelRouterFile
+			if newModelRouterFile != currentModelRouterFile {
+				if newModelRouterFile != "" {
+					newMRL, mrlErr := buildModelRouterLogger(newModelRouterFile, newCfg.Log.Rotate)
+					if mrlErr != nil {
+						logger.Warn("failed to init model_router file logger via SIGHUP",
+							zap.String("path", newModelRouterFile), zap.Error(mrlErr))
+					} else {
+						sp.SyncAndSetModelRouterLogger(newMRL)
+						logger.Info("model_router file logging enabled via SIGHUP", zap.String("path", newModelRouterFile))
+					}
+				} else {
+					sp.SyncAndSetModelRouterLogger(nil)
+					logger.Info("model_router file logging disabled via SIGHUP")
+				}
+				currentModelRouterFile = newModelRouterFile
+			}
+			if !levelChanged && newDebugFile == currentDebugFile && newModelRouterFile == currentModelRouterFile {
 				logger.Info("config reloaded (no changes requiring restart)",
 					zap.String("log_level", newLevel.String()),
 				)
@@ -1255,7 +1227,7 @@ var adminConfigFlag string
 
 func init() {
 	adminCmd.PersistentFlags().StringVar(&adminConfigFlag, "config", "", "path to sproxy.yaml (default: sproxy.yaml)")
-	adminCmd.AddCommand(adminUserCmd, adminGroupCmd, adminStatsCmd, adminTokenCmd, adminBackupCmd, adminRestoreCmd, adminLogsCmd, adminExportCmd, adminApikeyCmd, adminLLMCmd, adminQuotaCmd, adminAuditCmd, adminDrainCmd, adminTrackCmd, adminImportCmd, adminRouteCmd, adminCorpusCmd, GetTargetSetCmd(), GetAlertCmd())
+	adminCmd.AddCommand(adminUserCmd, adminGroupCmd, adminStatsCmd, adminTokenCmd, adminBackupCmd, adminRestoreCmd, adminLogsCmd, adminExportCmd, adminApikeyCmd, adminLLMCmd, adminQuotaCmd, adminAuditCmd, adminDrainCmd, adminTrackCmd, adminImportCmd, adminCorpusCmd)
 }
 
 // closeGormDB 优雅关闭 GORM 数据库连接，释放文件锁和文件描述符。
@@ -1687,11 +1659,11 @@ func init() {
 // --- group add ---
 
 var (
-	groupAddDailyLimit        int64
-	groupAddMonthlyLimit      int64
-	groupAddRPM               int
-	groupAddMaxReqTokens      int64
-	groupAddConcurrentReqs    int
+	groupAddDailyLimit     int64
+	groupAddMonthlyLimit   int64
+	groupAddRPM            int
+	groupAddMaxReqTokens   int64
+	groupAddConcurrentReqs int
 )
 
 var adminGroupAddCmd = &cobra.Command{
@@ -1789,6 +1761,9 @@ var (
 	setQuotaDaily          int64
 	setQuotaMonthly        int64
 	setQuotaRPM            int
+	setQuotaRPM15m         int
+	setQuotaRPM30m         int
+	setQuotaRPH            int
 	setQuotaMaxReqTokens   int64
 	setQuotaConcurrentReqs int
 )
@@ -1813,7 +1788,7 @@ var adminGroupSetQuotaCmd = &cobra.Command{
 		}
 
 		var daily, monthly *int64
-		var rpm *int
+		var rpm, rpm15m, rpm30m, rph *int
 		var maxReqTokens *int64
 		var concurrentReqs *int
 		if cmd.Flags().Changed("daily") {
@@ -1825,16 +1800,25 @@ var adminGroupSetQuotaCmd = &cobra.Command{
 		if cmd.Flags().Changed("rpm") {
 			rpm = &setQuotaRPM
 		}
+		if cmd.Flags().Changed("rpm-15m") {
+			rpm15m = &setQuotaRPM15m
+		}
+		if cmd.Flags().Changed("rpm-30m") {
+			rpm30m = &setQuotaRPM30m
+		}
+		if cmd.Flags().Changed("rph") {
+			rph = &setQuotaRPH
+		}
 		if cmd.Flags().Changed("max-tokens-per-request") {
 			maxReqTokens = &setQuotaMaxReqTokens
 		}
 		if cmd.Flags().Changed("concurrent-requests") {
 			concurrentReqs = &setQuotaConcurrentReqs
 		}
-		if err := groupRepo.SetQuota(grp.ID, daily, monthly, rpm, maxReqTokens, concurrentReqs); err != nil {
+		if err := groupRepo.SetQuota(grp.ID, daily, monthly, rpm, maxReqTokens, concurrentReqs, rpm15m, rpm30m, rph); err != nil {
 			return err
 		}
-		auditCLI(database, zap.NewNop(), "group.set_quota", name, fmt.Sprintf("daily=%v monthly=%v rpm=%v", daily, monthly, rpm))
+		auditCLI(database, zap.NewNop(), "group.set_quota", name, fmt.Sprintf("daily=%v monthly=%v rpm=%v rpm15m=%v rpm30m=%v rph=%v", daily, monthly, rpm, rpm15m, rpm30m, rph))
 		fmt.Printf("Quota updated for group %q\n", name)
 		return nil
 	},
@@ -1844,6 +1828,9 @@ func init() {
 	adminGroupSetQuotaCmd.Flags().Int64Var(&setQuotaDaily, "daily", 0, "daily token limit (0 = remove limit)")
 	adminGroupSetQuotaCmd.Flags().Int64Var(&setQuotaMonthly, "monthly", 0, "monthly token limit (0 = remove limit)")
 	adminGroupSetQuotaCmd.Flags().IntVar(&setQuotaRPM, "rpm", 0, "max requests per minute (0 = remove limit)")
+	adminGroupSetQuotaCmd.Flags().IntVar(&setQuotaRPM15m, "rpm-15m", 0, "max requests per 15 minutes (0 = remove limit)")
+	adminGroupSetQuotaCmd.Flags().IntVar(&setQuotaRPM30m, "rpm-30m", 0, "max requests per 30 minutes (0 = remove limit)")
+	adminGroupSetQuotaCmd.Flags().IntVar(&setQuotaRPH, "rph", 0, "max requests per hour (0 = remove limit)")
 	adminGroupSetQuotaCmd.Flags().Int64Var(&setQuotaMaxReqTokens, "max-tokens-per-request", 0, "max max_tokens per request (0 = remove limit)")
 	adminGroupSetQuotaCmd.Flags().IntVar(&setQuotaConcurrentReqs, "concurrent-requests", 0, "max concurrent requests per user (0 = remove limit)")
 }
@@ -2606,23 +2593,61 @@ func buildCore(atom zap.AtomicLevel) zapcore.Core {
 	)
 }
 
-// buildDebugFileLogger 创建写入独立文件的 DEBUG 级日志器，用于转发内容记录。
-// 使用 JSON 格式，DEBUG 级别（不受主日志 level 限制），适合高频写入。
-func buildDebugFileLogger(path string) (*zap.Logger, error) {
-	// zap 内置 sink 无需检查目录
-	if path != "stderr" && path != "stdout" {
+// buildRotatingLogger 创建带轮转的独立文件日志器。
+// path 为 "stderr"/"stdout" 时退化为标准流（不轮转）。
+func buildRotatingLogger(path string, rotate config.LogRotateConfig, level zapcore.Level) (*zap.Logger, error) {
+	var ws zapcore.WriteSyncer
+	switch path {
+	case "stderr":
+		ws = zapcore.Lock(os.Stderr)
+	case "stdout":
+		ws = zapcore.Lock(os.Stdout)
+	default:
 		dir := filepath.Dir(path)
 		if _, err := os.Stat(dir); os.IsNotExist(err) {
-			return nil, fmt.Errorf("directory %q does not exist; please create it manually before starting (mkdir -p %s)", dir, dir)
+			return nil, fmt.Errorf("directory %q does not exist; please create it manually (mkdir -p %s)", dir, dir)
 		}
+		maxSize := rotate.MaxSizeMB
+		if maxSize <= 0 {
+			maxSize = 100
+		}
+		maxBackups := rotate.MaxBackups
+		if maxBackups <= 0 {
+			maxBackups = 7
+		}
+		maxAge := rotate.MaxAgeDays
+		if maxAge <= 0 {
+			maxAge = 30
+		}
+		ws = zapcore.AddSync(&lumberjack.Logger{
+			Filename:   path,
+			MaxSize:    maxSize,
+			MaxBackups: maxBackups,
+			MaxAge:     maxAge,
+			Compress:   rotate.Compress,
+		})
 	}
-	cfg := zap.NewProductionConfig()
-	cfg.Level = zap.NewAtomicLevelAt(zapcore.DebugLevel)
-	cfg.OutputPaths = []string{path}
-	cfg.ErrorOutputPaths = []string{path}
-	cfg.EncoderConfig.TimeKey = "ts"
-	cfg.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
-	return cfg.Build()
+	enc := zapcore.NewJSONEncoder(zapcore.EncoderConfig{
+		TimeKey:        "ts",
+		LevelKey:       "level",
+		NameKey:        "logger",
+		MessageKey:     "msg",
+		EncodeTime:     zapcore.ISO8601TimeEncoder,
+		EncodeLevel:    zapcore.LowercaseLevelEncoder,
+		EncodeDuration: zapcore.StringDurationEncoder,
+	})
+	core := zapcore.NewCore(enc, ws, zap.NewAtomicLevelAt(level))
+	return zap.New(core), nil
+}
+
+// buildDebugFileLogger 创建写入独立文件的 DEBUG 级日志器，用于转发内容记录。
+func buildDebugFileLogger(path string, rotate config.LogRotateConfig) (*zap.Logger, error) {
+	return buildRotatingLogger(path, rotate, zapcore.DebugLevel)
+}
+
+// buildModelRouterLogger 创建写入独立文件的 DEBUG 级日志器，用于 model_router 调用记录。
+func buildModelRouterLogger(path string, rotate config.LogRotateConfig) (*zap.Logger, error) {
+	return buildRotatingLogger(path, rotate, zapcore.DebugLevel)
 }
 
 // parseZapLevel 将配置文件中的 log.level 字符串转换为 zapcore.Level。
@@ -2863,54 +2888,6 @@ var adminApikeyListCmd = &cobra.Command{
 	},
 }
 
-// --- apikey assign ---
-
-var (
-	apikeyAssignUser  string
-	apikeyAssignGroup string
-)
-
-var adminApikeyAssignCmd = &cobra.Command{
-	Use:   "assign <name>",
-	Short: "Assign an API key to a user or group",
-	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		name := args[0]
-		if apikeyAssignUser == "" && apikeyAssignGroup == "" {
-			return fmt.Errorf("--user or --group is required")
-		}
-		_, repo, logger, database, err := openAdminConfig()
-		if err != nil {
-			return err
-		}
-		defer closeGormDB(logger, database)
-		key, err := repo.GetByName(name)
-		if err != nil {
-			return fmt.Errorf("lookup api key: %w", err)
-		}
-		if key == nil {
-			return fmt.Errorf("api key %q not found", name)
-		}
-		var userID, groupID *string
-		if apikeyAssignUser != "" {
-			userID = &apikeyAssignUser
-		}
-		if apikeyAssignGroup != "" {
-			groupID = &apikeyAssignGroup
-		}
-		if err := repo.Assign(key.ID, userID, groupID); err != nil {
-			return fmt.Errorf("assign api key: %w", err)
-		}
-		fmt.Printf("API key %q assigned\n", name)
-		return nil
-	},
-}
-
-func init() {
-	adminApikeyAssignCmd.Flags().StringVar(&apikeyAssignUser, "user", "", "user ID to assign to")
-	adminApikeyAssignCmd.Flags().StringVar(&apikeyAssignGroup, "group", "", "group ID to assign to")
-}
-
 // --- apikey revoke ---
 
 var adminApikeyRevokeCmd = &cobra.Command{
@@ -2940,7 +2917,7 @@ var adminApikeyRevokeCmd = &cobra.Command{
 }
 
 func init() {
-	adminApikeyCmd.AddCommand(adminApikeyAddCmd, adminApikeyListCmd, adminApikeyAssignCmd, adminApikeyRevokeCmd)
+	adminApikeyCmd.AddCommand(adminApikeyAddCmd, adminApikeyListCmd, adminApikeyRevokeCmd)
 }
 
 // ---------------------------------------------------------------------------
@@ -3594,7 +3571,7 @@ func openAdminTrackDir() (*track.Tracker, *zap.Logger, error) {
 	if err != nil {
 		return nil, logger, fmt.Errorf("load config from %q: %w", cfgPath, err)
 	}
-	trackDir := filepath.Join(filepath.Dir(cfg.Database.Path), "track")
+	trackDir := cfg.Track.Dir
 	t, err := track.New(trackDir)
 	if err != nil {
 		return nil, logger, fmt.Errorf("open track dir %q: %w", trackDir, err)
@@ -4043,242 +4020,6 @@ var adminImportCmd = &cobra.Command{
 
 func init() {
 	adminImportCmd.Flags().Bool("dry-run", false, "预览导入结果，不实际写入")
-}
-
-// ---------------------------------------------------------------------------
-// admin route — 语义路由规则管理子命令
-// ---------------------------------------------------------------------------
-
-var adminRouteCmd = &cobra.Command{
-	Use:   "route",
-	Short: "Manage semantic routing rules",
-	Long: `Semantic routing uses LLM classification to narrow the candidate target pool
-based on request intent. Rules consist of a natural language description
-and a set of target URLs. When the classifier matches a rule, only its
-target URLs remain in the candidate pool.`,
-}
-
-// --- route add ---
-
-var (
-	routeAddDesc     string
-	routeAddTargets  string
-	routeAddPriority int
-)
-
-var adminRouteAddCmd = &cobra.Command{
-	Use:   "add <name>",
-	Short: "Add a semantic routing rule",
-	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		name := args[0]
-		if routeAddDesc == "" {
-			return fmt.Errorf("--description is required")
-		}
-		if routeAddTargets == "" {
-			return fmt.Errorf("--targets is required")
-		}
-		targets := strings.Split(routeAddTargets, ",")
-		for i := range targets {
-			targets[i] = strings.TrimSpace(targets[i])
-		}
-
-		_, _, _, _, logger, database, err := openAdminDB()
-		if err != nil {
-			return err
-		}
-		defer closeGormDB(logger, database)
-
-		repo := db.NewSemanticRouteRepo(database, logger)
-		route, err := repo.Create(name, routeAddDesc, targets, routeAddPriority)
-		if err != nil {
-			return fmt.Errorf("create route: %w", err)
-		}
-		fmt.Printf("Route created: id=%s name=%s priority=%d targets=%v\n",
-			route.ID, route.Name, route.Priority, targets)
-		return nil
-	},
-}
-
-// --- route list ---
-
-var adminRouteListCmd = &cobra.Command{
-	Use:   "list",
-	Short: "List all semantic routing rules",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		_, _, _, _, logger, database, err := openAdminDB()
-		if err != nil {
-			return err
-		}
-		defer closeGormDB(logger, database)
-
-		repo := db.NewSemanticRouteRepo(database, logger)
-		routes, err := repo.ListAll()
-		if err != nil {
-			return fmt.Errorf("list routes: %w", err)
-		}
-		if len(routes) == 0 {
-			fmt.Println("No semantic routes configured.")
-			return nil
-		}
-		fmt.Printf("%-36s  %-20s  %-8s  %-8s  %s\n", "ID", "NAME", "PRIORITY", "ACTIVE", "TARGETS")
-		for _, r := range routes {
-			urls := r.TargetURLs()
-			active := "yes"
-			if !r.IsActive {
-				active = "no"
-			}
-			fmt.Printf("%-36s  %-20s  %-8d  %-8s  %s\n",
-				r.ID, r.Name, r.Priority, active, strings.Join(urls, ", "))
-		}
-		return nil
-	},
-}
-
-// --- route update ---
-
-var (
-	routeUpdateDesc     string
-	routeUpdateTargets  string
-	routeUpdatePriority int
-)
-
-var adminRouteUpdateCmd = &cobra.Command{
-	Use:   "update <name>",
-	Short: "Update a semantic routing rule",
-	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		name := args[0]
-		_, _, _, _, logger, database, err := openAdminDB()
-		if err != nil {
-			return err
-		}
-		defer closeGormDB(logger, database)
-
-		repo := db.NewSemanticRouteRepo(database, logger)
-		route, err := repo.GetByName(name)
-		if err != nil {
-			return fmt.Errorf("route %q not found: %w", name, err)
-		}
-
-		updates := map[string]interface{}{}
-		if cmd.Flags().Changed("description") {
-			updates["description"] = routeUpdateDesc
-		}
-		if cmd.Flags().Changed("targets") {
-			targets := strings.Split(routeUpdateTargets, ",")
-			for i := range targets {
-				targets[i] = strings.TrimSpace(targets[i])
-			}
-			encoded, _ := json.Marshal(targets)
-			updates["target_urls"] = string(encoded)
-		}
-		if cmd.Flags().Changed("priority") {
-			updates["priority"] = routeUpdatePriority
-		}
-		if len(updates) == 0 {
-			return fmt.Errorf("nothing to update; specify --description, --targets, or --priority")
-		}
-
-		if err := repo.Update(route.ID, updates); err != nil {
-			return fmt.Errorf("update route: %w", err)
-		}
-		fmt.Printf("Route %q updated.\n", name)
-		return nil
-	},
-}
-
-// --- route delete ---
-
-var adminRouteDeleteCmd = &cobra.Command{
-	Use:   "delete <name>",
-	Short: "Delete a semantic routing rule",
-	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		name := args[0]
-		_, _, _, _, logger, database, err := openAdminDB()
-		if err != nil {
-			return err
-		}
-		defer closeGormDB(logger, database)
-
-		repo := db.NewSemanticRouteRepo(database, logger)
-		route, err := repo.GetByName(name)
-		if err != nil {
-			return fmt.Errorf("route %q not found: %w", name, err)
-		}
-		if err := repo.Delete(route.ID); err != nil {
-			return fmt.Errorf("delete route: %w", err)
-		}
-		fmt.Printf("Route %q deleted.\n", name)
-		return nil
-	},
-}
-
-// --- route enable ---
-
-var adminRouteEnableCmd = &cobra.Command{
-	Use:   "enable <name>",
-	Short: "Enable a semantic routing rule",
-	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		name := args[0]
-		_, _, _, _, logger, database, err := openAdminDB()
-		if err != nil {
-			return err
-		}
-		defer closeGormDB(logger, database)
-
-		repo := db.NewSemanticRouteRepo(database, logger)
-		route, err := repo.GetByName(name)
-		if err != nil {
-			return fmt.Errorf("route %q not found: %w", name, err)
-		}
-		if err := repo.SetActive(route.ID, true); err != nil {
-			return fmt.Errorf("enable route: %w", err)
-		}
-		fmt.Printf("Route %q enabled.\n", name)
-		return nil
-	},
-}
-
-// --- route disable ---
-
-var adminRouteDisableCmd = &cobra.Command{
-	Use:   "disable <name>",
-	Short: "Disable a semantic routing rule",
-	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		name := args[0]
-		_, _, _, _, logger, database, err := openAdminDB()
-		if err != nil {
-			return err
-		}
-		defer closeGormDB(logger, database)
-
-		repo := db.NewSemanticRouteRepo(database, logger)
-		route, err := repo.GetByName(name)
-		if err != nil {
-			return fmt.Errorf("route %q not found: %w", name, err)
-		}
-		if err := repo.SetActive(route.ID, false); err != nil {
-			return fmt.Errorf("disable route: %w", err)
-		}
-		fmt.Printf("Route %q disabled.\n", name)
-		return nil
-	},
-}
-
-func init() {
-	adminRouteAddCmd.Flags().StringVar(&routeAddDesc, "description", "", "natural language description for classifier")
-	adminRouteAddCmd.Flags().StringVar(&routeAddTargets, "targets", "", "comma-separated target URLs")
-	adminRouteAddCmd.Flags().IntVar(&routeAddPriority, "priority", 0, "rule priority (higher = more preferred)")
-
-	adminRouteUpdateCmd.Flags().StringVar(&routeUpdateDesc, "description", "", "new description")
-	adminRouteUpdateCmd.Flags().StringVar(&routeUpdateTargets, "targets", "", "new comma-separated target URLs")
-	adminRouteUpdateCmd.Flags().IntVar(&routeUpdatePriority, "priority", 0, "new priority")
-
-	adminRouteCmd.AddCommand(adminRouteAddCmd, adminRouteListCmd, adminRouteUpdateCmd, adminRouteDeleteCmd, adminRouteEnableCmd, adminRouteDisableCmd)
 }
 
 // ---------------------------------------------------------------------------

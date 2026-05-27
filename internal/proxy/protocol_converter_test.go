@@ -85,6 +85,20 @@ func TestDetectConversionDirection(t *testing.T) {
 			targetProvider: "",
 			want:           conversionNone,
 		},
+		{
+			// /v1/messages/count_tokens 是 Anthropic 专属子路径，OpenAI 侧无对等端点，
+			// 不应触发 AtoO 转换（否则会将请求错误路由到 /v1/chat/completions）。
+			name:           "count_tokens sub-path + openai target → None (no AtoO)",
+			requestPath:    "/v1/messages/count_tokens",
+			targetProvider: "openai",
+			want:           conversionNone,
+		},
+		{
+			name:           "count_tokens sub-path + ollama target → None (no AtoO)",
+			requestPath:    "/v1/messages/count_tokens",
+			targetProvider: "ollama",
+			want:           conversionNone,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -553,9 +567,9 @@ func TestConvertOpenAIToAnthropicResponse(t *testing.T) {
 
 	t.Run("successful response", func(t *testing.T) {
 		openaiResp := map[string]interface{}{
-			"id":      "chatcmpl-123",
-			"object":  "chat.completion",
-			"model":   "gpt-4",
+			"id":     "chatcmpl-123",
+			"object": "chat.completion",
+			"model":  "gpt-4",
 			"choices": []interface{}{
 				map[string]interface{}{
 					"index": 0,
@@ -801,9 +815,9 @@ func TestProtocolConversionRoundTrip(t *testing.T) {
 
 	// 2. Simulate OpenAI response
 	openaiResp := map[string]interface{}{
-		"id":      "chatcmpl-test",
-		"object":  "chat.completion",
-		"model":   "claude-3-5-sonnet-20241022",
+		"id":     "chatcmpl-test",
+		"object": "chat.completion",
+		"model":  "claude-3-5-sonnet-20241022",
 		"choices": []interface{}{
 			map[string]interface{}{
 				"index": 0,
@@ -1538,7 +1552,7 @@ func TestConvertAnthropicToOpenAIRequestWithTools(t *testing.T) {
 			"messages":   []interface{}{map[string]interface{}{"role": "user", "content": "Hi"}},
 			"tools":      []interface{}{map[string]interface{}{"name": "t", "input_schema": map[string]interface{}{"type": "object"}}},
 			"tool_choice": map[string]interface{}{
-				"type":                    "any",
+				"type":                      "any",
 				"disable_parallel_tool_use": true,
 			},
 		}
@@ -1636,7 +1650,7 @@ func TestProcessUserContentWithImages(t *testing.T) {
 		content := []interface{}{
 			map[string]interface{}{"type": "text", "text": "Look at this:"},
 			map[string]interface{}{
-				"type": "image",
+				"type":   "image",
 				"source": map[string]interface{}{"type": "url", "url": "https://img.example.com/a.jpg"},
 			},
 		}
@@ -2771,6 +2785,56 @@ func TestConvertOpenAIErrorResponse_ErrorTypeMappings(t *testing.T) {
 // ---------------------------------------------------------------------------
 // TestOpenAIToAnthropicStreamConverter_HandleDone_UnopenedToolBlocks
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// applyModelToOpenAIBody 测试
+// ---------------------------------------------------------------------------
+
+func TestApplyModelToOpenAIBody_NoMapping_ReturnsOriginal(t *testing.T) {
+	body := []byte(`{"model":"claude-3-5-sonnet","messages":[]}`)
+	got := applyModelToOpenAIBody(body, "claude-3-5-sonnet", nil)
+	assert.Equal(t, body, got, "empty mapping should return original body unchanged")
+}
+
+func TestApplyModelToOpenAIBody_EmptyRequestedModel_ReturnsOriginal(t *testing.T) {
+	body := []byte(`{"model":"claude-3-5-sonnet","messages":[]}`)
+	got := applyModelToOpenAIBody(body, "", map[string]string{"claude-3-5-sonnet": "DeepSeek-V3"})
+	assert.Equal(t, body, got, "empty requestedModel should return original body unchanged")
+}
+
+func TestApplyModelToOpenAIBody_MappingUnchanged_ReturnsOriginal(t *testing.T) {
+	body := []byte(`{"model":"gpt-4o","messages":[]}`)
+	// requestedModel 不在 mapping 中且无通配符，mapModelName 返回原值
+	got := applyModelToOpenAIBody(body, "gpt-4o", map[string]string{"claude-3-5-sonnet": "DeepSeek-V3"})
+	assert.Equal(t, body, got, "no mapping hit should return original body unchanged")
+}
+
+func TestApplyModelToOpenAIBody_ExactMapping_UpdatesModel(t *testing.T) {
+	body := []byte(`{"model":"claude-3-5-sonnet","messages":[],"temperature":0.7}`)
+	mapping := map[string]string{"claude-3-5-sonnet": "DeepSeek-V3"}
+	got := applyModelToOpenAIBody(body, "claude-3-5-sonnet", mapping)
+
+	var m map[string]interface{}
+	require.NoError(t, json.Unmarshal(got, &m))
+	assert.Equal(t, "DeepSeek-V3", m["model"])
+	assert.Equal(t, 0.7, m["temperature"], "other fields must be preserved")
+}
+
+func TestApplyModelToOpenAIBody_WildcardMapping_UpdatesModel(t *testing.T) {
+	body := []byte(`{"model":"any-model","messages":[]}`)
+	mapping := map[string]string{"*": "default-model"}
+	got := applyModelToOpenAIBody(body, "any-model", mapping)
+
+	var m map[string]interface{}
+	require.NoError(t, json.Unmarshal(got, &m))
+	assert.Equal(t, "default-model", m["model"])
+}
+
+func TestApplyModelToOpenAIBody_MalformedBody_ReturnsOriginal(t *testing.T) {
+	body := []byte(`not-json`)
+	got := applyModelToOpenAIBody(body, "claude-3-5-sonnet", map[string]string{"claude-3-5-sonnet": "DeepSeek-V3"})
+	assert.Equal(t, body, got, "malformed body should fail-open and return original")
+}
 
 func TestOpenAIToAnthropicStreamConverter_HandleDone_UnopenedToolBlocks(t *testing.T) {
 	logger := zap.NewNop()

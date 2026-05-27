@@ -37,9 +37,9 @@ func TestSProxyBasicFlow(t *testing.T) {
 
 	// Create usage writer
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	writer := db.NewUsageWriter(database, logger, 100, time.Minute)
 	writer.Start(ctx)
+	defer func() { cancel(); writer.Wait() }()
 
 	// Create a mock LLM backend
 	llmServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -172,7 +172,7 @@ func TestQuotaEnforcement(t *testing.T) {
 	}
 
 	dailyLimit := int64(1000)
-	if err := groupRepo.SetQuota(group.ID, &dailyLimit, nil, nil, nil, nil); err != nil {
+	if err := groupRepo.SetQuota(group.ID, &dailyLimit, nil, nil, nil, nil, nil, nil, nil); err != nil {
 		t.Fatalf("SetQuota: %v", err)
 	}
 
@@ -387,11 +387,9 @@ func TestUsageLogOperations(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	writer := db.NewUsageWriter(database, logger, 10, 100*time.Millisecond)
 	writer.Start(ctx)
-	defer cancel() // 确保在测试结束时停止 writer
+	defer func() { cancel(); writer.Wait() }()
 
 	// Record usage
 	for i := 0; i < 5; i++ {
@@ -404,10 +402,9 @@ func TestUsageLogOperations(t *testing.T) {
 			StatusCode:   200,
 		})
 	}
-	writer.Flush()
-
-	// Wait for async flush to complete
-	time.Sleep(200 * time.Millisecond)
+	// Flush via shutdown path: cancel triggers ctx.Done() which drains and writes all records
+	cancel()
+	writer.Wait()
 
 	// Query usage
 	repo := db.NewUsageRepo(database, logger)
@@ -428,7 +425,4 @@ func TestUsageLogOperations(t *testing.T) {
 		t.Errorf("Expected 500/250 tokens, got %d/%d", inputSum, outputSum)
 	}
 
-	// 停止 writer 并等待清理完成
-	cancel()
-	time.Sleep(100 * time.Millisecond)
 }

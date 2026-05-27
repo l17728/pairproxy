@@ -29,11 +29,7 @@ type llmPageData struct {
 	Groups         []db.Group
 	APIKeys        []db.APIKey
 	DrainStatus    proxy.DrainStatus // 排水状态
-	// v2.20 新增：Target Set 支持
-	ActiveTab      string                 // targets | targetsets | bindings
-	TargetSets     []targetSetWithMembers
-	SelectedSetID  string
-	GroupsForBind  []db.Group // 未绑定的分组（用于创建目标集时选择）
+	ActiveTab      string // targets | bindings
 }
 
 // bindingEntry is the JSON shape embedded in the page for client-side filtering.
@@ -64,31 +60,20 @@ type llmTargetWithMeta struct {
 	Draining        bool
 }
 
-// targetSetWithMembers 目标集及其成员信息
-type targetSetWithMembers struct {
-	db.GroupTargetSet
-	Members        []db.GroupTargetSetMember
-	BoundGroupName string
-	MemberCount    int
-}
-
 // handleLLMPage GET /dashboard/llm
 func (h *Handler) handleLLMPage(w http.ResponseWriter, r *http.Request) {
 	flash := r.URL.Query().Get("flash")
 	errMsg := r.URL.Query().Get("error")
 	activeTab := r.URL.Query().Get("tab")
-	selectedSetID := r.URL.Query().Get("selected")
-
 	// 默认 Tab 为 targets
 	if activeTab == "" {
 		activeTab = "targets"
 	}
 
 	data := llmPageData{
-		baseData:     baseData{Flash: flash, Error: errMsg, IsWorkerNode: h.isWorkerNode},
-		ActiveTab:    activeTab,
-		SelectedSetID: selectedSetID,
-		BoundCount:   make(map[string]int),
+		baseData:   baseData{Flash: flash, Error: errMsg, IsWorkerNode: h.isWorkerNode},
+		ActiveTab:  activeTab,
+		BoundCount: make(map[string]int),
 	}
 
 	// 获取健康状态（来自 proxy）
@@ -148,20 +133,17 @@ func (h *Handler) handleLLMPage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 构建已绑定的 user/group ID 集合（用于过滤添加绑定下拉框）
+	// 构建已绑定的 user ID 集合（用于过滤用户下拉框，用户绑定是 1:1 的）
+	// 分组绑定是 1:N 的，所以不过滤分组
 	boundUserIDs := make(map[string]bool)
-	boundGroupIDs := make(map[string]bool)
 	for _, b := range data.Bindings {
 		if b.UserID != nil {
 			boundUserIDs[*b.UserID] = true
 		}
-		if b.GroupID != nil {
-			boundGroupIDs[*b.GroupID] = true
-		}
 	}
 
 	// 获取用户和分组列表，并构建 ID→名称映射（用于绑定列表显示）
-	// Users/Groups 仅保留未绑定的，用于"添加绑定"下拉框
+	// Users 仅保留未绑定的（1:1），Groups 全部展示（1:N，可多次绑定）
 	data.UserIDToName = make(map[string]string)
 	data.GroupIDToName = make(map[string]string)
 	if h.userRepo != nil {
@@ -180,9 +162,7 @@ func (h *Handler) handleLLMPage(w http.ResponseWriter, r *http.Request) {
 		allGroups, _ := h.groupRepo.List()
 		for _, g := range allGroups {
 			data.GroupIDToName[g.ID] = g.Name
-			if !boundGroupIDs[g.ID] {
-				data.Groups = append(data.Groups, g)
-			}
+			data.Groups = append(data.Groups, g)
 		}
 	}
 
@@ -226,38 +206,6 @@ func (h *Handler) handleLLMPage(w http.ResponseWriter, r *http.Request) {
 	// 获取排水状态
 	if h.drainStatusFn != nil {
 		data.DrainStatus = h.drainStatusFn()
-	}
-
-	// v2.20：加载目标集（如果启用）
-	if h.groupTargetSetRepo != nil {
-		allSets, err := h.groupTargetSetRepo.ListAll()
-		if err != nil {
-			h.logger.Error("list target sets", zap.Error(err))
-		} else {
-			for _, set := range allSets {
-				members, err := h.groupTargetSetRepo.ListMembers(set.ID)
-				if err != nil {
-					h.logger.Error("list target set members", zap.String("setID", set.ID), zap.Error(err))
-					members = []db.GroupTargetSetMember{}
-				}
-				boundGroupName := ""
-				if set.GroupID != nil {
-					boundGroupName = data.GroupIDToName[*set.GroupID]
-				}
-				data.TargetSets = append(data.TargetSets, targetSetWithMembers{
-					GroupTargetSet: set,
-					Members:        members,
-					BoundGroupName: boundGroupName,
-					MemberCount:    len(members),
-				})
-			}
-		}
-
-		// 为 GroupsForBind 使用未绑定的分组
-		if h.groupRepo != nil {
-			allGroups, _ := h.groupRepo.List()
-			data.GroupsForBind = allGroups
-		}
 	}
 
 	h.renderPage(w, "llm.html", data)
@@ -314,9 +262,15 @@ func (h *Handler) handleLLMCreateBinding(w http.ResponseWriter, r *http.Request)
 		userID = &uid
 	}
 
-	if err := h.llmBindingRepo.Set(targetID, userID, groupID); err != nil {
-		h.logger.Error("create llm binding", zap.Error(err))
-		http.Redirect(w, r, bindTab+"&error="+neturl.QueryEscape(err.Error()), http.StatusSeeOther)
+	var bindErr error
+	if userID != nil {
+		bindErr = h.llmBindingRepo.Set(targetID, userID, nil)
+	} else {
+		bindErr = h.llmBindingRepo.AddGroupBinding(targetID, *groupID)
+	}
+	if bindErr != nil {
+		h.logger.Error("create llm binding", zap.Error(bindErr))
+		http.Redirect(w, r, bindTab+"&error="+neturl.QueryEscape(bindErr.Error()), http.StatusSeeOther)
 		return
 	}
 	h.logger.Info("llm binding created via dashboard",

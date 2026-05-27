@@ -1,5 +1,140 @@
 # PairProxy Changelog
 
+## [v3.2.2] - 2026-05-21
+
+### 🐛 Bug 修复
+
+#### invalid JWT 日志补充请求上下文字段
+
+`invalid JWT` warn 日志原来只有 `request_id`、`auth_source`、`error` 三个字段，定位问题时需要回溯上一条 debug 日志才能得知请求路径和来源 IP。现在直接在该条日志中增加：
+
+- `path`：请求路径
+- `method`：HTTP 方法
+- `remote_addr`：真实客户端 IP（优先 X-Forwarded-For，回退 RemoteAddr）
+
+这些字段同时出现在 Dashboard 告警页中（eventlog 通过 zap core 自动捕获所有 WARN 结构化字段）。
+
+---
+
+## [v3.2.1] - 2026-05-21
+
+### 🔧 改进 & 修复
+
+#### UI：error_body 以 Tooltip 方式展示在请求路径列
+
+keygen 页和 my-usage 页的请求记录表格中，有错误详情（error_body）的行在"接口"列路径旁显示 ⚠ 图标，鼠标悬停即弹出完整错误内容，不截断。tooltip 使用 `position:fixed` 实现，不受表格 `overflow-x-auto` 影响。
+
+keygen 页同步去掉了原有的点击展开行逻辑，简化为纯 tooltip 交互。
+
+#### 配置：`request_timeout` 支持裸整数和 -1
+
+之前 `request_timeout` 字段必须填带单位的字符串（如 `300s`），填裸整数（`600`）或 `-1` 会报 YAML 解析错误。现在：
+
+| 写法 | 含义 |
+|------|------|
+| `300s` / `5m` / `1h` | 标准 Go duration 字符串（原有支持） |
+| `600` | 裸整数，按秒解析（600s） |
+| `-1` | 禁用超时 |
+
+#### 日志：`remote_addr` 显示真实客户端 IP
+
+sproxy 的 `request received` 和 `missing authentication header` 日志原来记录 cproxy 的地址，现在优先取 `X-Forwarded-For` 首项（cproxy 注入的真实客户端 IP），无该头时回退到 `RemoteAddr`。
+
+#### model_router：仅对补全接口触发路由
+
+之前 model_router 在任何代理路径（包括 `/v1/models`、`/v1/tokenize` 等）都会被调用。现在限定为：
+
+- `/v1/messages`（Anthropic）
+- 含 `chat/completions` 的任意路径（OpenAI/Ollama，支持任意版本前缀）
+
+其他路径直接跳过，避免无效路由调用和空 body 传入 SelectModel。
+
+---
+
+## [v3.2.0] - 2026-05-20
+
+### ✨ 新特性
+
+#### 多窗口限速（15m / 30m / 1h）
+
+在原有 daily / monthly token 配额基础上，新增三个滑动窗口速率限制：
+
+- `rpm_limit_15m`：15 分钟内最多请求次数
+- `rpm_limit_30m`：30 分钟内最多请求次数
+- `rpm_limit_1h`：1 小时内最多请求次数
+
+通过 Admin API 或 Dashboard 的分组管理页面配置；超限时返回 429，与原有 RPM 限速统一处理。
+
+#### model_router 日志独立文件
+
+model_router 的路由调用日志已从主日志分离，支持按大小自动轮转（与 debug log / model_router log 保持一致）。在 `sproxy.yaml` 中通过 `log.model_router_file` 配置路径。
+
+#### Dashboard 改进
+
+- 请求趋势图替换原有成本趋势图，支持 15 分钟 / 小时两种粒度
+- Top10 用户图表新增按请求次数排序，支持 1h / 1d 时间范围切换
+- 用户名列表支持一键复制
+- 分组管理页面新增 15m / 30m / 1h 限速字段的展示与编辑
+
+#### 错误可观测性增强
+
+- **502 transport 错误**：`usage_info` 中的 502 记录现在会填充 `error_body`（之前为空）
+- **SSE 内嵌 504/错误**：Anthropic 在 HTTP 200 流式响应中嵌入 `event: error` 时（如 504 Gateway Timeout），sproxy 现在能正确识别并在 `usage_info` 中记录为 502 + `error_body`
+- **input_tokens 估算**：LLM 请求失败时若无法获取真实 token 数，使用 tiktoken cl100k_base 进行估算（离线环境降级为字符估算）
+
+#### usage_logs 新增字段
+
+- `client_ip`：记录发起请求的真实客户端 IP（由 cproxy 通过 X-Forwarded-For 传递）
+- `model_router_*`：model_router 路由相关元数据字段
+
+#### /keygen 页面增强
+
+- 日志表格新增"接口"（request_path）和"错误详情"（error_body）列
+- 有 error_body 的记录点击可展开内联红色错误面板
+- 登录状态通过 localStorage 持久化，1 小时内刷新页面无需重新登录
+
+### 🔧 配置项变更
+
+#### `llm.fail_threshold` 现可通过 YAML 配置
+
+被动熔断的连续失败阈值之前硬编码为 3，现在可在 `sproxy.yaml` 中配置：
+
+```yaml
+llm:
+  fail_threshold: 5  # 默认 3
+```
+
+#### `llm.max_retries: -1` 禁用重试
+
+之前 `max_retries: 0` 和 `max_retries: -1` 效果相同（均回退到默认值 2）。现在：
+
+- `0`：使用默认值 2（保持向后兼容）
+- `-1`：**禁用重试**，首次失败直接返回错误，不切换 target
+
+#### `llm.request_timeout` 现在真正生效
+
+该字段长期存在于配置文件但从未被应用（dead config）。现在已修复：
+
+- 默认值：**300s**（即使配置文件未设置也会生效）
+- `-1`：禁用超时（恢复旧行为，永久等待）
+- 作用范围：等待 LLM 响应头阶段；流式响应体传输不受限制
+
+> ⚠️ **升级注意**：如果你的 LLM 后端响应头延迟超过 300s（极少见），需显式配置更大的值或设为 -1。
+
+### 🐛 Bug 修复
+
+| 提交 | 修复内容 |
+|------|---------|
+| `fix(health)` | 被动健康检查 URL 归一化，防止同一节点多计失败次数 |
+| `fix(health)` | 主动健康检查失败日志补充 source 字段，提升可读性 |
+| `fix(cluster)` | peer 模式下 `is_synced` 更新使用 `UpdateColumn` 防止同步风暴 |
+| `fix(auth)` | JWT 认证路径现在立即检查用户禁用状态（不依赖 Token 过期） |
+| `fix(dashboard)` | Top10 用户时间范围从 7d 改为 1d；告警详情通过 title 展示完整内容 |
+| `fix(proxy)` | passthrough 模式下 target 有自定义 base path 时路径重写正确 |
+| `fix(model_router)` | 新增 Redis 配置诊断日志，便于排查连接问题 |
+
+---
+
 ## [v3.0.0] - 2026-04-19
 
 ### 🚀 Major Version Release

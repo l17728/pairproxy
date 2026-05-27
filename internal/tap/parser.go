@@ -20,6 +20,13 @@ type ResponseParser interface {
 
 	// OutputTokens 返回已解析的输出 token 数量（streaming 结束后有效）。
 	OutputTokens() int
+
+	// HasError 返回 true 表示 SSE 流中收到了 error 事件（而非正常的流结束）。
+	HasError() bool
+
+	// SSEErrorData 返回 SSE error 事件的原始 data payload（最多 1024 字节）。
+	// 仅当 HasError() 为 true 时有效。
+	SSEErrorData() string
 }
 
 // NewResponseParser 根据 provider 名称创建对应的 ResponseParser。

@@ -63,7 +63,7 @@ func TestModelRouting_ExactMatch_RoutesToCorrectTarget(t *testing.T) {
 	defer cleanup()
 
 	// Request claude-sonnet-4 → should route to anthropic target
-	info, err := sp.weightedPickExcluding("/v1/messages", "claude-sonnet-4", nil, nil)
+	info, err := sp.weightedPickExcluding("/v1/messages", "claude-sonnet-4", nil)
 	require.NoError(t, err)
 	assert.Equal(t, "https://api.anthropic.com", info.URL)
 }
@@ -76,7 +76,7 @@ func TestModelRouting_NoMatch_FailOpen(t *testing.T) {
 	defer cleanup()
 
 	// Request llama3 → no target supports it, fail-open returns first available
-	info, err := sp.weightedPickExcluding("/v1/messages", "llama3", nil, nil)
+	info, err := sp.weightedPickExcluding("/v1/messages", "llama3", nil)
 	require.NoError(t, err)
 	assert.NotNil(t, info)
 	// Fail-open: returns some target (doesn't matter which)
@@ -90,7 +90,7 @@ func TestModelRouting_UnconfiguredTarget_NoFilter(t *testing.T) {
 	defer cleanup()
 
 	// Request gpt-4o → anthropic filtered out, ollama (unconfigured) passes
-	info, err := sp.weightedPickExcluding("/v1/messages", "gpt-4o", nil, nil)
+	info, err := sp.weightedPickExcluding("/v1/messages", "gpt-4o", nil)
 	require.NoError(t, err)
 	assert.Equal(t, "http://localhost:11434", info.URL)
 }
@@ -103,7 +103,7 @@ func TestModelRouting_AutoMode_SkipsFilter(t *testing.T) {
 	defer cleanup()
 
 	// Request "auto" → should skip model filtering, all targets participate
-	info, err := sp.weightedPickExcluding("/v1/messages", "auto", nil, nil)
+	info, err := sp.weightedPickExcluding("/v1/messages", "auto", nil)
 	require.NoError(t, err)
 	assert.NotNil(t, info)
 }
@@ -116,7 +116,7 @@ func TestModelRouting_EmptyModel_NoFilter(t *testing.T) {
 	defer cleanup()
 
 	// Empty model → no filtering
-	info, err := sp.weightedPickExcluding("/v1/messages", "", nil, nil)
+	info, err := sp.weightedPickExcluding("/v1/messages", "", nil)
 	require.NoError(t, err)
 	assert.NotNil(t, info)
 }
@@ -129,7 +129,7 @@ func TestModelRouting_AllTargetsUnconfigured_NoFilter(t *testing.T) {
 	defer cleanup()
 
 	// All targets unconfigured → any model passes
-	info, err := sp.weightedPickExcluding("/v1/messages", "claude-sonnet-4", nil, nil)
+	info, err := sp.weightedPickExcluding("/v1/messages", "claude-sonnet-4", nil)
 	require.NoError(t, err)
 	assert.NotNil(t, info)
 }

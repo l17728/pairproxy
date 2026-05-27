@@ -355,6 +355,10 @@ This outputs all commands with syntax, flags, examples, and natural language tri
 
 ## Version-Specific Features
 
+- **v3.1.0**: Group Multi-Binding 1:N + Model Router (group binds multiple same-provider targets; `model_router` config calls MaaS Router API to pick best model per request; user-level bindings unchanged 1:1)
+- **v3.0.2**: LLM target stability + direct-connect auth error format fixes
+- **v3.0.1**: API Key storage format fix + health check false-positive fix + LLM target sync status
+- **v3.0.0**: AtoO path fix + CLI management enhancements + Dashboard fixes
 - **v2.24.5**: Smart Probe (auto-discovery health check, no path config needed)
 - **v2.24.4**: SQLite timezone fix (non-UTC systems returning 0 tokens)
 - **v2.24.3**: reportgen LLM direct-connect parameters

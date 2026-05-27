@@ -700,7 +700,7 @@ done
 
 ### 11.7 Peer/PostgreSQL 模式启动时报 `mkdir track: read-only file system`
 
-**根因**：peer 模式下 `database.path` 为空，`track.dir` 默认退化为 `"./track"`（相对于进程 CWD）。若 CWD 所在文件系统只读（容器常见场景），`os.MkdirAll` 尝试创建 `track/users` 时报此错误。tracker 初始化失败后对话跟踪功能被禁用，但服务正常启动。
+**根因**：`track.dir` 默认为 `"./track"`（相对于进程 CWD），在所有模式下均如此。若 CWD 所在文件系统只读（容器常见场景），`os.MkdirAll` 尝试创建 `track/users` 时报此错误。tracker 初始化失败后对话跟踪功能被禁用，但服务正常启动。
 
 **解决方法**：在 `sproxy.yaml` 中显式配置有写权限的绝对路径：
 

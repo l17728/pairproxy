@@ -91,7 +91,7 @@ func newTeeWriter(t *testing.T, inner http.ResponseWriter, provider string, onCh
 		SourceNode: "local",
 	}
 
-	tw := NewTeeResponseWriter(inner, logger, writer, record, provider, time.Time{}, onChunk)
+	tw := NewTeeResponseWriter(inner, logger, writer, record, provider, time.Time{}, onChunk, nil, "")
 	return tw, writer, cancel
 }
 
@@ -305,7 +305,7 @@ func TestCoverage_TTFBMs_ZeroStartTime(t *testing.T) {
 
 	record := db.UsageRecord{RequestID: "req-ttfb", UserID: "u-ttfb"}
 	// startTime = time.Time{} (零值)
-	tw := NewTeeResponseWriter(rr, logger, writer, record, "", time.Time{}, nil)
+	tw := NewTeeResponseWriter(rr, logger, writer, record, "", time.Time{}, nil, nil, "")
 
 	// 写入数据，设置 firstByteAt
 	tw.Write([]byte("data")) //nolint:errcheck
@@ -336,7 +336,7 @@ func TestCoverage_TTFBMs_NormalCase(t *testing.T) {
 
 	record := db.UsageRecord{RequestID: "req-ttfb2", UserID: "u-ttfb2"}
 	startTime := time.Now().Add(-50 * time.Millisecond) // 50ms 前开始
-	tw := NewTeeResponseWriter(rr, logger, writer, record, "", startTime, nil)
+	tw := NewTeeResponseWriter(rr, logger, writer, record, "", startTime, nil, nil, "")
 
 	time.Sleep(1 * time.Millisecond)
 	tw.Write([]byte("data")) //nolint:errcheck
@@ -370,7 +370,7 @@ func TestCoverage_UpdateModel(t *testing.T) {
 		UserID:    "u-model",
 		Model:     "initial-model",
 	}
-	tw := NewTeeResponseWriter(rr, logger, writer, record, "", time.Time{}, nil)
+	tw := NewTeeResponseWriter(rr, logger, writer, record, "", time.Time{}, nil, nil, "")
 
 	tw.UpdateModel("claude-3-5-sonnet")
 

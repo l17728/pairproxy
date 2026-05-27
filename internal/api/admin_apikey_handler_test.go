@@ -123,22 +123,6 @@ func TestAdminAPIKeyCRUD(t *testing.T) {
 		}
 	})
 
-	t.Run("assign api key to user", func(t *testing.T) {
-		if createdKeyID == "" {
-			t.Skip("no key ID captured")
-		}
-		uid := "test-user"
-		body, _ := json.Marshal(assignAPIKeyRequest{UserID: &uid})
-		req := httptest.NewRequest(http.MethodPost,
-			"/api/admin/api-keys/"+createdKeyID+"/assign", bytes.NewBuffer(body))
-		req.Header.Set("Authorization", authHdr)
-		rr := httptest.NewRecorder()
-		mux.ServeHTTP(rr, req)
-		if rr.Code != http.StatusNoContent {
-			t.Errorf("assign: status = %d, want 204; body: %s", rr.Code, rr.Body.String())
-		}
-	})
-
 	t.Run("revoke api key", func(t *testing.T) {
 		if createdKeyID == "" {
 			t.Skip("no key ID captured")

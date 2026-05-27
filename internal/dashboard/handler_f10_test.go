@@ -170,9 +170,7 @@ func TestHandleTrendsAPI(t *testing.T) {
 		if _, ok := resp["daily_tokens"]; !ok {
 			t.Error("response missing daily_tokens field")
 		}
-		if _, ok := resp["daily_cost"]; !ok {
-			t.Error("response missing daily_cost field")
-		}
+		// daily_cost removed; request trend is now served via daily_tokens.request_count
 		if _, ok := resp["top_users"]; !ok {
 			t.Error("response missing top_users field")
 		}
@@ -349,7 +347,7 @@ func TestOverviewChartContainerFix(t *testing.T) {
 	// --- 3. Token and cost trend canvases must be inside a 200px wrapper ---
 	// We verify that the 200px height string appears in the page and that the
 	// canvas ids immediately follow it (within a reasonable HTML distance).
-	trendChartIDs := []string{"tokenTrendChart", "costTrendChart"}
+	trendChartIDs := []string{"tokenTrendChart", "requestTrendChart"}
 	for _, id := range trendChartIDs {
 		wrapperDiv := `height: 200px`
 		canvasTag := `id="` + id + `"`
@@ -373,8 +371,8 @@ func TestOverviewChartContainerFix(t *testing.T) {
 		}
 	}
 
-	// --- 4. Top-users canvas must be inside a 120px wrapper ---------------
-	topUsersWrapper := `height: 120px`
+	// --- 4. Top-users canvas must be inside a 240px wrapper ---------------
+	topUsersWrapper := `height: 240px`
 	topUsersCanvas := `id="topUsersChart"`
 	canvasIdx := strings.Index(body, topUsersCanvas)
 	if canvasIdx == -1 {
@@ -383,9 +381,9 @@ func TestOverviewChartContainerFix(t *testing.T) {
 		preceding := body[:canvasIdx]
 		wrapperIdx := strings.LastIndex(preceding, topUsersWrapper)
 		if wrapperIdx == -1 {
-			t.Errorf("no 'height: 120px' wrapper div found before topUsersChart canvas")
+			t.Errorf("no 'height: 240px' wrapper div found before topUsersChart canvas")
 		} else if canvasIdx-wrapperIdx > 300 {
-			t.Errorf("topUsersChart canvas is not immediately inside a 'height: 120px' wrapper div (distance=%d chars)",
+			t.Errorf("topUsersChart canvas is not immediately inside a 'height: 240px' wrapper div (distance=%d chars)",
 				canvasIdx-wrapperIdx)
 		}
 	}
@@ -408,7 +406,7 @@ func TestOverviewChartContainerCount(t *testing.T) {
 
 	expectedCanvases := []string{
 		`id="tokenTrendChart"`,
-		`id="costTrendChart"`,
+		`id="requestTrendChart"`,
 		`id="topUsersChart"`,
 	}
 	for _, id := range expectedCanvases {

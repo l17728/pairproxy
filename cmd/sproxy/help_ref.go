@@ -686,7 +686,12 @@ Tracking is enabled/disabled per user via marker files. No UI or API is
 required. Changes take effect immediately — no restart needed.
 
 Tracked conversations are saved as JSON files:
-  ` + bq + `<db_dir>/track/conversations/<username>/<timestamp>-<reqID>.json` + bq + `
+  ` + bq + `<track.dir>/conversations/<username>/<timestamp>-<reqID>.json` + bq + `
+
+track.dir defaults to ./track (relative to sproxy working directory).
+In peer mode, set track.dir to a shared storage path (e.g. NFS mount) in
+sproxy.yaml so that all nodes write to the same location and admin commands
+take effect cluster-wide.
 
 Each JSON file contains: request_id, username, timestamp, provider, model,
 messages (input), response (assistant text), input_tokens, output_tokens.
@@ -965,11 +970,11 @@ Natural language: "start server", "start sproxy", "run the proxy"
 | Exit drain mode | sproxy admin drain exit  **[primary-only]** |
 | Check drain status | sproxy admin drain status |
 | Wait for drain completion | sproxy admin drain wait --timeout 60s |
-| Enable conversation tracking for alice | sproxy admin track enable alice  **[primary-only]** |
-| Disable conversation tracking for alice | sproxy admin track disable alice  **[primary-only]** |
+| Enable conversation tracking for alice | sproxy admin track enable alice |
+| Disable conversation tracking for alice | sproxy admin track disable alice |
 | List all tracked users | sproxy admin track list |
 | Show alice's conversation records | sproxy admin track show alice |
-| Clear alice's conversation records | sproxy admin track clear alice  **[primary-only]** |
+| Clear alice's conversation records | sproxy admin track clear alice |
 | Import groups/users from file | sproxy admin import users.txt  **[primary-only]** |
 | Preview import without writing | sproxy admin import --dry-run users.txt |
 | Add semantic route | sproxy admin route add code_tasks --description "Code gen" --targets "https://api.anthropic.com" --priority 10  **[primary-only]** |

@@ -38,7 +38,7 @@ func setupTeeWriter(t *testing.T, rr *httptest.ResponseRecorder) (*TeeResponseWr
 		SourceNode:  "local",
 	}
 
-	tw := NewTeeResponseWriter(rr, logger, writer, record, "", time.Time{}, nil)
+	tw := NewTeeResponseWriter(rr, logger, writer, record, "", time.Time{}, nil, nil, "")
 	return tw, writer, cancel
 }
 
@@ -140,7 +140,7 @@ func TestTeeWriterUsageRecordedStreaming(t *testing.T) {
 		SourceNode: "local",
 	}
 
-	tw := NewTeeResponseWriter(rr, logger, writer, record, "", time.Time{}, nil)
+	tw := NewTeeResponseWriter(rr, logger, writer, record, "", time.Time{}, nil, nil, "")
 	// 设置 streaming Content-Type
 	tw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
 	tw.WriteHeader(http.StatusOK)
@@ -207,7 +207,7 @@ func TestTeeWriterUsageRecordedNonStreaming(t *testing.T) {
 		SourceNode: "local",
 	}
 
-	tw := NewTeeResponseWriter(rr, logger, writer, record, "", time.Time{}, nil)
+	tw := NewTeeResponseWriter(rr, logger, writer, record, "", time.Time{}, nil, nil, "")
 	tw.ResponseWriter.Header().Set("Content-Type", "application/json")
 	tw.WriteHeader(http.StatusOK)
 
@@ -319,7 +319,7 @@ func TestTeeWriterLargeSSEStream(t *testing.T) {
 	sse := BuildAnthropicSSE(1000, 500, chunks)
 
 	record := db.UsageRecord{RequestID: "req-large", UserID: "user-large", SourceNode: "local"}
-	tw := NewTeeResponseWriter(rr, logger, writer, record, "", time.Time{}, nil)
+	tw := NewTeeResponseWriter(rr, logger, writer, record, "", time.Time{}, nil, nil, "")
 	tw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
 
 	// 按 64 字节 chunk 写入
@@ -376,7 +376,7 @@ func TestTeeWriterStreaming_DurationMsNonZero(t *testing.T) {
 
 	// startTime 必须是真实时间（不是零值），否则 DurationMs 无法计算
 	startTime := time.Now()
-	tw := NewTeeResponseWriter(rr, logger, writer, record, "", startTime, nil)
+	tw := NewTeeResponseWriter(rr, logger, writer, record, "", startTime, nil, nil, "")
 	tw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
 
 	// 稍等一点点，确保 DurationMs > 0（避免时间精度问题）
@@ -412,4 +412,3 @@ func TestTeeWriterStreaming_DurationMsNonZero(t *testing.T) {
 		t.Error("IsStreaming should be true")
 	}
 }
-

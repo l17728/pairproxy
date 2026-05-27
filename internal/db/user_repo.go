@@ -327,13 +327,16 @@ func (r *GroupRepo) GetByName(name string) (*Group, error) {
 }
 
 // SetQuota 设置分组配额（nil 表示无限制）
-func (r *GroupRepo) SetQuota(id string, daily, monthly *int64, rpm *int, maxReqTokens *int64, concurrent *int) error {
+func (r *GroupRepo) SetQuota(id string, daily, monthly *int64, rpm *int, maxReqTokens *int64, concurrent *int, rpm15m, rpm30m, rph *int) error {
 	updates := map[string]interface{}{
-		"daily_token_limit":     daily,
-		"monthly_token_limit":   monthly,
-		"requests_per_minute":   rpm,
-		"max_tokens_per_request": maxReqTokens,
-		"concurrent_requests":   concurrent,
+		"daily_token_limit":        daily,
+		"monthly_token_limit":      monthly,
+		"requests_per_minute":      rpm,
+		"requests_per_15_minutes":  rpm15m,
+		"requests_per_30_minutes":  rpm30m,
+		"requests_per_hour":        rph,
+		"max_tokens_per_request":   maxReqTokens,
+		"concurrent_requests":      concurrent,
 	}
 	if err := r.db.Model(&Group{}).Where("id = ?", id).Updates(updates).Error; err != nil {
 		r.logger.Error("failed to set group quota",
@@ -347,6 +350,9 @@ func (r *GroupRepo) SetQuota(id string, daily, monthly *int64, rpm *int, maxReqT
 		zap.Any("daily_limit", daily),
 		zap.Any("monthly_limit", monthly),
 		zap.Any("rpm", rpm),
+		zap.Any("rpm_15m", rpm15m),
+		zap.Any("rpm_30m", rpm30m),
+		zap.Any("rph", rph),
 		zap.Any("max_tokens_per_request", maxReqTokens),
 		zap.Any("concurrent_requests", concurrent),
 	)

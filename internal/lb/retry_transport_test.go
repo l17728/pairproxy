@@ -389,8 +389,11 @@ func TestRetryTransport_RetryOnStatus_429_AllExhausted(t *testing.T) {
 	if resp != nil {
 		resp.Body.Close()
 	}
-	if err == nil {
-		t.Fatal("expected error when all targets return 429")
+	if err != nil {
+		t.Fatalf("expected last 429 response to be transparently returned, got error: %v", err)
+	}
+	if resp == nil || resp.StatusCode != 429 {
+		t.Fatalf("expected status 429 from last exhausted target, got %v", resp)
 	}
 }
 

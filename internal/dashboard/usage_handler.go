@@ -13,13 +13,16 @@ import (
 
 // dashboardQuotaResponse 配额状态响应（含 remain 字段，供 WebUI 直接使用）
 type dashboardQuotaResponse struct {
-	DailyLimit    int64 `json:"daily_limit"`    // 0 = 不限
+	DailyLimit    int64 `json:"daily_limit"` // 0 = 不限
 	DailyUsed     int64 `json:"daily_used"`
-	DailyRemain   int64 `json:"daily_remain"`   // -1 = 不限
-	MonthlyLimit  int64 `json:"monthly_limit"`  // 0 = 不限
+	DailyRemain   int64 `json:"daily_remain"`  // -1 = 不限
+	MonthlyLimit  int64 `json:"monthly_limit"` // 0 = 不限
 	MonthlyUsed   int64 `json:"monthly_used"`
 	MonthlyRemain int64 `json:"monthly_remain"` // -1 = 不限
-	RPMLimit      int   `json:"rpm_limit"`       // 0 = 不限
+	RPMLimit      int   `json:"rpm_limit"`      // 0 = 不限
+	RPM15mLimit   int   `json:"rpm_15m_limit"`  // 0 = 不限
+	RPM30mLimit   int   `json:"rpm_30m_limit"`  // 0 = 不限
+	RPHLimit      int   `json:"rph_limit"`      // 0 = 不限
 }
 
 // handleDashboardActiveUsers GET /api/dashboard/active-users?days=N
@@ -107,6 +110,15 @@ func (h *Handler) handleDashboardUserQuota(w http.ResponseWriter, r *http.Reques
 			if group.RequestsPerMinute != nil {
 				resp.RPMLimit = *group.RequestsPerMinute
 			}
+			if group.RequestsPer15Minutes != nil {
+				resp.RPM15mLimit = *group.RequestsPer15Minutes
+			}
+			if group.RequestsPer30Minutes != nil {
+				resp.RPM30mLimit = *group.RequestsPer30Minutes
+			}
+			if group.RequestsPerHour != nil {
+				resp.RPHLimit = *group.RequestsPerHour
+			}
 		}
 	}
 
@@ -156,7 +168,7 @@ func (h *Handler) handleDashboardUserHistory(w http.ResponseWriter, r *http.Requ
 	now := time.Now()
 	from := now.AddDate(0, 0, -days)
 
-	rows, err := h.usageRepo.DailyTokens(from, now, user.ID)
+	rows, err := h.usageRepo.DailyTokens(from, now, user.ID, "day")
 	if err != nil {
 		h.logger.Error("dashboard: failed to get usage history", zap.Error(err))
 		writeDashJSONError(w, http.StatusInternalServerError, "failed to get usage history")
@@ -255,6 +267,8 @@ func (h *Handler) handleDashboardUserLogs(w http.ResponseWriter, r *http.Request
 		StatusCode   int     `json:"status_code"`
 		IsStreaming  bool    `json:"is_streaming"`
 		DurationMs   int64   `json:"duration_ms"`
+		RequestPath  string  `json:"request_path"`
+		ErrorBody    string  `json:"error_body"`
 	}
 
 	entries := make([]logEntry, 0, len(logs))
@@ -269,6 +283,8 @@ func (h *Handler) handleDashboardUserLogs(w http.ResponseWriter, r *http.Request
 			StatusCode:   l.StatusCode,
 			IsStreaming:  l.IsStreaming,
 			DurationMs:   l.DurationMs,
+			RequestPath:  l.RequestPath,
+			ErrorBody:    l.ErrorBody,
 		})
 	}
 

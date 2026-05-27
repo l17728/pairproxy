@@ -355,6 +355,14 @@ This outputs all commands with syntax, flags, examples, and natural language tri
 
 ## Version-Specific Features
 
+- **v3.2.2**: invalid JWT warn log adds `path`/`method`/`remote_addr` fields; shown in Dashboard alerts
+- **v3.2.1**: UI tooltip for error_body on request path; `request_timeout` accepts bare int (seconds) and `-1`; real client IP in middleware logs; model_router restricted to completion paths only
+- **v3.2.0**: Multi-window rate limiting (15m/30m/1h); SSE 504 error recording; 502 ErrorBody populated; tiktoken input estimation; keygen page improvements; `llm.fail_threshold` configurable; `max_retries: -1` disables retry; `request_timeout` now applied (default 300s); client_ip in usage_logs
+- **v3.1.1**: Track/Peer/Model Router fixes (track.dir decoupled from database.path; peer mode source_node fix; alerts SSE removed → polling; model_router AtoO pre-conversion; track flush safety net; track dir 0o777 for cross-user writes; track error logging)
+- **v3.1.0**: Group Multi-Binding 1:N + Model Router (group binds multiple same-provider targets; `model_router` config calls MaaS Router API to pick best model per request; user-level bindings unchanged 1:1)
+- **v3.0.2**: LLM target stability + direct-connect auth error format fixes
+- **v3.0.1**: API Key storage format fix + health check false-positive fix + LLM target sync status
+- **v3.0.0**: AtoO path fix + CLI management enhancements + Dashboard fixes
 - **v2.24.5**: Smart Probe (auto-discovery health check, no path config needed)
 - **v2.24.4**: SQLite timezone fix (non-UTC systems returning 0 tokens)
 - **v2.24.3**: reportgen LLM direct-connect parameters

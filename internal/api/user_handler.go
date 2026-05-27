@@ -88,11 +88,14 @@ func claimsFromCtx(ctx context.Context) *auth.JWTClaims {
 
 // userQuotaResponse 用户配额状态响应
 type userQuotaResponse struct {
-	DailyLimit   int64 `json:"daily_limit"`   // 0 = 不限
+	DailyLimit   int64 `json:"daily_limit"` // 0 = 不限
 	DailyUsed    int64 `json:"daily_used"`
 	MonthlyLimit int64 `json:"monthly_limit"` // 0 = 不限
 	MonthlyUsed  int64 `json:"monthly_used"`
-	RPMLimit     int   `json:"rpm_limit"` // 0 = 不限
+	RPMLimit     int   `json:"rpm_limit"`     // 0 = 不限
+	RPM15mLimit  int   `json:"rpm_15m_limit"` // 0 = 不限
+	RPM30mLimit  int   `json:"rpm_30m_limit"` // 0 = 不限
+	RPHLimit     int   `json:"rph_limit"`     // 0 = 不限
 }
 
 func (h *UserHandler) handleQuotaStatus(w http.ResponseWriter, r *http.Request) {
@@ -164,6 +167,15 @@ func (h *UserHandler) handleQuotaStatus(w http.ResponseWriter, r *http.Request) 
 			if group.RequestsPerMinute != nil {
 				resp.RPMLimit = *group.RequestsPerMinute
 			}
+			if group.RequestsPer15Minutes != nil {
+				resp.RPM15mLimit = *group.RequestsPer15Minutes
+			}
+			if group.RequestsPer30Minutes != nil {
+				resp.RPM30mLimit = *group.RequestsPer30Minutes
+			}
+			if group.RequestsPerHour != nil {
+				resp.RPHLimit = *group.RequestsPerHour
+			}
 		}
 	}
 
@@ -227,7 +239,7 @@ func (h *UserHandler) handleUsageHistory(w http.ResponseWriter, r *http.Request)
 	now := time.Now()
 	from := now.AddDate(0, 0, -days).Truncate(24 * time.Hour)
 
-	history, err := h.usageRepo.DailyTokens(from, now, targetUserID)
+	history, err := h.usageRepo.DailyTokens(from, now, targetUserID, "day")
 	if err != nil {
 		h.logger.Error("failed to get user usage history",
 			zap.String("user_id", targetUserID),

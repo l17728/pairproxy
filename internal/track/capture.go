@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -121,7 +122,8 @@ func (cs *CaptureSession) doFlush() {
 
 	data, err := json.MarshalIndent(cs.record, "", "  ")
 	if err != nil {
-		return // JSON 序列化失败：静默丢弃（不影响主流程）
+		log.Printf("[track] failed to marshal conversation record: %v", err)
+		return
 	}
 
 	// 文件名：<timestamp>-<reqID>.json（用 UTC RFC3339 保证排序友好）
@@ -130,8 +132,15 @@ func (cs *CaptureSession) doFlush() {
 	path := filepath.Join(cs.dir, filename)
 
 	// 确保目录存在（用户目录可能在 Enable 之后还未 Flush 过）
-	_ = os.MkdirAll(cs.dir, 0o755)
-	_ = os.WriteFile(path, data, 0o644)
+	if err := os.MkdirAll(cs.dir, 0o777); err != nil {
+		log.Printf("[track] failed to create conversation dir %q: %v", cs.dir, err)
+		return
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		log.Printf("[track] failed to write conversation file %q: %v", path, err)
+		return
+	}
+	log.Printf("[track] conversation saved: %s", path)
 }
 
 // ---------------------------------------------------------------------------

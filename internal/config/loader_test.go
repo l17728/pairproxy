@@ -269,7 +269,7 @@ llm:
 	if cfg.LLM.LBStrategy != "round_robin" {
 		t.Errorf("default LBStrategy = %q, want round_robin", cfg.LLM.LBStrategy)
 	}
-	if cfg.LLM.RequestTimeout != 300*time.Second {
+	if cfg.LLM.RequestTimeout != Duration(300*time.Second) {
 		t.Errorf("default RequestTimeout = %v, want 300s", cfg.LLM.RequestTimeout)
 	}
 	if cfg.Auth.AccessTokenTTL != 24*time.Hour {

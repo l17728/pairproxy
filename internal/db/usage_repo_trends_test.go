@@ -41,7 +41,7 @@ func TestUsageRepo_DailyTokens(t *testing.T) {
 	// 测试全局聚合
 	from := day1
 	to := day3.Add(24 * time.Hour)
-	rows, err := repo.DailyTokens(from, to, "")
+	rows, err := repo.DailyTokens(from, to, "", "day")
 	if err != nil {
 		t.Fatalf("DailyTokens: %v", err)
 	}
@@ -56,7 +56,7 @@ func TestUsageRepo_DailyTokens(t *testing.T) {
 	}
 
 	// 测试用户过滤
-	userRows, err := repo.DailyTokens(from, to, "u1")
+	userRows, err := repo.DailyTokens(from, to, "u1", "day")
 	if err != nil {
 		t.Fatalf("DailyTokens(u1): %v", err)
 	}

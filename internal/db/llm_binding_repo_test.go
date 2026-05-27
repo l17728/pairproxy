@@ -1,6 +1,7 @@
 package db
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -37,14 +38,20 @@ func TestLLMBindingRepo_SetUser(t *testing.T) {
 }
 
 func TestLLMBindingRepo_SetGroup(t *testing.T) {
-	db := openTestDB(t)
+	gormDB := openTestDB(t)
 	logger := zaptest.NewLogger(t)
-	repo := NewLLMBindingRepo(db, logger)
+	repo := NewLLMBindingRepo(gormDB, logger)
+	targetRepo := NewLLMTargetRepo(gormDB, logger)
+
+	// 分组绑定现在通过 AddGroupBinding（需要真实 target）
+	tgt := &LLMTarget{ID: "target-uuid-openai", URL: "https://openai.example.com", Provider: "openai"}
+	if err := targetRepo.Create(tgt); err != nil {
+		t.Fatalf("create target: %v", err)
+	}
 
 	groupID := "group-1"
-	targetID := "target-uuid-openai"
-	if err := repo.Set(targetID, nil, &groupID); err != nil {
-		t.Fatalf("Set: %v", err)
+	if err := repo.AddGroupBinding(tgt.ID, groupID); err != nil {
+		t.Fatalf("AddGroupBinding: %v", err)
 	}
 
 	// user ID 不匹配 → 走分组绑定
@@ -55,26 +62,32 @@ func TestLLMBindingRepo_SetGroup(t *testing.T) {
 	if !found {
 		t.Fatal("expected group binding to be found")
 	}
-	if gotTargetID != targetID {
-		t.Errorf("targetID = %q, want %q", gotTargetID, targetID)
+	if gotTargetID != tgt.ID {
+		t.Errorf("targetID = %q, want %q", gotTargetID, tgt.ID)
 	}
 }
 
 func TestLLMBindingRepo_UserPriorityOverGroup(t *testing.T) {
-	db := openTestDB(t)
+	gormDB := openTestDB(t)
 	logger := zaptest.NewLogger(t)
-	repo := NewLLMBindingRepo(db, logger)
+	repo := NewLLMBindingRepo(gormDB, logger)
+	targetRepo := NewLLMTargetRepo(gormDB, logger)
 
 	userID := "user-2"
 	groupID := "group-2"
-	targetOpenAI := "target-uuid-openai-g"
-	targetAnthropic := "target-uuid-anthropic-u"
+
+	// 分组绑定需要真实 target（AddGroupBinding 会查 DB）
+	tgtGroup := &LLMTarget{ID: "target-uuid-openai-g", URL: "https://openai-g.example.com", Provider: "openai"}
+	if err := targetRepo.Create(tgtGroup); err != nil {
+		t.Fatalf("create group target: %v", err)
+	}
 
 	// 分组绑定 A
-	if err := repo.Set(targetOpenAI, nil, &groupID); err != nil {
-		t.Fatalf("Set group: %v", err)
+	if err := repo.AddGroupBinding(tgtGroup.ID, groupID); err != nil {
+		t.Fatalf("AddGroupBinding: %v", err)
 	}
-	// 用户绑定 B（应优先）
+	// 用户绑定 B（应优先）—— 用户级绑定 targetID 不需要存在于 llm_targets
+	targetAnthropic := "target-uuid-anthropic-u"
 	if err := repo.Set(targetAnthropic, &userID, nil); err != nil {
 		t.Fatalf("Set user: %v", err)
 	}
@@ -322,49 +335,56 @@ func TestLLMBindingRepo_SetReplace_UserMultipleBindings_DeletesOld(t *testing.T)
 	assert.Equal(t, 1, userBindings, "用户应只有一条绑定记录（旧的已删除）")
 }
 
-// TestLLMBindingRepo_SetReplace_GroupMultipleBindings_DeletesOld 验证 Set 正确替换分组的旧绑定
-// 这测试 (group_id, target_id) 复合唯一约束的使用
-func TestLLMBindingRepo_SetReplace_GroupMultipleBindings_DeletesOld(t *testing.T) {
+// TestLLMBindingRepo_GroupBinding_AccumulatesNotReplaces 验证分组绑定的 1:N 语义：
+// AddGroupBinding 追加（不替换），分组可持有多条绑定。
+// 若要"替换"，需先 RemoveGroupBinding 删除旧条目。
+func TestLLMBindingRepo_GroupBinding_AccumulatesNotReplaces(t *testing.T) {
 	logger := zap.NewNop()
 	gormDB, err := Open(logger, ":memory:")
 	require.NoError(t, err)
 	require.NoError(t, Migrate(logger, gormDB))
 	repo := NewLLMBindingRepo(gormDB, logger)
+	targetRepo := NewLLMTargetRepo(gormDB, logger)
 
 	groupID := "group-456"
-	oldTargetID := "target-old"
-	newTargetID := "target-new"
+	tgt1 := &LLMTarget{ID: "target-old", URL: "https://old.example.com", Provider: "anthropic"}
+	tgt2 := &LLMTarget{ID: "target-new", URL: "https://new.example.com", Provider: "anthropic"}
+	require.NoError(t, targetRepo.Create(tgt1))
+	require.NoError(t, targetRepo.Create(tgt2))
 
-	// 第一次 Set：group-456 → target-old
-	err = repo.Set(oldTargetID, nil, &groupID)
+	// 添加第一条绑定
+	err = repo.AddGroupBinding(tgt1.ID, groupID)
 	require.NoError(t, err)
 
-	// 验证初始绑定
-	found, foundGroup, err := repo.FindForUser("", groupID)
+	// 验证第一条绑定
+	ids, err := repo.FindAllForGroup(groupID)
 	require.NoError(t, err)
-	assert.True(t, foundGroup)
-	assert.Equal(t, oldTargetID, found)
+	assert.Equal(t, 1, len(ids))
+	assert.Equal(t, tgt1.ID, ids[0])
 
-	// 第二次 Set：group-456 → target-new（应替换）
-	err = repo.Set(newTargetID, nil, &groupID)
+	// 添加第二条同 provider 绑定（追加，不替换）
+	err = repo.AddGroupBinding(tgt2.ID, groupID)
 	require.NoError(t, err)
 
-	// 验证绑定已更新
-	found, foundGroup, err = repo.FindForUser("", groupID)
+	// 现在分组应有两条绑定
+	ids, err = repo.FindAllForGroup(groupID)
 	require.NoError(t, err)
-	assert.True(t, foundGroup)
-	assert.Equal(t, newTargetID, found, "Set 应替换分组的旧绑定")
+	assert.Equal(t, 2, len(ids), "分组绑定应是 1:N（追加），不是替换")
 
-	// 验证分组只有一条绑定
+	// 模拟"替换"：先删除旧的，再验证只剩新的
 	bindings, err := repo.List()
 	require.NoError(t, err)
-	groupBindings := 0
 	for _, b := range bindings {
-		if b.GroupID != nil && *b.GroupID == groupID {
-			groupBindings++
+		if b.GroupID != nil && *b.GroupID == groupID && b.TargetID == tgt1.ID {
+			require.NoError(t, repo.RemoveGroupBinding(b.ID))
+			break
 		}
 	}
-	assert.Equal(t, 1, groupBindings, "分组应只有一条绑定记录")
+
+	ids, err = repo.FindAllForGroup(groupID)
+	require.NoError(t, err)
+	assert.Equal(t, 1, len(ids))
+	assert.Equal(t, tgt2.ID, ids[0], "删除旧绑定后分组只剩新绑定")
 }
 
 // TestLLMBindingRepo_FindForUser_DefensiveCheck 测试防御性检查（问题 #31/#36 修复）
@@ -415,6 +435,220 @@ func TestLLMBindingRepo_FindForUser_SetGuaranteesUnique(t *testing.T) {
 	assert.Equal(t, 1, userBindings, "Set() 应通过 delete-then-insert 保证最多一条用户绑定")
 }
 
+// ---------------------------------------------------------------------------
+// AddGroupBinding / RemoveGroupBinding / FindAllForGroup 测试（1:N 语义）
+// ---------------------------------------------------------------------------
+
+// setupGroupBindingTargets 在 DB 中创建两个 anthropic target 和一个 openai target。
+func setupGroupBindingTargets(t *testing.T, targetRepo *LLMTargetRepo) (anthro1, anthro2, oaiTarget *LLMTarget) {
+	t.Helper()
+	anthro1 = &LLMTarget{ID: "tgt-anthro-1", URL: "https://anthro1.example.com", Provider: "anthropic"}
+	anthro2 = &LLMTarget{ID: "tgt-anthro-2", URL: "https://anthro2.example.com", Provider: "anthropic"}
+	oaiTarget = &LLMTarget{ID: "tgt-oai-1", URL: "https://oai1.example.com", Provider: "openai"}
+	for _, tgt := range []*LLMTarget{anthro1, anthro2, oaiTarget} {
+		if err := targetRepo.Create(tgt); err != nil {
+			t.Fatalf("create target %q: %v", tgt.ID, err)
+		}
+	}
+	return
+}
+
+func TestLLMBindingRepo_AddGroupBinding_SameProvider(t *testing.T) {
+	gormDB := openTestDB(t)
+	logger := zaptest.NewLogger(t)
+	repo := NewLLMBindingRepo(gormDB, logger)
+	targetRepo := NewLLMTargetRepo(gormDB, logger)
+
+	anthro1, anthro2, _ := setupGroupBindingTargets(t, targetRepo)
+	const groupID = "grp-same-provider"
+
+	// 添加第一个绑定
+	if err := repo.AddGroupBinding(anthro1.ID, groupID); err != nil {
+		t.Fatalf("AddGroupBinding anthro1: %v", err)
+	}
+	// 添加第二个同 provider 的绑定
+	if err := repo.AddGroupBinding(anthro2.ID, groupID); err != nil {
+		t.Fatalf("AddGroupBinding anthro2: %v", err)
+	}
+
+	// 分组应有两条绑定
+	ids, err := repo.FindAllForGroup(groupID)
+	if err != nil {
+		t.Fatalf("FindAllForGroup: %v", err)
+	}
+	if len(ids) != 2 {
+		t.Errorf("expected 2 group bindings, got %d", len(ids))
+	}
+}
+
+func TestLLMBindingRepo_AddGroupBinding_CrossProvider_Rejected(t *testing.T) {
+	gormDB := openTestDB(t)
+	logger := zaptest.NewLogger(t)
+	repo := NewLLMBindingRepo(gormDB, logger)
+	targetRepo := NewLLMTargetRepo(gormDB, logger)
+
+	anthro1, _, oaiTarget := setupGroupBindingTargets(t, targetRepo)
+	const groupID = "grp-cross-provider"
+
+	// 添加 anthropic 绑定
+	if err := repo.AddGroupBinding(anthro1.ID, groupID); err != nil {
+		t.Fatalf("AddGroupBinding anthro1: %v", err)
+	}
+	// 添加 openai 绑定到同一分组 → 应返回 provider conflict 错误
+	err := repo.AddGroupBinding(oaiTarget.ID, groupID)
+	if err == nil {
+		t.Error("expected provider conflict error, but got nil")
+	} else if !strings.Contains(err.Error(), "provider conflict") {
+		t.Errorf("expected 'provider conflict' in error, got: %v", err)
+	}
+}
+
+func TestLLMBindingRepo_AddGroupBinding_Idempotent(t *testing.T) {
+	gormDB := openTestDB(t)
+	logger := zaptest.NewLogger(t)
+	repo := NewLLMBindingRepo(gormDB, logger)
+	targetRepo := NewLLMTargetRepo(gormDB, logger)
+
+	anthro1, _, _ := setupGroupBindingTargets(t, targetRepo)
+	const groupID = "grp-idempotent"
+
+	// 添加同一绑定两次
+	if err := repo.AddGroupBinding(anthro1.ID, groupID); err != nil {
+		t.Fatalf("first AddGroupBinding: %v", err)
+	}
+	if err := repo.AddGroupBinding(anthro1.ID, groupID); err != nil {
+		t.Fatalf("second AddGroupBinding (should be idempotent): %v", err)
+	}
+
+	// 仍然只有一条绑定
+	ids, err := repo.FindAllForGroup(groupID)
+	if err != nil {
+		t.Fatalf("FindAllForGroup: %v", err)
+	}
+	if len(ids) != 1 {
+		t.Errorf("expected 1 binding after idempotent add, got %d", len(ids))
+	}
+}
+
+func TestLLMBindingRepo_RemoveGroupBinding(t *testing.T) {
+	gormDB := openTestDB(t)
+	logger := zaptest.NewLogger(t)
+	repo := NewLLMBindingRepo(gormDB, logger)
+	targetRepo := NewLLMTargetRepo(gormDB, logger)
+
+	anthro1, anthro2, _ := setupGroupBindingTargets(t, targetRepo)
+	const groupID = "grp-remove"
+
+	if err := repo.AddGroupBinding(anthro1.ID, groupID); err != nil {
+		t.Fatalf("AddGroupBinding anthro1: %v", err)
+	}
+	if err := repo.AddGroupBinding(anthro2.ID, groupID); err != nil {
+		t.Fatalf("AddGroupBinding anthro2: %v", err)
+	}
+
+	// 找到第一条绑定的 ID 并删除
+	bindings, err := repo.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	var bindingID string
+	for _, b := range bindings {
+		if b.GroupID != nil && *b.GroupID == groupID && b.TargetID == anthro1.ID {
+			bindingID = b.ID
+			break
+		}
+	}
+	if bindingID == "" {
+		t.Fatal("could not find anthro1 binding to remove")
+	}
+
+	if err := repo.RemoveGroupBinding(bindingID); err != nil {
+		t.Fatalf("RemoveGroupBinding: %v", err)
+	}
+
+	// 分组现在应只有一条绑定（anthro2）
+	ids, err := repo.FindAllForGroup(groupID)
+	if err != nil {
+		t.Fatalf("FindAllForGroup after remove: %v", err)
+	}
+	if len(ids) != 1 {
+		t.Errorf("expected 1 binding after remove, got %d", len(ids))
+	}
+	if ids[0] != anthro2.ID {
+		t.Errorf("remaining binding = %q, want %q", ids[0], anthro2.ID)
+	}
+}
+
+func TestLLMBindingRepo_FindAllForGroup_Empty(t *testing.T) {
+	gormDB := openTestDB(t)
+	logger := zaptest.NewLogger(t)
+	repo := NewLLMBindingRepo(gormDB, logger)
+
+	ids, err := repo.FindAllForGroup("nonexistent-group")
+	if err != nil {
+		t.Fatalf("FindAllForGroup: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Errorf("expected 0 bindings for unknown group, got %d", len(ids))
+	}
+}
+
+func TestLLMBindingRepo_AddGroupBinding_TargetNotFound(t *testing.T) {
+	gormDB := openTestDB(t)
+	logger := zaptest.NewLogger(t)
+	repo := NewLLMBindingRepo(gormDB, logger)
+
+	err := repo.AddGroupBinding("nonexistent-target-id", "some-group")
+	if err == nil {
+		t.Error("expected error for nonexistent target, got nil")
+	}
+}
+
+// TestLLMBindingRepo_FindForUser_GroupMultiBinding_FallsBack 验证分组有多绑定时
+// FindForUser 仍返回第一条（兼容旧调用方），不报错
+func TestLLMBindingRepo_FindForUser_GroupMultiBinding_FallsBack(t *testing.T) {
+	gormDB := openTestDB(t)
+	logger := zaptest.NewLogger(t)
+	repo := NewLLMBindingRepo(gormDB, logger)
+	targetRepo := NewLLMTargetRepo(gormDB, logger)
+
+	anthro1, anthro2, _ := setupGroupBindingTargets(t, targetRepo)
+	const groupID = "grp-fallback"
+
+	if err := repo.AddGroupBinding(anthro1.ID, groupID); err != nil {
+		t.Fatalf("AddGroupBinding anthro1: %v", err)
+	}
+	if err := repo.AddGroupBinding(anthro2.ID, groupID); err != nil {
+		t.Fatalf("AddGroupBinding anthro2: %v", err)
+	}
+
+	// FindForUser（无用户级绑定）→ 返回分组的第一条绑定（按 created_at ASC）
+	tid, found, err := repo.FindForUser("", groupID)
+	if err != nil {
+		t.Fatalf("FindForUser: %v", err)
+	}
+	if !found {
+		t.Fatal("expected binding to be found for group")
+	}
+	if tid != anthro1.ID {
+		t.Errorf("expected anthro1 (first binding), got %q", tid)
+	}
+}
+
+// TestLLMBindingRepo_SetGroup_Now_RejectsGroupBinding 验证 Set() 对分组绑定返回错误
+// （分组绑定必须通过 AddGroupBinding，保证 1:N 语义）
+func TestLLMBindingRepo_SetGroup_NowRejectsGroupOnlyCall(t *testing.T) {
+	gormDB := openTestDB(t)
+	logger := zaptest.NewLogger(t)
+	repo := NewLLMBindingRepo(gormDB, logger)
+
+	groupID := "grp-set-reject"
+	err := repo.Set("some-target", nil, &groupID)
+	if err == nil {
+		t.Error("expected error when calling Set() with userID=nil (group-only), got nil")
+	}
+}
+
 // TestLLMBindingRepo_FindForUser_UserPriorityConfirmed 测试用户级绑定优先于分组级
 // 验证同时有用户和分组绑定时，用户级优先
 func TestLLMBindingRepo_FindForUser_UserPriorityConfirmed(t *testing.T) {
@@ -424,6 +658,7 @@ func TestLLMBindingRepo_FindForUser_UserPriorityConfirmed(t *testing.T) {
 	require.NoError(t, Migrate(logger, gormDB))
 
 	repo := NewLLMBindingRepo(gormDB, logger)
+	targetRepo := NewLLMTargetRepo(gormDB, logger)
 
 	const (
 		userID  = "user-priority-test"
@@ -435,9 +670,14 @@ func TestLLMBindingRepo_FindForUser_UserPriorityConfirmed(t *testing.T) {
 	uid := userID
 	gid := groupID
 
-	// 设置用户级和分组级绑定
+	// 分组绑定需要真实 target
+	tgtGroup := &LLMTarget{ID: "prio-group-tgt", URL: groupTarget, Provider: "openai"}
+	require.NoError(t, targetRepo.Create(tgtGroup))
+
+	// 设置用户级绑定（1:1，无需真实 target）
 	require.NoError(t, repo.Set(userTarget, &uid, nil))
-	require.NoError(t, repo.Set(groupTarget, nil, &gid))
+	// 设置分组级绑定（1:N，通过 AddGroupBinding）
+	require.NoError(t, repo.AddGroupBinding(tgtGroup.ID, gid))
 
 	// FindForUser 时用户级绑定应优先
 	tid, found, err := repo.FindForUser(userID, groupID)
@@ -454,8 +694,8 @@ func TestLLMBindingRepo_FindForUser_UserPriorityConfirmed(t *testing.T) {
 		}
 	}
 
-	tid, found, err = repo.FindForUser(userID, groupID)
+	tid, found, err = repo.FindForUser(userID, gid)
 	require.NoError(t, err)
 	require.True(t, found)
-	assert.Equal(t, groupTarget, tid, "用户级绑定删除后，分组级绑定应生效")
+	assert.Equal(t, tgtGroup.ID, tid, "用户级绑定删除后，分组级绑定应生效")
 }

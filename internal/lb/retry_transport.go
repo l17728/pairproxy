@@ -95,23 +95,19 @@ func (t *RetryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 		tried = append(tried, currentURL)
 
-		// 耗尽 5xx body，关闭连接
-		if resp != nil {
-			io.Copy(io.Discard, resp.Body) //nolint:errcheck
-			resp.Body.Close()
-		}
-
 		if attempt >= t.MaxRetries {
-			// 已达最大重试次数，返回最后一次的 error
+			// 已达最大重试次数
 			if err != nil {
 				return nil, fmt.Errorf("llm request failed after %d retries (target=%s): %w", attempt+1, currentURL, err)
 			}
-			// 最后一次为失败状态码：返回 error 让 ReverseProxy 触发 ErrorHandler
-			var lastStatus int
-			if resp != nil {
-				lastStatus = resp.StatusCode
-			}
-			return nil, fmt.Errorf("all %d LLM targets exhausted (last target=%s, last status=%d)", attempt+1, currentURL, lastStatus)
+			// 最后一次为失败状态码：透传响应（含 body），让 ModifyResponse 保留原始状态码
+			return resp, nil
+		}
+
+		// 还有重试机会：耗尽 body，关闭连接，准备切换 target
+		if resp != nil {
+			io.Copy(io.Discard, resp.Body) //nolint:errcheck
+			resp.Body.Close()
 		}
 
 		// 选下一个 target
